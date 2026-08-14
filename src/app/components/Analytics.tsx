@@ -2,12 +2,17 @@ import { useState, useEffect, useCallback } from "react";
 import { CheckCircle, Copy, RefreshCw, ExternalLink, ThumbsUp, ThumbsDown, Link, ChevronDown } from "lucide-react";
 import { projectId, publicAnonKey } from "/utils/supabase/info";
 
-const ANALYTICS_PASSWORD = "REMOVED";
 const BASE = `https://${projectId}.supabase.co/functions/v1/make-server-f5961d0c`;
 const REST = `https://${projectId}.supabase.co/rest/v1`;
 const AUTH = { Authorization: `Bearer ${publicAnonKey}` };
+// Admin session token from /admin/login (or an admin private link). Read per
+// call so it picks up a fresh login without a reload.
+const adminSession = () => sessionStorage.getItem("analytics_token") || "";
 const apiFetch = (path: string, opts?: RequestInit) =>
-  fetch(`${BASE}${path}`, { ...opts, headers: { ...AUTH, "Content-Type": "application/json", ...(opts?.headers ?? {}) } });
+  fetch(`${BASE}${path}`, {
+    ...opts,
+    headers: { ...AUTH, "Content-Type": "application/json", "x-admin-token": adminSession(), ...(opts?.headers ?? {}) },
+  });
 const restFetch = (table: string, params = "") =>
   fetch(`${REST}/${table}?${params}&order=submitted_at.desc`, {
     headers: { Authorization: `Bearer ${publicAnonKey}`, apikey: publicAnonKey },
@@ -704,13 +709,27 @@ export function Analytics({ adminToken }: { adminToken?: string } = {}) {
   const [loading, setLoading] = useState(true);
   const [planClicksMap, setPlanClicksMap] = useState<Record<string, number>>({});
 
-  const handleLogin = (e: React.FormEvent) => {
+  // The password is checked server-side against ADMIN_SECRET; on success the
+  // server hands back a session token that authorizes every later admin call.
+  const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (password === ANALYTICS_PASSWORD) {
+    setPasswordError("");
+    try {
+      const res = await apiFetch("/admin/login", { method: "POST", body: JSON.stringify({ password }) });
+      // A 404 here means the function hasn't been deployed with /admin/login yet,
+      // and the body won't be JSON — so don't assume it parses.
+      const d = await res.json().catch(() => null);
+      if (!res.ok || !d?.token) {
+        setPasswordError(
+          res.status === 404 ? "Server is out of date — deploy the edge function."
+          : d?.error || `Login failed (${res.status})`
+        );
+        return;
+      }
+      sessionStorage.setItem("analytics_token", d.token);
       setIsAuthenticated(true);
-      sessionStorage.setItem("analytics_auth", "true");
-    } else {
-      setPasswordError("Incorrect password");
+    } catch {
+      setPasswordError("Could not reach the server. Try again.");
     }
   };
 
@@ -718,11 +737,15 @@ export function Analytics({ adminToken }: { adminToken?: string } = {}) {
     if (adminToken) {
       // Verify admin private link token
       apiFetch(`/admin/verify?token=${adminToken}`).then((r) => r.json()).then((d) => {
-        if (d.valid) { setIsAuthenticated(true); setAdminTokenVerified(true); }
+        if (d.valid) {
+          // The private link doubles as the session token for later admin calls.
+          sessionStorage.setItem("analytics_token", adminToken);
+          setIsAuthenticated(true);
+          setAdminTokenVerified(true);
+        }
       });
     } else {
-      const isAuth = sessionStorage.getItem("analytics_auth") === "true";
-      setIsAuthenticated(isAuth);
+      setIsAuthenticated(!!sessionStorage.getItem("analytics_token"));
     }
   }, [adminToken]);
 
@@ -979,7 +1002,7 @@ export function Analytics({ adminToken }: { adminToken?: string } = {}) {
               className="flex items-center gap-1.5 px-3 py-2 bg-white text-neutral-900 rounded-lg hover:bg-neutral-100 transition-all text-sm">
               <Link className="w-3.5 h-3.5" />Generate Private Link
             </button>
-            <button onClick={() => { sessionStorage.removeItem("analytics_auth"); setIsAuthenticated(false); }}
+            <button onClick={() => { sessionStorage.removeItem("analytics_token"); setIsAuthenticated(false); }}
               className="px-3 py-2 bg-white/10 text-neutral-300 rounded-lg hover:bg-white/15 transition-all text-sm">
               Logout
             </button>

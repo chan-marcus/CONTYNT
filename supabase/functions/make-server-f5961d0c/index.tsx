@@ -6,7 +6,7 @@ import * as kv from "./kv_store.tsx";
 
 const app = new Hono();
 app.use("*", logger(console.log));
-app.use("/*", cors({ origin: "*", allowHeaders: ["Content-Type", "Authorization"], allowMethods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"], exposeHeaders: ["Content-Length"], maxAge: 600 }));
+app.use("/*", cors({ origin: "*", allowHeaders: ["Content-Type", "Authorization", "x-admin-token"], allowMethods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"], exposeHeaders: ["Content-Length"], maxAge: 600 }));
 
 const db = () => createClient(Deno.env.get("SUPABASE_URL")!, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!);
 
@@ -17,6 +17,58 @@ function token32() {
   const c = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
   return Array.from({ length: 8 }, () => c[Math.floor(Math.random() * c.length)]).join("");
 }
+
+// ─── Admin auth ───────────────────────────────────────────────────────────────
+// ADMIN_SECRET is set in Dashboard → Project Settings → Edge Functions → Secrets.
+// The browser never holds it: /admin/login trades it for a short-lived session token.
+const ADMIN_SECRET = Deno.env.get("ADMIN_SECRET") || "";
+const SESSION_HOURS = 12;
+
+async function validAdminToken(token: string): Promise<boolean> {
+  if (!token) return false;
+  const session = await kv.get(`admin_session_${token}`).catch(() => null);
+  if (session?.expiresAt && new Date(session.expiresAt) > new Date()) return true;
+  // Private admin links (/admin/generate-link) remain a valid way in.
+  const priv = await kv.get("admin_private_token").catch(() => null);
+  return !!priv?.token && priv.token === token;
+}
+
+// These two ARE the auth handshake, so they cannot require auth themselves.
+const ADMIN_OPEN = new Set([
+  "/make-server-f5961d0c/admin/login",
+  "/make-server-f5961d0c/admin/verify",
+]);
+
+const adminGuard = async (c: any, next: any) => {
+  if (ADMIN_OPEN.has(new URL(c.req.url).pathname)) return next();
+  if (!ADMIN_SECRET) return c.json({ error: "Server is missing ADMIN_SECRET" }, 500);
+  if (!(await validAdminToken(c.req.header("x-admin-token") || ""))) {
+    return c.json({ error: "Unauthorized" }, 401);
+  }
+  return next();
+};
+
+// Registered before the routes below so it actually wraps them.
+app.use("/make-server-f5961d0c/admin/*", adminGuard);
+app.use("/make-server-f5961d0c/signups", adminGuard);
+app.use("/make-server-f5961d0c/business-signups", adminGuard);
+// These mint creator/business portal tokens — admin-only.
+app.use("/make-server-f5961d0c/creator-links", adminGuard);
+app.use("/make-server-f5961d0c/creator-links/*", adminGuard);
+app.use("/make-server-f5961d0c/business-links", adminGuard);
+app.use("/make-server-f5961d0c/business-links/*", adminGuard);
+
+app.post("/make-server-f5961d0c/admin/login", async (c) => {
+  try {
+    if (!ADMIN_SECRET) return c.json({ error: "Server is missing ADMIN_SECRET" }, 500);
+    const { password } = await c.req.json();
+    if (!password || password !== ADMIN_SECRET) return c.json({ error: "Incorrect password" }, 401);
+    const token = `${token32()}${token32()}${token32()}${token32()}`;
+    const expiresAt = new Date(Date.now() + SESSION_HOURS * 60 * 60 * 1000).toISOString();
+    await kv.set(`admin_session_${token}`, { createdAt: new Date().toISOString(), expiresAt });
+    return c.json({ success: true, token, expiresAt });
+  } catch (e: any) { return c.json({ error: e.message }, 500); }
+});
 
 // ─── Health ───────────────────────────────────────────────────────────────────
 app.get("/make-server-f5961d0c/health", (c) => c.json({ status: "ok" }));
