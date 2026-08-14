@@ -1,0 +1,1327 @@
+import { useEffect, useState, useRef } from "react";
+import { motion, AnimatePresence } from "motion/react";
+import { MapPin, DollarSign, CheckCircle, Lock, X, ExternalLink, AlertCircle, Users, Zap, TrendingUp, Award } from "lucide-react";
+import { projectId, publicAnonKey } from "/utils/supabase/info";
+
+const BASE = `https://${projectId}.supabase.co/functions/v1/make-server-f5961d0c`;
+const AUTH = { Authorization: `Bearer ${publicAnonKey}`, "Content-Type": "application/json" };
+const api = (path: string, opts?: RequestInit) => fetch(`${BASE}${path}`, { ...opts, headers: { ...AUTH, ...(opts?.headers ?? {}) } });
+const DB = `https://${projectId}.supabase.co/rest/v1`;
+const dbInsert = (table: string, data: object) => fetch(`${DB}/${table}`, {
+  method: "POST",
+  headers: { "Content-Type": "application/json", "Authorization": `Bearer ${publicAnonKey}`, "apikey": publicAnonKey, "Prefer": "return=minimal" },
+  body: JSON.stringify(data),
+});
+
+interface Feature {
+  id: string;
+  businessName: string;
+  address: string;
+  city: string;
+  category: string;
+  payoutRange: string;
+  status: "available" | "completed";
+  adminNotes?: string;
+}
+
+interface Claim { featureId: string; status: "interested" | "admin_approved" | "claimed" | "submitted" | "approved" | "cashed_out" | "denied"; reelUrl?: string; stripeLink?: string; payoutAmount?: string; deniedNote?: string; approvedAt?: string; expiresAt?: string; acceptanceExpiresAt?: string; }
+interface PayoutInfo { stripeLink: string; payoutAmount: string; submissionId: string; }
+interface PortalStats { completed: number; activeClaims: number; totalPayout: number; }
+
+const FAKE_FEATURES = [
+  { id: "fake_1", businessName: "Maxfield's House of Caffeine", address: "Upper Haight", city: "San Francisco, CA", category: "Coffee Shop", payoutRange: "$15–$25", status: "completed" as const, claimedBy: "sarahv" },
+  { id: "fake_2", businessName: "Duboce Park Cafe", address: "Duboce Triangle", city: "San Francisco, CA", category: "Cafe", payoutRange: "$10–$20", status: "completed" as const, claimedBy: "mikec" },
+];
+
+function formatPayout(range: string): string {
+  if (!range) return "";
+  const match = range.match(/\$?(\d+)\s*[–\-]\s*\$?(\d+)/);
+  if (match) return `$${match[1]} - $${match[2]}`;
+  // Single value — ensure $ prefix
+  const num = range.replace(/[^0-9.]/g, "");
+  return num ? `$${num}` : range;
+}
+
+function BlurredName({ name }: { name: string }) {
+  return (
+    <span className="inline-flex items-center gap-0">
+      {name[0]}
+      <span
+        className="select-none rounded px-0.5"
+        style={{ filter: "blur(6px)", background: "rgba(255,255,255,0.10)", letterSpacing: "0.05em" }}
+      >
+        {name.slice(1).length > 0 ? name.slice(1) : "•••••"}
+      </span>
+    </span>
+  );
+}
+
+function BlurredHandle({ username }: { username: string }) {
+  const clean = username.replace(/^@+/, "");
+  return (
+    <span className="font-mono inline-flex items-center gap-0">
+      @{clean[0]}
+      <span
+        className="select-none rounded px-0.5"
+        style={{ filter: "blur(6px)", background: "rgba(255,255,255,0.15)", letterSpacing: "0.05em" }}
+      >
+        {clean.slice(1).length > 0 ? clean.slice(1) : "•••••"}
+      </span>
+    </span>
+  );
+}
+
+// ─── Viewer count — 0-20, off-hours aware (no updates midnight–6am) ──────────
+function CountdownTimer({ expiresAt, compact }: { expiresAt: string; compact?: boolean }) {
+  const calc = () => {
+    const diff = new Date(expiresAt).getTime() - Date.now();
+    if (diff <= 0) return null;
+    const d = Math.floor(diff / 86400000);
+    const h = Math.floor((diff % 86400000) / 3600000);
+    const m = Math.floor((diff % 3600000) / 60000);
+    const s = Math.floor((diff % 60000) / 1000);
+    return { diff, d, h, m, s };
+  };
+  const [t, setT] = useState(calc);
+  useEffect(() => {
+    const i = setInterval(() => setT(calc()), 1000);
+    return () => clearInterval(i);
+  }, [expiresAt]);
+  if (!t) return <span className="text-xs text-red-400 font-medium animate-pulse">Expired</span>;
+  const hoursLeft = t.diff / 3600000;
+  const color = hoursLeft <= 12 ? "text-red-400 animate-pulse" : hoursLeft <= 24 ? "text-orange-400" : "text-neutral-300";
+  return (
+    <div className={`text-xs font-mono text-center ${color}`}>
+      {compact
+        ? `${String(t.h + t.d * 24).padStart(2,"0")}h ${String(t.m).padStart(2,"0")}m ${String(t.s).padStart(2,"0")}s`
+        : `${t.d}d ${String(t.h).padStart(2,"0")}h ${String(t.m).padStart(2,"0")}m ${String(t.s).padStart(2,"0")}s`
+      }
+      {!compact && hoursLeft <= 24 && <span className="ml-1 font-sans not-italic">{hoursLeft <= 12 ? "⚠ Expires soon!" : "— Complete before it expires"}</span>}
+    </div>
+  );
+}
+
+function useViewerCount(featureId: string) {
+  const [count, setCount] = useState(() => {
+    let hash = 0;
+    for (const ch of featureId) hash = ((hash << 5) - hash) + ch.charCodeAt(0);
+    const base = 4 + (Math.abs(hash) % 12); // 4–15
+    try {
+      const vk = `contynt_views_${featureId}`;
+      const visits = parseInt(localStorage.getItem(vk) || "0") + 1;
+      localStorage.setItem(vk, String(visits));
+      const shift = Math.floor(visits / 5) % 5 - 2;
+      return Math.max(0, Math.min(20, base + shift));
+    } catch { return base; }
+  });
+  const intervalRef = useRef<any>(null);
+  useEffect(() => {
+    const tick = () => {
+      const hour = new Date().getHours();
+      const isOffHours = hour >= 0 && hour < 6;
+      if (!isOffHours) {
+        setCount(c => {
+          const r = Math.random();
+          if (r < 0.35) return Math.max(0, c - 1);
+          if (r < 0.55) return Math.min(20, c + 1);
+          return c;
+        });
+      }
+      intervalRef.current = setTimeout(tick, 10000 + Math.random() * 15000);
+    };
+    intervalRef.current = setTimeout(tick, 10000 + Math.random() * 15000);
+    return () => clearTimeout(intervalRef.current);
+  }, [featureId]);
+  return count;
+}
+
+// ─── Loading screen ───────────────────────────────────────────────────────────
+function LoadingScreen() {
+  return (
+    <div className="min-h-screen bg-neutral-950 flex flex-col items-center justify-center gap-6">
+      <motion.p initial={{ opacity: 0, scale: 0.9 }} animate={{ opacity: 1, scale: 1 }} transition={{ duration: 0.5 }}
+        className="text-white text-xl font-semibold tracking-[0.3em]">C O N T Y N T</motion.p>
+      <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ delay: 0.4 }} className="flex gap-1.5">
+        {[0, 1, 2].map((i) => (
+          <span key={i} className="w-1.5 h-1.5 bg-white/40 rounded-full animate-pulse" style={{ animationDelay: `${i * 0.2}s` }} />
+        ))}
+      </motion.div>
+    </div>
+  );
+}
+
+// ─── Stats bar ────────────────────────────────────────────────────────────────
+function StatsBar({ stats, instagram }: { stats: PortalStats; instagram: string }) {
+  return (
+    <div className="grid grid-cols-3 gap-3">
+      <div className="bg-white/5 border border-white/10 rounded-2xl p-4 text-center">
+        <div className="flex items-center justify-center gap-1.5 mb-1">
+          <CheckCircle className="w-4 h-4 text-green-400" />
+          <span className="text-xs text-neutral-400">Completed</span>
+        </div>
+        <p className="text-2xl font-bold text-white">{stats.completed}</p>
+      </div>
+      <div className="bg-white/5 border border-white/10 rounded-2xl p-4 text-center">
+        <div className="flex items-center justify-center gap-1.5 mb-1">
+          <Zap className="w-4 h-4 text-blue-400" />
+          <span className="text-xs text-neutral-400">In Progress</span>
+        </div>
+        <p className="text-2xl font-bold text-white">{stats.activeClaims}</p>
+      </div>
+      <div className="bg-white/5 border border-white/10 rounded-2xl p-4 text-center">
+        <div className="flex items-center justify-center gap-1.5 mb-1">
+          <DollarSign className="w-4 h-4 text-yellow-400" />
+          <span className="text-xs text-neutral-400">Earned</span>
+        </div>
+        <p className="text-2xl font-bold text-white">${stats.totalPayout}</p>
+      </div>
+    </div>
+  );
+}
+
+// ─── Countdown bar (visual only) ─────────────────────────────────────────────
+
+// ─── Blurred pending reel preview ─────────────────────────────────────────────
+function PendingReelPreview({ reelUrl }: { reelUrl?: string }) {
+  return (
+    <div className="relative w-full rounded-2xl overflow-hidden border border-white/10 bg-neutral-900" style={{ aspectRatio: "16/9" }}>
+      <div className="absolute inset-0 bg-gradient-to-br from-indigo-900/40 via-neutral-900 to-purple-900/20" />
+      <div className="absolute inset-0 flex flex-col items-center justify-center gap-3">
+        <div className="relative flex items-center justify-center">
+          <span className="animate-ping absolute w-10 h-10 rounded-full bg-white/10" />
+          <div className="w-10 h-10 rounded-full bg-white/10 border border-white/20 flex items-center justify-center">
+            <span className="w-3 h-3 rounded-full bg-yellow-400 animate-pulse" />
+          </div>
+        </div>
+        <p className="text-white text-sm font-medium">Pending Review…</p>
+      </div>
+      {reelUrl && (
+        <a href={reelUrl} target="_blank" rel="noopener noreferrer"
+          className="absolute bottom-3 right-3 flex items-center gap-1 text-xs text-white/60 hover:text-white/90 bg-black/40 px-2 py-1 rounded-lg">
+          <ExternalLink className="w-3 h-3" />View Reel
+        </a>
+      )}
+    </div>
+  );
+}
+
+// ─── Viewer count pill ────────────────────────────────────────────────────────
+function ViewerCount({ featureId }: { featureId: string }) {
+  const count = useViewerCount(featureId);
+  return (
+    <div className="w-full flex items-center gap-1.5 text-xs text-neutral-500">
+      <Users className="w-3 h-3" />
+      <span>{count} other creator{count !== 1 ? "s" : ""} viewing this</span>
+    </div>
+  );
+}
+
+// ─── Feature card ─────────────────────────────────────────────────────────────
+function FeatureCard({ feature, claim, token, onClaim, onUnclaim, onAccept, onSubmit, onPayout, fake, claimedBy, myInstagram }: {
+  feature: Feature; claim?: Claim; token: string; myInstagram?: string;
+  onClaim: () => void; onUnclaim: () => void; onAccept: () => void;
+  onSubmit: (url: string) => void; onPayout: (amount?: string) => void; fake?: boolean; claimedBy?: string;
+}) {
+  const [reelUrl, setReelUrl] = useState(claim?.reelUrl || "");
+  const [urlError, setUrlError] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+  const [expanded, setExpanded] = useState(false);
+  const [showSuccess, setShowSuccess] = useState(false);
+  const [showClaimConfirm, setShowClaimConfirm] = useState(false);
+  const [payoutRequested, setPayoutRequested] = useState(false);
+  const [showPaymentPicker, setShowPaymentPicker] = useState(false);
+  const [paymentMethod, setPaymentMethod] = useState("");
+  const [paymentInfo, setPaymentInfo] = useState("");
+  const [claiming, setClaiming] = useState(false);
+  const claimStatus = claim?.status;
+  const isGloballyClaimed = feature.status === "completed" || fake;
+
+  const handleClaim = async () => {
+    setClaiming(true);
+    await onClaim();
+    setClaiming(false);
+  };
+
+  const handleSubmit = () => {
+    const url = reelUrl.trim();
+    if (!url) return;
+    try { new URL(url); } catch {
+      setUrlError("Please enter a valid URL (e.g. https://www.instagram.com/reel/...)");
+      return;
+    }
+    setUrlError("");
+    setSubmitting(true);
+    setShowSuccess(true);
+    setTimeout(() => {
+      onSubmit(url);
+      setSubmitting(false);
+      setShowSuccess(false);
+    }, 1500);
+  };
+
+  const winner = (feature as any).winnerInstagram || claimedBy || "";
+  const isMyWin = !fake && isGloballyClaimed && myInstagram &&
+    winner.replace(/^@+/, "").toLowerCase() === myInstagram.replace(/^@+/, "").toLowerCase();
+  // stripeLink needed before isMyWin check
+  const stripeLink = claim?.stripeLink || "";
+  const payoutAmount = claim?.payoutAmount || "";
+
+  // ── Completed by me — only show AFTER cash out ──
+  if (isMyWin && claim?.status !== "approved") {
+    return (
+      <div className="bg-gradient-to-br from-green-950/60 to-neutral-900 border border-green-500/30 rounded-2xl p-5">
+        <div className="flex items-start justify-between gap-3 mb-3">
+          <div>
+            <p className="font-semibold text-white">{feature.businessName}</p>
+            <div className="flex items-center gap-1 text-neutral-400 text-xs mt-1">
+              <MapPin className="w-3 h-3" />{feature.city}
+            </div>
+          </div>
+          <span className="flex items-center gap-1.5 text-xs px-2.5 py-1 rounded-full bg-green-500/20 text-green-400 border border-green-500/30 font-semibold shrink-0">
+            <CheckCircle className="w-3.5 h-3.5" />Completed by You
+          </span>
+        </div>
+        <div className="flex items-center justify-between">
+          {feature.category && <span className="text-xs text-neutral-500 bg-white/5 px-2.5 py-1 rounded-full">{feature.category}</span>}
+          {claim?.payoutAmount && (
+            <span className="text-lg font-bold text-green-400">{formatPayout(claim.payoutAmount)}</span>
+          )}
+        </div>
+      </div>
+    );
+  }
+
+  // ── Globally claimed by someone else (skip for winner — they need Cash Out card) ──
+  if (isGloballyClaimed && !isMyWin) {
+    return (
+      <div className="bg-white/5 border border-white/10 rounded-2xl p-5">
+        <div className="flex items-start justify-between gap-3 mb-3">
+          <div>
+            <p className="font-medium text-neutral-400"><BlurredName name={feature.businessName} /></p>
+            <div className="flex items-center gap-1 text-neutral-600 text-xs mt-1">
+              <MapPin className="w-3 h-3" />{feature.city}
+            </div>
+          </div>
+          <span className="text-xs px-2 py-0.5 rounded-full bg-neutral-800 text-neutral-500 border border-neutral-700 shrink-0">CLAIMED</span>
+        </div>
+        <div className="flex items-center justify-between">
+          <span className="text-xs text-neutral-600 bg-white/5 px-2.5 py-1 rounded-full">{feature.category}</span>
+          {winner && (() => {
+            const isYou = myInstagram && winner.replace(/^@+/,"").toLowerCase() === myInstagram.replace(/^@+/,"").toLowerCase();
+            return (
+              <span className="text-xs text-neutral-500">
+                Claimed by {isYou ? <span className="text-neutral-300 font-medium">You</span> : <BlurredHandle username={winner} />}
+              </span>
+            );
+          })()}
+        </div>
+      </div>
+    );
+  }
+
+  const cardState = claimStatus || "available";
+  const expiresAt = claim?.expiresAt || "";
+  const isExpired = expiresAt && new Date(expiresAt).getTime() < Date.now();
+
+  const borderClass =
+    cardState === "approved" ? "border-green-500/30" :
+    cardState === "denied" ? "border-red-500/20" :
+    cardState === ("admin_approved" as any) ? "border-green-500/30" :
+    cardState === "interested" ? "border-white/20" :
+    cardState === "claimed" ? "border-blue-500/30" :
+    cardState === "submitted" ? "border-white/10" :
+    "border-white/10 hover:border-white/20";
+
+  const bgClass =
+    cardState === "approved" ? "bg-gradient-to-br from-green-950/60 to-neutral-900" :
+    cardState === "denied" ? "bg-red-950/20" :
+    "bg-white/5";
+
+  return (
+    <div className={`w-full min-w-0 ${bgClass} border ${borderClass} rounded-2xl overflow-hidden transition-colors duration-300`} style={{ borderColor: cardState === "claimed" ? "rgba(59,130,246,0.3)" : undefined }}>
+      <div className="w-full min-w-0 p-5 space-y-4">
+
+          {/* ── Denied ── */}
+          {cardState === "denied" && <>
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <p className="font-semibold text-white">{feature.businessName}</p>
+                <div className="flex items-center gap-1 text-neutral-400 text-xs mt-1"><MapPin className="w-3 h-3" />{feature.city}</div>
+              </div>
+              <span className="text-xs px-2 py-0.5 rounded-full bg-red-500/20 text-red-400 border border-red-500/30 shrink-0">Not Approved</span>
+            </div>
+            <div className="bg-red-500/10 border border-red-500/20 rounded-xl p-3 text-xs text-red-300 space-y-1">
+              <p className="font-medium">This reel was not approved.</p>
+              {claim?.deniedNote && <p className="text-red-400/80">{claim.deniedNote}</p>}
+            </div>
+          </>}
+
+          {/* ── Approved + Cash Out ── */}
+          {cardState === "approved" && <>
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <p className="font-semibold text-white">{feature.businessName}</p>
+                <div className="flex items-center gap-1 text-neutral-400 text-xs mt-1"><MapPin className="w-3 h-3" />{feature.city}</div>
+              </div>
+              <span className="text-xs px-2 py-0.5 rounded-full bg-green-500/20 text-green-400 border border-green-500/30 shrink-0 flex items-center gap-1">
+                <CheckCircle className="w-3 h-3" />Approved
+              </span>
+            </div>
+            {claim?.reelUrl && (
+              <a href={claim.reelUrl} target="_blank" rel="noopener noreferrer"
+                className="flex items-center gap-2 w-full py-3 px-4 bg-white/5 border border-white/10 rounded-xl text-sm text-white hover:bg-white/10 transition-all">
+                <ExternalLink className="w-4 h-4 shrink-0 text-green-400" /><span className="truncate">View your Reel</span>
+              </a>
+            )}
+            <div className="bg-green-500/10 border border-green-500/20 rounded-xl p-4 space-y-3">
+              <div className="text-center">
+                <p className="text-xs font-medium text-green-500 uppercase tracking-widest mb-1">Payout Ready</p>
+                <p className="text-4xl font-bold text-green-400">{payoutAmount ? formatPayout(payoutAmount) : formatPayout(feature.payoutRange)}</p>
+              </div>
+              {payoutRequested ? (
+                <div className="w-full py-3 bg-green-500/20 text-green-400 text-sm font-medium rounded-xl text-center">✓ Cashed out!</div>
+              ) : showPaymentPicker ? (
+                <div className="space-y-2">
+                  {!paymentMethod ? (
+                    <>
+                      <p className="text-xs text-neutral-400 text-center">Select your preferred payment method</p>
+                      {["PayPal", "Zelle", "Venmo"].map(m => (
+                        <button key={m} onClick={() => setPaymentMethod(m)}
+                          className="w-full py-2.5 bg-white/10 border border-white/15 text-white text-sm rounded-xl hover:bg-white/15 transition-all">
+                          {m}
+                        </button>
+                      ))}
+                      <button onClick={() => setShowPaymentPicker(false)}
+                        className="w-full py-2 text-xs text-neutral-500 hover:text-neutral-300">Cancel</button>
+                    </>
+                  ) : (
+                    <>
+                      <p className="text-xs text-neutral-400">{paymentMethod} — enter your {paymentMethod === "Zelle" ? "phone or email" : paymentMethod === "PayPal" ? "email or username" : "username"}</p>
+                      <input value={paymentInfo} onChange={e => setPaymentInfo(e.target.value)}
+                        placeholder={paymentMethod === "Venmo" ? "@username" : paymentMethod === "Zelle" ? "phone or email" : "email or @username"}
+                        className="w-full px-3 py-2.5 bg-white/10 border border-white/20 rounded-xl text-white text-sm placeholder:text-neutral-500 focus:outline-none focus:ring-2 focus:ring-white/20" />
+                      <button onClick={async () => {
+                        if (!paymentInfo.trim()) return;
+                        const REST = `https://${projectId}.supabase.co/rest/v1`;
+                        const RHEAD = { "Content-Type": "application/json", Authorization: `Bearer ${publicAnonKey}`, apikey: publicAnonKey };
+                        await fetch(`${REST}/submissions_f5961d0c?token=eq.${encodeURIComponent(token)}&feature_id=eq.${feature.id}`, {
+                          method: "PATCH", headers: RHEAD,
+                          body: JSON.stringify({ payment_method: paymentMethod, payment_info: paymentInfo }),
+                        }).catch(() => {});
+                        setPayoutRequested(true);
+                        onPayout(payoutAmount);
+                      }} disabled={!paymentInfo.trim()}
+                        className="w-full py-3 bg-green-500 hover:bg-green-400 text-white text-sm font-semibold rounded-xl transition-all disabled:opacity-40">
+                        Confirm Cash Out
+                      </button>
+                      <button onClick={() => setPaymentMethod("")} className="w-full py-1.5 text-xs text-neutral-500 hover:text-neutral-300">← Back</button>
+                    </>
+                  )}
+                </div>
+              ) : (
+                <button onClick={() => setShowPaymentPicker(true)}
+                  className="w-full py-3 bg-green-500 hover:bg-green-400 text-white text-sm font-semibold rounded-xl transition-all flex items-center justify-center gap-2">
+                  <DollarSign className="w-4 h-4" />Cash Out
+                </button>
+              )}
+            </div>
+          </>}
+
+          {/* ── Submitted ── */}
+          {cardState === "submitted" && <>
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <p className="font-semibold text-white">{feature.businessName}</p>
+                <div className="flex items-center gap-1 text-neutral-400 text-xs mt-1"><MapPin className="w-3 h-3" />{feature.city}</div>
+              </div>
+              <div className="flex flex-col items-end gap-1.5 shrink-0">
+                <span className="text-xs px-2 py-0.5 rounded-full bg-yellow-400/15 text-yellow-400 border border-yellow-400/20">Under Review</span>
+                <span className="text-sm font-bold text-green-400">{formatPayout(feature.payoutRange)}</span>
+              </div>
+            </div>
+            {/* Compact pending indicator instead of full preview */}
+            <div className="flex items-center gap-3 bg-neutral-900 border border-white/10 rounded-xl px-4 py-3">
+              <span className="w-2 h-2 rounded-full bg-yellow-400 animate-pulse shrink-0" />
+              <p className="text-sm text-neutral-300">Pending Review…</p>
+              {claim?.reelUrl && (
+                <a href={claim.reelUrl} target="_blank" rel="noopener noreferrer"
+                  className="ml-auto flex items-center gap-1 text-xs text-neutral-500 hover:text-neutral-300 transition-colors shrink-0">
+                  <ExternalLink className="w-3 h-3" />View
+                </a>
+              )}
+            </div>
+            <div className="flex items-center justify-between">
+              <button disabled className="flex items-center gap-2 px-4 py-2 bg-neutral-800 text-neutral-500 text-sm rounded-xl cursor-not-allowed border border-white/5">
+                <Lock className="w-3.5 h-3.5" />Cash Out
+              </button>
+              <p className="text-xs text-neutral-500">Available after approval</p>
+            </div>
+          </>}
+
+          {/* ── Admin approved — creator must Accept within 24hrs ── */}
+          {cardState === ("admin_approved" as any) && (() => {
+            const acceptExpires = claim?.acceptanceExpiresAt || "";
+            const isExpiredAcceptance = acceptExpires && new Date(acceptExpires).getTime() < Date.now();
+            return isExpiredAcceptance ? (
+              <>
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <p className="font-semibold text-white">{feature.businessName}</p>
+                    <div className="flex items-center gap-1 text-neutral-400 text-xs mt-1"><MapPin className="w-3 h-3" />{feature.city}</div>
+                  </div>
+                  <span className="text-xs px-2 py-0.5 rounded-full bg-red-500/20 text-red-400 border border-red-500/30 shrink-0">Expired</span>
+                </div>
+                <div className="bg-red-500/10 border border-red-500/20 rounded-xl px-4 py-3 text-xs text-red-400 text-center">
+                  Acceptance window expired.
+                </div>
+                <button onClick={onUnclaim}
+                  className="w-full py-2.5 bg-white/10 border border-white/15 text-white text-sm font-semibold rounded-xl hover:bg-white/15 transition-all">
+                  Ok
+                </button>
+              </>
+            ) : (
+              <>
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <p className="font-semibold text-white">{feature.businessName}</p>
+                    <div className="flex items-center gap-1 text-neutral-400 text-xs mt-1"><MapPin className="w-3 h-3" />{feature.city}</div>
+                    {feature.category && <span className="text-xs text-neutral-500 bg-white/5 border border-white/10 px-2 py-0.5 rounded-full mt-1 inline-block">{feature.category}</span>}
+                  </div>
+                  <span className="text-xs px-2 py-0.5 rounded-full bg-green-500/20 text-green-400 border border-green-500/30 shrink-0">Selected!</span>
+                </div>
+                <div className="bg-green-500/10 border border-green-500/20 rounded-xl px-4 py-4 space-y-3 text-center">
+                  <CheckCircle className="w-7 h-7 text-green-400 mx-auto" />
+                  <p className="text-sm font-semibold text-white">You've been selected for this Feature!</p>
+                  <p className="text-xs text-neutral-400">Accept within 24 hours or the offer expires.</p>
+                  {acceptExpires && (
+                    <div className="text-xs text-yellow-400">
+                      <CountdownTimer expiresAt={acceptExpires} compact />
+                    </div>
+                  )}
+                </div>
+                <button onClick={onAccept}
+                  className="w-full py-3 bg-white text-neutral-900 text-sm font-bold rounded-xl hover:bg-neutral-100 transition-all">
+                  Accept Feature
+                </button>
+              </>
+            );
+          })()}
+
+          {/* ── Interested (waiting for admin approval) ── */}
+          {cardState === "interested" && <>
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <p className="font-semibold text-white">{feature.businessName}</p>
+                <div className="flex items-center gap-1 text-neutral-400 text-xs mt-1"><MapPin className="w-3 h-3" />{feature.city}</div>
+              </div>
+              <span className="text-xs px-2 py-0.5 rounded-full bg-white/10 text-neutral-300 border border-white/15 shrink-0">Requested</span>
+            </div>
+            <div className="bg-white/5 border border-white/10 rounded-xl px-4 py-4 text-center space-y-1.5">
+              <CheckCircle className="w-6 h-6 text-green-400 mx-auto" />
+              <p className="text-sm font-semibold text-white">Interest noted!</p>
+              <p className="text-xs text-neutral-400">You'll be notified once you're accepted.</p>
+            </div>
+            <button onClick={onUnclaim}
+              className="w-full py-2 text-xs text-neutral-500 hover:text-neutral-300 transition-all flex items-center justify-center gap-1">
+              <X className="w-3 h-3" />Withdraw Interest
+            </button>
+          </>}
+
+          {/* ── Claimed expired (7-day window passed) ── */}
+          {cardState === "claimed" && isExpired && <>
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <p className="font-semibold text-white">{feature.businessName}</p>
+                <div className="flex items-center gap-1 text-neutral-400 text-xs mt-1"><MapPin className="w-3 h-3" />{feature.city}</div>
+              </div>
+              <span className="text-xs px-2 py-0.5 rounded-full bg-neutral-700 text-neutral-400 border border-neutral-600 shrink-0">Expired</span>
+            </div>
+            <div className="bg-red-500/10 border border-red-500/20 rounded-xl px-4 py-3 text-xs text-red-400 text-center">
+              Time window has expired.
+            </div>
+            <button onClick={onUnclaim}
+              className="w-full py-2.5 bg-white/10 border border-white/15 text-white text-sm font-semibold rounded-xl hover:bg-white/15 transition-all">
+              Ok
+            </button>
+          </>}
+
+          {/* ── Claimed (in progress — admin approved) ── */}
+          {cardState === "claimed" && !isExpired && <>
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <p className="font-semibold text-white">{feature.businessName}</p>
+                <div className="flex items-center gap-1 text-neutral-400 text-xs mt-1"><MapPin className="w-3 h-3" />{feature.city}</div>
+                {feature.category && <span className="text-xs text-neutral-500 bg-white/5 border border-white/10 px-2 py-0.5 rounded-full mt-1 inline-block">{feature.category}</span>}
+              </div>
+              <div className="flex flex-col items-end gap-1.5 shrink-0">
+                <div className="flex items-center gap-1.5 text-xs text-blue-400">
+                  <span className="w-1.5 h-1.5 rounded-full bg-blue-400 animate-pulse" />
+                  In Progress
+                </div>
+                <span className="text-sm font-bold text-green-400">{formatPayout(feature.payoutRange)}</span>
+              </div>
+            </div>
+            <a href={`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(`${feature.businessName} ${feature.address} ${feature.city}`)}`}
+              target="_blank" rel="noopener noreferrer"
+              className="flex items-center gap-3 bg-neutral-800/60 border border-white/10 rounded-xl px-4 py-3 hover:bg-neutral-700/60 transition-all group">
+              <div className="w-8 h-8 rounded-lg bg-blue-500/20 flex items-center justify-center shrink-0">
+                <MapPin className="w-4 h-4 text-blue-400" />
+              </div>
+              <div className="min-w-0">
+                <p className="text-sm text-white truncate">{feature.address || feature.city}</p>
+                <p className="text-xs text-neutral-500">{feature.city}</p>
+              </div>
+              <ExternalLink className="w-3.5 h-3.5 text-neutral-500 group-hover:text-neutral-300 shrink-0 ml-auto" />
+            </a>
+            {feature.adminNotes && (
+              <div className="bg-blue-500/10 border border-blue-500/20 rounded-xl px-4 py-3 text-xs text-blue-200 space-y-1">
+                <p className="font-semibold text-blue-300 uppercase tracking-widest text-[10px]">Instructions</p>
+                <p className="leading-relaxed">{feature.adminNotes}</p>
+              </div>
+            )}
+            <div className="bg-white/5 rounded-xl px-4 py-3 text-xs text-neutral-400 space-y-1.5">
+              <p className="font-medium text-neutral-300 mb-2">Post requirements</p>
+              <p>• Add <span className="text-white">@{feature.businessName.toLowerCase().replace(/\s+/g, "")}</span> as a collaborator</p>
+              <p>• Tag the business in your post</p>
+              <p>• Add their location to the post</p>
+              <p>• Posts must remain active for at least <span className="text-white">72 hours</span> to be approved.</p>
+            </div>
+            {expiresAt && (
+              <div className="bg-white/5 border border-white/10 rounded-xl px-4 py-2.5 space-y-1 text-center">
+                <p className="text-[10px] text-neutral-500 uppercase tracking-widest">Time Remaining</p>
+                <CountdownTimer expiresAt={expiresAt} />
+                <p className="text-[10px] text-neutral-600">Complete your Reel before this expires.</p>
+              </div>
+            )}
+            <div className="space-y-2">
+              <input value={reelUrl} onChange={(e) => { setReelUrl(e.target.value); setUrlError(""); }}
+                placeholder="Paste your Instagram Reel URL"
+                disabled={submitting}
+                className={`w-full px-4 py-3 bg-white/10 border rounded-xl text-white text-sm placeholder:text-neutral-500 focus:outline-none focus:ring-2 focus:ring-white/30 transition-all disabled:opacity-50 ${urlError ? "border-red-500/50" : "border-white/20"}`} />
+              {urlError && <p className="text-xs text-red-400">{urlError}</p>}
+              {showSuccess ? (
+                <div className="w-full py-3 bg-green-500/20 border border-green-500/30 rounded-xl flex items-center justify-center gap-2 text-sm font-semibold text-green-400">
+                  <CheckCircle className="w-4 h-4" />Reel submitted!
+                </div>
+              ) : (
+                <button onClick={handleSubmit} disabled={!reelUrl.trim() || submitting}
+                  className="w-full py-3 bg-white text-neutral-900 text-sm font-semibold rounded-xl hover:bg-neutral-100 transition-all disabled:opacity-40 disabled:cursor-not-allowed">
+                  Submit Reel
+                </button>
+              )}
+            </div>
+            <button onClick={onUnclaim}
+              className="w-full py-2 text-xs text-neutral-500 hover:text-neutral-300 transition-all flex items-center justify-center gap-1">
+              <X className="w-3 h-3" />Unclaim
+            </button>
+          </>}
+
+          {/* ── Available (default) ── */}
+          {cardState === "available" && <>
+            {/* Tap card to expand details */}
+            <button onClick={() => { setExpanded(v => { if (!v) api("/creator-portal/view-feature", { method: "POST", body: JSON.stringify({ token, featureId: feature.id }) }).catch(() => {}); return !v; }); }} className="w-full text-left space-y-3">
+              <div className="w-full flex items-start justify-between gap-3">
+                <div>
+                  <p className="font-semibold text-white">{feature.businessName}</p>
+                  <div className="flex items-center gap-1 text-neutral-400 text-xs mt-1">
+                    <MapPin className="w-3 h-3" />{feature.city}
+                  </div>
+                  {feature.category && <span className="text-xs text-neutral-500 bg-white/5 border border-white/10 px-2 py-0.5 rounded-full mt-1 inline-block">{feature.category}</span>}
+                </div>
+                <div className="flex flex-col items-end gap-1">
+                  {feature.payoutRange ? (
+                    <span className="text-sm font-semibold text-white bg-white/10 px-2.5 py-1 rounded-lg shrink-0">
+                      {formatPayout(feature.payoutRange)}
+                    </span>
+                  ) : null}
+                  <span className="text-[10px] text-neutral-500">{expanded ? "▲ less" : "▼ more info"}</span>
+                </div>
+              </div>
+            </button>
+            {/* Expanded details */}
+            {expanded && (
+              <div className="space-y-2 pt-1 border-t border-white/10">
+                {feature.address && (
+                  <a href={`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(`${feature.businessName} ${feature.address} ${feature.city}`)}`}
+                    target="_blank" rel="noopener noreferrer"
+                    className="flex items-center gap-2 text-xs text-blue-400 hover:text-blue-300">
+                    <MapPin className="w-3 h-3 shrink-0" />{feature.address}, {feature.city}
+                  </a>
+                )}
+                {(feature as any).businessInstagram && (
+                  <a href={`https://instagram.com/${(feature as any).businessInstagram.replace(/^@/, "")}`}
+                    target="_blank" rel="noopener noreferrer"
+                    className="flex items-center gap-2 text-xs text-blue-400 hover:text-blue-300">
+                    <ExternalLink className="w-3 h-3 shrink-0" />@{(feature as any).businessInstagram.replace(/^@/, "")}
+                  </a>
+                )}
+                {feature.adminNotes && (
+                  <div className="bg-blue-500/10 border border-blue-500/20 rounded-xl px-3 py-2.5 text-xs text-blue-200">
+                    <p className="leading-relaxed">{feature.adminNotes}</p>
+                  </div>
+                )}
+              </div>
+            )}
+            <div className="w-full flex items-center justify-between">
+              <ViewerCount featureId={feature.id} />
+              <motion.button
+                onClick={handleClaim}
+                disabled={claiming}
+                whileTap={{ scale: 0.94 }}
+                className="px-4 py-2 bg-white text-neutral-900 text-sm font-semibold rounded-xl hover:bg-neutral-100 transition-all disabled:opacity-70 shrink-0">
+                {claiming ? "…" : "Request"}
+              </motion.button>
+            </div>
+          </>}
+
+      </div>
+    </div>
+  );
+}
+
+// ─── Creator Portal ───────────────────────────────────────────────────────────
+export function CreatorPortal({ token }: { token: string }) {
+  const [phase, setPhase] = useState<"loading" | "ready" | "error">("loading");
+  const [creator, setCreator] = useState<{ instagram: string; city: string; email?: string } | null>(null);
+  const [features, setFeatures] = useState<Feature[]>([]);
+  const [claims, setClaims] = useState<Record<string, Claim>>({});
+  const [stats, setStats] = useState<PortalStats>({ completed: 0, activeClaims: 0, totalPayout: 0 });
+  const [error, setError] = useState("");
+  const [portalTab, setPortalTab] = useState<"features" | "completed" | "activity">("features");
+  const featSeenKey = `contynt_cr_feats_seen_${token}`;
+  const compSeenKey = `contynt_cr_comp_seen_${token}`;
+  const actSeenKey  = `contynt_cr_act_seen_${token}`;
+  const [featsSeen,  setFeatsSeen]  = useState(() => { try { return parseInt(localStorage.getItem(`contynt_cr_feats_seen_${token}`) || "0"); } catch { return 0; } });
+  const [compSeen,   setCompSeen]   = useState(() => { try { return parseInt(localStorage.getItem(`contynt_cr_comp_seen_${token}`) || "0"); } catch { return 0; } });
+  const [actSeen,    setActSeen]    = useState(() => { try { return parseInt(localStorage.getItem(`contynt_cr_act_seen_${token}`)  || "0"); } catch { return 0; } });
+  const [editingEmail, setEditingEmail] = useState(false);
+  const [emailInput, setEmailInput] = useState("");
+
+  const lsKey = `contynt_claims_${token}`;
+
+  const saveLocalClaims = (updated: Record<string, Claim>) => {
+    try { localStorage.setItem(lsKey, JSON.stringify({ ...updated, __savedAt: Date.now() })); } catch {}
+  };
+
+  const loadLocalClaims = (): Record<string, Claim> => {
+    try {
+      const raw = JSON.parse(localStorage.getItem(lsKey) || "{}");
+      const { __savedAt, ...claims } = raw;
+      return claims;
+    } catch { return {}; }
+  };
+
+  useEffect(() => {
+    const load = async () => {
+      const [res] = await Promise.all([
+        api(`/creator-portal?t=${token}`),
+        new Promise((r) => setTimeout(r, 1200)),
+      ]);
+      const json = await res.json();
+      if (!res.ok) { setError(json.error || "Invalid link."); setPhase("error"); return; }
+      setCreator(json.creator);
+      const baseFeatures: Feature[] = json.features || [];
+      // Fetch all columns (no select filter) so admin_notes comes through if the column exists
+      if (baseFeatures.length > 0) {
+        const ids = baseFeatures.map((f: Feature) => `"${f.id}"`).join(",");
+        fetch(`${DB}/features_f5961d0c?id=in.(${ids})`, {
+          headers: { Authorization: `Bearer ${publicAnonKey}`, apikey: publicAnonKey },
+        }).then(r => r.json()).then((rows: any[]) => {
+          if (!Array.isArray(rows)) { setFeatures(baseFeatures); return; }
+          const notesMap: Record<string, string> = {};
+          rows.forEach(r => { if (r.admin_notes) notesMap[r.id] = r.admin_notes; });
+          setFeatures(baseFeatures.map(f => ({ ...f, adminNotes: notesMap[f.id] || "" })));
+        }).catch(() => { setFeatures(baseFeatures); });
+      } else {
+        setFeatures(baseFeatures);
+      }
+
+      // If admin reset after last save, wipe localStorage so state clears
+      if (json.resetAt) {
+        try {
+          const resetTime = new Date(json.resetAt).getTime();
+          const rawLocal = localStorage.getItem(lsKey);
+          const savedAt = rawLocal ? JSON.parse(rawLocal).__savedAt || 0 : 0;
+          if (resetTime > savedAt) localStorage.removeItem(lsKey);
+        } catch {}
+      }
+
+      // Merge server claims with localStorage
+      const serverClaims: Record<string, any> = json.claims || {};
+      const local = loadLocalClaims();
+
+      // Convert server "approved" with acceptanceExpiresAt → "admin_approved" so it shows the Accept card
+      for (const [fid, sc] of Object.entries(serverClaims)) {
+        if ((sc as any).status === "approved" && (sc as any).acceptanceExpiresAt && !(sc as any).stripeLink) {
+          (serverClaims as any)[fid] = { ...sc, status: "admin_approved" };
+        }
+      }
+
+      const merged: Record<string, Claim> = { ...serverClaims } as any;
+      for (const [fid, lc] of Object.entries(local)) {
+        const sc = serverClaims[fid];
+        const order: Record<string, number> = { interested: 0, admin_approved: 1, claimed: 2, submitted: 3, approved: 4, cashed_out: 5 };
+        const localRank = order[lc.status as string] ?? 0;
+        const serverRank = sc ? (order[(sc as any).status as string] ?? 0) : 0;
+        if (localRank >= serverRank) merged[fid] = lc;
+      }
+      setClaims(merged as any);
+      saveLocalClaims(merged as any);
+
+      // Recompute stats from merged claims so all stages survive refresh
+      const serverStats = json.stats || { completed: 0, activeClaims: 0, totalPayout: 0 };
+      const mergedValues = Object.values(merged);
+      const mergedActiveClaims = mergedValues.filter((c) => c.status === "claimed" || c.status === "submitted").length;
+      const mergedCompleted = mergedValues.filter((c) => c.status === "approved").length;
+      // Recompute totalPayout from approved claims with payoutAmount (survives page refresh)
+      const mergedTotalPayout = mergedValues
+        .filter((c) => c.status === "approved" && c.payoutAmount)
+        .reduce((sum, c) => sum + parseInt((c.payoutAmount || "0").replace(/[^0-9]/g, "") || "0"), 0);
+      setStats({ ...serverStats, activeClaims: mergedActiveClaims, completed: mergedCompleted, totalPayout: Math.max(serverStats.totalPayout || 0, mergedTotalPayout) });
+      setPhase("ready");
+    };
+    load();
+  }, [token]);
+
+  const claimFeature = (featureId: string) => {
+    setClaims((p) => {
+      const updated = { ...p, [featureId]: { featureId, status: "interested" as const } };
+      saveLocalClaims(updated);
+      return updated;
+    });
+    // Also write directly to SQL so admin's approve PATCH can find the row
+    const REST = `https://${projectId}.supabase.co/rest/v1`;
+    const RHEAD = { "Content-Type": "application/json", Authorization: `Bearer ${publicAnonKey}`, apikey: publicAnonKey, Prefer: "resolution=merge-duplicates" };
+    fetch(`${REST}/creator_claims_f5961d0c`, {
+      method: "POST", headers: RHEAD,
+      body: JSON.stringify({ feature_id: featureId, creator_token: token, creator_instagram: creator?.instagram || "", status: "interested", claimed_at: new Date().toISOString() }),
+    }).catch(() => {});
+    api("/creator-portal/claim", { method: "POST", body: JSON.stringify({ token, featureId }) }).catch(() => {});
+  };
+  const acceptFeature = async (featureId: string) => {
+    const REST = `https://${projectId}.supabase.co/rest/v1`;
+    const RHEAD = { "Content-Type": "application/json", Authorization: `Bearer ${publicAnonKey}`, apikey: publicAnonKey };
+    const expiresAt = new Date(Date.now() + 5 * 24 * 60 * 60 * 1000).toISOString();
+    await fetch(`${REST}/creator_claims_f5961d0c?creator_token=eq.${encodeURIComponent(token)}&feature_id=eq.${featureId}`, {
+      method: "PATCH", headers: RHEAD, body: JSON.stringify({ status: "claimed", expires_at: expiresAt, claimed_at: new Date().toISOString() }),
+    }).catch(() => {});
+    api("/creator-portal/accept-feature", { method: "POST", body: JSON.stringify({ token, featureId }) }).catch(() => {});
+    setClaims(prev => {
+      const updated = { ...prev, [featureId]: { ...prev[featureId], status: "claimed" as const, expiresAt } };
+      saveLocalClaims(updated);
+      return updated;
+    });
+    setStats(p => ({ ...p, activeClaims: p.activeClaims + 1 }));
+  };
+
+  const unclaimFeature = (featureId: string) => {
+    setClaims((p) => {
+      const n = { ...p };
+      delete n[featureId];
+      saveLocalClaims(n);
+      return n;
+    });
+    setStats((p) => ({ ...p, activeClaims: Math.max(0, p.activeClaims - 1) }));
+    api("/creator-portal/unclaim", { method: "POST", body: JSON.stringify({ token, featureId }) }).catch(() => {});
+  };
+  const submitReel = (featureId: string, reelUrl: string) => {
+    // Update UI immediately — submitted still counts as In Progress, don't decrement
+    setClaims((p) => {
+      const updated = { ...p, [featureId]: { featureId, status: "submitted" as const, reelUrl } };
+      saveLocalClaims(updated);
+      return updated;
+    });
+    // Retry up to 3 times to ensure submission lands on server
+    const instagram = creator?.instagram || "";
+    const submissionId = `sub_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+    // Try Edge Function first; fall back to direct SQL only if it fails
+    const body = JSON.stringify({ token, featureId, reelUrl, instagram });
+    api("/creator-portal/submit", { method: "POST", body }).catch(() => {
+      // Edge Function failed — write directly to SQL as fallback
+      dbInsert("submissions_f5961d0c", {
+        id: submissionId, feature_id: featureId, token, creator_id: "", creator_instagram: instagram, reel_url: reelUrl, status: "pending",
+      }).catch(() => {});
+    });
+  };
+  // Poll SQL directly for approval — no Edge Function needed, works regardless of deployment
+  useEffect(() => {
+    if (phase !== "ready") return;
+    const hasInterested = Object.values(claims).some(c => c.status === "interested" || (c.status as any) === "admin_approved");
+    if (!hasInterested) return;
+    const REST = `https://${projectId}.supabase.co/rest/v1`;
+    const RHEAD = { Authorization: `Bearer ${publicAnonKey}`, apikey: publicAnonKey };
+    const check = async () => {
+      try {
+        const res = await fetch(
+          `${REST}/creator_claims_f5961d0c?creator_token=eq.${encodeURIComponent(token)}&status=in.(approved,claimed)&approved_at=not.is.null&select=feature_id,status,approved_at,expires_at,acceptance_expires_at`,
+          { headers: RHEAD }
+        );
+        if (!res.ok) return;
+        const rows: any[] = await res.json();
+        if (!rows.length) return;
+        setClaims(prev => {
+          let changed = false;
+          const updated = { ...prev };
+          for (const row of rows) {
+            const fid = row.feature_id;
+            const serverStatus = row.status;
+            if (serverStatus === "approved" && prev[fid]?.status === "interested") {
+              // Admin approved — creator must accept within 24hrs
+              updated[fid] = { ...prev[fid], status: "admin_approved" as any, approvedAt: row.approved_at, acceptanceExpiresAt: row.acceptance_expires_at };
+              changed = true;
+            } else if (serverStatus === "claimed" && (prev[fid]?.status === "interested" || prev[fid]?.status === "admin_approved" as any)) {
+              // Creator already accepted (detected on reload)
+              updated[fid] = { ...prev[fid], status: "claimed" as const, approvedAt: row.approved_at, expiresAt: row.expires_at };
+              changed = true;
+              setStats(p => ({ ...p, activeClaims: p.activeClaims + 1 }));
+            }
+          }
+          if (changed) saveLocalClaims(updated);
+          return changed ? updated : prev;
+        });
+      } catch {}
+    };
+    check();
+    const interval = setInterval(check, 5000);
+    return () => clearInterval(interval);
+  }, [phase, token, Object.values(claims).some(c => c.status === "interested")]);
+
+  // Poll submissions for payout approval + denied state every 10s
+  useEffect(() => {
+    if (phase !== "ready") return;
+    const hasRelevant = Object.values(claims).some(c => c.status === "submitted" || c.status === "approved");
+    if (!hasRelevant) return;
+    const REST = `https://${projectId}.supabase.co/rest/v1`;
+    const RHEAD = { Authorization: `Bearer ${publicAnonKey}`, apikey: publicAnonKey };
+    const check = async () => {
+      try {
+        const res = await fetch(`${REST}/submissions_f5961d0c?token=eq.${encodeURIComponent(token)}&select=id,feature_id,reel_url,admin_payout_approved,stripe_link,payout_amount,denied,admin_report_note,cashed_out_at`, { headers: RHEAD });
+        if (!res.ok) return;
+        const rows: any[] = await res.json();
+        setClaims(prev => {
+          let changed = false;
+          const updated = { ...prev };
+          for (const row of rows) {
+            const fid = row.feature_id;
+            const existing = prev[fid];
+            if (!existing) continue;
+            // Denied
+            if (row.denied && existing.status !== "denied") {
+              updated[fid] = { ...existing, status: "denied", deniedNote: row.admin_report_note || "" };
+              changed = true;
+            }
+            // Payout approved — flip creator to Cash Out (or straight to cashed_out if already done)
+            if (row.admin_payout_approved && existing.status === "submitted" && !existing.stripeLink) {
+              const alreadyCashedOut = !!row.cashed_out_at;
+              updated[fid] = { ...existing, status: alreadyCashedOut ? "cashed_out" : "approved", stripeLink: row.stripe_link, payoutAmount: row.payout_amount };
+              changed = true;
+              if (!alreadyCashedOut) {
+                // Add to Earned stats only when showing Cash Out (not when already done)
+                const earnedAmt = parseInt((row.payout_amount || "0").replace(/[^0-9]/g, "") || "0");
+                if (earnedAmt > 0) setStats(p => ({ ...p, totalPayout: p.totalPayout + earnedAmt }));
+              }
+              // Mark feature as completed in SQL so other creators' portals see it as CLAIMED
+              const REST2 = `https://${projectId}.supabase.co/rest/v1`;
+              const RHEAD2 = { "Content-Type": "application/json", Authorization: `Bearer ${publicAnonKey}`, apikey: publicAnonKey };
+              fetch(`${REST2}/features_f5961d0c?id=eq.${fid}`, {
+                method: "PATCH", headers: RHEAD2,
+                body: JSON.stringify({ status: "completed", winner_instagram: creator?.instagram || "", completed_at: new Date().toISOString() }),
+              }).catch(() => {});
+              // Update local features state immediately so current creator's UI reflects it
+              setFeatures(prev => prev.map(f => f.id === fid ? { ...f, status: "completed" as const } : f));
+            }
+            // Already cashed out (was "approved" in prev state) — flip claim to cashed_out
+            if (row.cashed_out_at && existing.status === "approved") {
+              updated[fid] = { ...existing, status: "cashed_out" };
+              changed = true;
+              setFeatures(prev => prev.map(f => f.id === fid ? { ...f, status: "completed" as const } : f));
+            }
+          }
+          if (changed) saveLocalClaims(updated);
+          return changed ? updated : prev;
+        });
+      } catch {}
+    };
+    check();
+    const interval = setInterval(check, 10000);
+    return () => clearInterval(interval);
+  }, [phase, token, Object.values(claims).map(c => c.status).join(",")]);
+
+  // Poll approved submissions to detect when cash out enabled → mark feature completed for all creators
+  useEffect(() => {
+    if (phase !== "ready") return;
+    const REST = `https://${projectId}.supabase.co/rest/v1`;
+    const RHEAD = { Authorization: `Bearer ${publicAnonKey}`, apikey: publicAnonKey };
+    const check = async () => {
+      try {
+        // submissions_f5961d0c has RLS disabled — anon key works
+        const res = await fetch(
+          `${REST}/submissions_f5961d0c?admin_payout_approved=eq.true&select=feature_id,creator_instagram`,
+          { headers: RHEAD }
+        );
+        if (!res.ok) return;
+        const rows: any[] = await res.json();
+        if (!rows.length) return;
+        const myIg = creator?.instagram?.replace(/^@+/, "").toLowerCase() || "";
+        setFeatures(prev => {
+          const updated = prev.map(f => {
+            const match = rows.find(r => r.feature_id === f.id);
+            if (!match || f.status === "completed") return f;
+            // Don't mark as completed for the winner themselves — they need to see Cash Out first
+            const winnerIg = (match.creator_instagram || "").replace(/^@+/, "").toLowerCase();
+            if (myIg && winnerIg === myIg) return f;
+            return { ...f, status: "completed" as const, winnerInstagram: match.creator_instagram || "" };
+          });
+          return JSON.stringify(updated) !== JSON.stringify(prev) ? updated : prev;
+        });
+      } catch {}
+    };
+    check();
+    const interval = setInterval(check, 8000);
+    const onVisible = () => { if (document.visibilityState === "visible") check(); };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => { clearInterval(interval); document.removeEventListener("visibilitychange", onVisible); };
+  }, [phase]);
+
+  // Old feature poll (keeping for initial load sync)
+  useEffect(() => {
+    if (phase !== "ready") return;
+    const REST = `https://${projectId}.supabase.co/rest/v1`;
+    const RHEAD = { Authorization: `Bearer ${publicAnonKey}`, apikey: publicAnonKey };
+    const check = async () => {
+      try {
+        const res = await fetch(`${REST}/features_f5961d0c`, { headers: RHEAD });
+        if (!res.ok) return;
+        const rows: any[] = await res.json();
+        setFeatures(prev => {
+          const updated = prev.map(f => {
+            const row = rows.find(r => r.id === f.id);
+            if (!row) return f;
+            const statusChanged = row.status !== f.status;
+            const notesChanged = (row.admin_notes || "") !== (f.adminNotes || "");
+            if (statusChanged || notesChanged) {
+              return { ...f, status: row.status, winnerInstagram: row.winner_instagram || "", adminNotes: row.admin_notes || "" };
+            }
+            return f;
+          });
+          return JSON.stringify(updated) !== JSON.stringify(prev) ? updated : prev;
+        });
+      } catch {}
+    };
+    check(); // run immediately on mount
+    const interval = setInterval(check, 8000); // poll every 8s for faster cross-portal updates
+    // Also re-check when the tab becomes visible (user switches back to portal)
+    const onVisible = () => { if (document.visibilityState === "visible") check(); };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => { clearInterval(interval); document.removeEventListener("visibilitychange", onVisible); };
+  }, [phase]);
+
+  // Removed: old polling that checked status=eq.approved (triggered Cash Out on admin approve — wrong)
+  // Cash Out is now only enabled by admin_payout_approved=true (set after business approves + admin enters Stripe link)
+
+  const requestPayout = (featureId: string, passedAmount?: string) => {
+    const claim = claims[featureId];
+    const feature = features.find(f => f.id === featureId);
+    const payoutAmount = passedAmount || claim?.payoutAmount || feature?.payoutRange || "";
+    const now = new Date().toISOString();
+    // IMMEDIATELY update UI — before any async calls so nothing can interrupt
+    setFeatures(prev => prev.map(f => f.id === featureId ? { ...f, status: "completed" as const, winnerInstagram: creator?.instagram || "" } : f));
+    setClaims(prev => prev[featureId] ? { ...prev, [featureId]: { ...prev[featureId], status: "cashed_out" } } : prev);
+    // totalPayout already added when Cash Out card appeared — just mark completed
+    setStats((p) => ({ ...p, completed: p.completed + 1 }));
+    // Fire async updates in background
+    const REST = `https://${projectId}.supabase.co/rest/v1`;
+    const RHEAD = { "Content-Type": "application/json", Authorization: `Bearer ${publicAnonKey}`, apikey: publicAnonKey };
+    fetch(`${REST}/submissions_f5961d0c?token=eq.${encodeURIComponent(token)}&feature_id=eq.${featureId}`, {
+      method: "PATCH", headers: RHEAD, body: JSON.stringify({ cashed_out_at: now }),
+    }).catch(() => {});
+    fetch(`${REST}/features_f5961d0c?id=eq.${featureId}`, {
+      method: "PATCH", headers: RHEAD,
+      body: JSON.stringify({ status: "completed", winner_instagram: creator?.instagram || "", total_payout: payoutAmount, claimed_by: creator?.instagram || "", claimed_at: now }),
+    }).catch(() => {});
+  };
+
+  if (phase === "loading") return <LoadingScreen />;
+
+  if (phase === "error") {
+    return (
+      <div className="min-h-screen bg-neutral-950 flex items-center justify-center px-6">
+        <div className="text-center max-w-sm">
+          <AlertCircle className="w-10 h-10 text-red-400 mx-auto mb-4" />
+          <h2 className="text-white text-xl font-semibold mb-2">Link unavailable</h2>
+          <p className="text-neutral-400 text-sm">{error}</p>
+        </div>
+      </div>
+    );
+  }
+
+  const allFeatures = [...features.map(f => ({ ...f, claimedBy: (f as any).winnerInstagram || undefined })), ...FAKE_FEATURES].sort((a, b) => {
+    const aCompleted = a.status === "completed" || a.id.startsWith("fake_");
+    const bCompleted = b.status === "completed" || b.id.startsWith("fake_");
+    // Only globally completed/fake → very bottom; claimed/submitted/approved stay in place
+    if (aCompleted && !bCompleted) return 1;
+    if (!aCompleted && bCompleted) return -1;
+    return 0;
+  });
+  const hasActivity = stats.completed > 0 || stats.activeClaims > 0 || stats.totalPayout > 0;
+
+  return (
+    <div className="min-h-screen bg-neutral-950 text-white flex flex-col">
+      {/* Ambient — static, no JS animation */}
+      <div className="fixed inset-0 pointer-events-none">
+        <div className="absolute top-0 left-1/3 w-96 h-96 rounded-full blur-[120px]" style={{ background: "rgba(99,102,241,0.1)" }} />
+        <div className="absolute bottom-1/4 right-1/4 w-64 h-64 rounded-full blur-[100px]" style={{ background: "rgba(34,197,94,0.06)" }} />
+      </div>
+
+      {/* Header */}
+      <header className="relative z-10 border-b border-white/10 px-6 py-4">
+        <div className="max-w-2xl mx-auto flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            <span className="text-sm font-semibold tracking-[0.2em]">C O N T Y N T</span>
+            <span className="text-[10px] font-bold tracking-widest text-yellow-400 border border-yellow-400/40 px-1.5 py-0.5 rounded">BETA</span>
+          </div>
+          <span className="text-xs text-neutral-500">Creator Portal</span>
+        </div>
+      </header>
+
+      <main className="relative z-10 w-full max-w-2xl mx-auto px-4 sm:px-6 py-8 space-y-6 flex-1 min-w-0 overflow-x-hidden">
+        {/* Welcome */}
+        <motion.div initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.45 }} className="space-y-1">
+          <div className="flex items-center gap-3 flex-wrap">
+            <h1 className="text-2xl font-semibold">
+              {creator?.instagram ? `Welcome, @${creator.instagram.replace(/^@/, "")}` : "Welcome"}
+            </h1>
+            <div className="flex items-center gap-1.5 bg-green-500/15 border border-green-500/25 px-2.5 py-1 rounded-full">
+              <span className="w-2 h-2 rounded-full bg-green-400 animate-pulse" />
+              <span className="text-xs font-medium text-green-400">Active</span>
+            </div>
+          </div>
+          {creator?.city && (
+            <p className="text-xs text-neutral-500">
+              {creator.city.split("-").map((w: string) => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase()).join(" ")}
+            </p>
+          )}
+          {/* Email display + edit */}
+          <div className="flex items-center gap-2">
+            {editingEmail ? (
+              <form onSubmit={async e => { e.preventDefault(); setCreator(p => p ? { ...p, email: emailInput } : p); setEditingEmail(false); api("/creator-portal/update-email", { method: "POST", body: JSON.stringify({ token, email: emailInput }) }).catch(() => {}); }} className="flex gap-2">
+                <input value={emailInput} onChange={e => setEmailInput(e.target.value)} type="email"
+                  className="text-xs bg-white/10 border border-white/20 rounded-lg px-2 py-1 text-white placeholder:text-neutral-500 focus:outline-none"
+                  placeholder="your@email.com" autoFocus />
+                <button type="submit" className="text-xs text-green-400 hover:text-green-300">Save</button>
+                <button type="button" onClick={() => setEditingEmail(false)} className="text-xs text-neutral-500">Cancel</button>
+              </form>
+            ) : (
+              <>
+                <span className="text-xs text-neutral-500">{creator?.email || "No email set"}</span>
+                <button onClick={() => { setEmailInput(creator?.email || ""); setEditingEmail(true); }}
+                  className="text-[10px] text-neutral-600 hover:text-neutral-400 border border-white/10 px-1.5 py-0.5 rounded">Edit</button>
+              </>
+            )}
+          </div>
+        </motion.div>
+
+        {/* How it works */}
+        <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.4, delay: 0.08 }}
+          className="bg-white/5 border border-white/10 rounded-2xl p-5 space-y-3">
+          <div className="flex items-center justify-center gap-2">
+            <Award className="w-4 h-4 text-yellow-400" />
+            <p className="text-sm font-medium text-white">How it Works</p>
+          </div>
+          <div className="space-y-2 text-xs text-neutral-400">
+            <p><span className="text-white font-medium">1. Request</span> — Pick a Feature near you. Only request it if you're ready to film it.</p>
+            <p><span className="text-white font-medium">2. Get Selected</span> — If the business picks you, you'll get a notification to start.</p>
+            <p><span className="text-white font-medium">3. Film and Post</span> — Shoot at the location, hit the requirements and post your Reel within 5 days.</p>
+            <p><span className="text-white font-medium">4. Submit</span> — Drop your Reel URL for review.</p>
+            <p><span className="text-white font-medium">5. Get Paid</span> — Once approved, your Cash Out button unlocks!</p>
+          </div>
+        </motion.div>
+
+        {/* Stats */}
+        <StatsBar stats={stats} instagram={creator?.instagram || ""} />
+
+        {/* Tabs */}
+        {(() => {
+          const selectedCount = Object.values(claims).filter(c => (c.status as any) === "admin_approved").length;
+          const pendingCashOut = Object.values(claims).filter(c => c.status === "approved").length;
+          const completedByMe = features.filter(f => f.status === "completed" && (f as any).winnerInstagram?.replace(/^@/,"").toLowerCase() === (creator?.instagram||"").replace(/^@/,"").toLowerCase()).length;
+          const completedCount = pendingCashOut + completedByMe;
+          const availableCount = features.filter(f => f.status === "available").length;
+          const activityCount = features.filter(f => f.status === "completed" && (f as any).winnerInstagram?.replace(/^@/,"").toLowerCase() !== (creator?.instagram||"").replace(/^@/,"").toLowerCase()).length + FAKE_FEATURES.length;
+
+          const featsUnread = availableCount > featsSeen && portalTab !== "features";
+          const compUnread  = pendingCashOut > 0 && portalTab !== "completed";
+          const actUnread   = activityCount > actSeen && portalTab !== "activity";
+
+          const handleTabClick = (tab: "features" | "completed" | "activity") => {
+            setPortalTab(tab);
+            if (tab === "features") {
+              setFeatsSeen(availableCount);
+              try { localStorage.setItem(featSeenKey, String(availableCount)); } catch {}
+            } else if (tab === "completed") {
+              setCompSeen(completedCount);
+              try { localStorage.setItem(compSeenKey, String(completedCount)); } catch {}
+            } else if (tab === "activity") {
+              setActSeen(activityCount);
+              try { localStorage.setItem(actSeenKey, String(activityCount)); } catch {}
+            }
+          };
+
+          return (
+            <div className="flex gap-0 border-b border-white/10">
+              {(["features", "completed", "activity"] as const).map(tab => (
+                <button key={tab} onClick={() => handleTabClick(tab)}
+                  className={`relative px-4 py-2.5 text-sm font-medium transition-all border-b-2 -mb-px flex items-center gap-2 ${portalTab === tab ? "border-white text-white" : "border-transparent text-neutral-500 hover:text-neutral-300"}`}>
+                  {tab === "features" ? "Features" : tab === "completed" ? "Completed" : "Activity"}
+                  {tab === "features" && availableCount > 0 && (
+                    <span className={`flex items-center justify-center w-5 h-5 rounded-full text-[10px] font-bold ${featsUnread ? "bg-green-400 text-neutral-900 animate-pulse" : "bg-white/15 text-neutral-300"}`}>
+                      {availableCount}
+                    </span>
+                  )}
+                  {tab === "completed" && completedCount > 0 && (
+                    <span className={`flex items-center justify-center w-5 h-5 rounded-full text-[10px] font-bold ${compUnread ? "bg-green-400 text-neutral-900 animate-pulse" : "bg-white/15 text-neutral-300"}`}>
+                      {completedCount}
+                    </span>
+                  )}
+                  {tab === "activity" && activityCount > 0 && (
+                    <span className={`flex items-center justify-center w-5 h-5 rounded-full text-[10px] font-bold ${actUnread ? "bg-green-400 text-neutral-900 animate-pulse" : "bg-white/15 text-neutral-300"}`}>
+                      {activityCount}
+                    </span>
+                  )}
+                </button>
+              ))}
+            </div>
+          );
+        })()}
+
+        {/* Features tab */}
+        {portalTab === "features" && (
+          <div className="w-full flex flex-col gap-4">
+            {(() => {
+              const hasAvailable = features.some(f => f.status === "available" && !claims[f.id]);
+              // Count claims that will actually render a card in the features tab
+              // Must match exactly the filter in the claims rendering section below
+              const hasVisibleClaim = Object.entries(claims).some(([fid, c]) => {
+                if (!["interested","admin_approved","claimed","submitted","denied"].includes(c.status as string)) return false;
+                const f = features.find(ft => ft.id === fid);
+                if (!f) return false;
+                if (f.status === "completed" && (c.status as string) !== "approved") return false;
+                return true;
+              });
+              return !hasAvailable && !hasVisibleClaim ? (
+                <div className="bg-white/5 border border-white/10 rounded-2xl px-6 py-8 text-center">
+                  <TrendingUp className="w-8 h-8 text-neutral-600 mx-auto mb-3" />
+                  <p className="text-neutral-400 text-sm">No live features right now. Check back soon.</p>
+                </div>
+              ) : null;
+            })()}
+            {/* Interested/in-progress features — always on top */}
+            {Object.entries(claims).filter(([, c]) => ["interested","admin_approved","claimed","submitted","denied"].includes(c.status as string)).map(([fid, claim]) => {
+              const f = features.find(ft => ft.id === fid);
+              if (!f) return null;
+              // Hide from Features tab if feature is globally claimed and this creator isn't the winner
+              if (f.status === "completed" && claim.status !== "approved") return null;
+              return (
+                <motion.div key={fid} className="w-full min-w-0" initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }}>
+                  <FeatureCard feature={f} claim={claim} token={token}
+                    onClaim={() => claimFeature(fid)} onUnclaim={() => unclaimFeature(fid)}
+                    onAccept={() => acceptFeature(fid)}
+                    onSubmit={(url) => submitReel(fid, url)} onPayout={(amt) => requestPayout(fid, amt)}
+                    fake={false} myInstagram={creator?.instagram || ""} />
+                </motion.div>
+              );
+            })}
+            {/* Unclaimed available features — below requested ones */}
+            {features.filter(f => f.status === "available" && !claims[f.id]).map((feature, i) => (
+              <motion.div key={feature.id} className="w-full min-w-0"
+                initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }}
+                transition={{ duration: 0.35, delay: i * 0.05 }}>
+                <FeatureCard feature={feature} claim={claims[feature.id]} token={token}
+                  onClaim={() => claimFeature(feature.id)} onUnclaim={() => unclaimFeature(feature.id)}
+                  onAccept={() => acceptFeature(feature.id)}
+                  onSubmit={(url) => submitReel(feature.id, url)} onPayout={(amt) => requestPayout(feature.id, amt)}
+                  fake={false} claimedBy={(feature as any).claimedBy} myInstagram={creator?.instagram || ""} />
+              </motion.div>
+            ))}
+          </div>
+        )}
+
+        {/* Completed tab — payout-ready + cashed-out features */}
+        {portalTab === "completed" && (() => {
+          const myInstagram = creator?.instagram || "";
+          const approvedClaims = Object.entries(claims).filter(([, c]) => c.status === "approved");
+          // Exclude features already shown via approvedClaims to avoid duplicates
+          const approvedFeatureIds = new Set(approvedClaims.map(([fid]) => fid));
+          const completedFeatures = features.filter(f =>
+            f.status === "completed" &&
+            !approvedFeatureIds.has(f.id) &&
+            (f as any).winnerInstagram?.replace(/^@/,"").toLowerCase() === myInstagram.replace(/^@/,"").toLowerCase()
+          );
+          const isEmpty = approvedClaims.length === 0 && completedFeatures.length === 0;
+          return (
+            <div className="w-full flex flex-col gap-4">
+              {isEmpty && (
+                <div className="bg-white/5 border border-white/10 rounded-2xl px-6 py-8 text-center">
+                  <CheckCircle className="w-8 h-8 text-neutral-600 mx-auto mb-3" />
+                  <p className="text-neutral-400 text-sm">No completed features yet.</p>
+                </div>
+              )}
+              {/* Payout-ready (approved) claims — Cash Out available */}
+              {approvedClaims.map(([fid, claim]) => {
+                const f = features.find(ft => ft.id === fid);
+                if (!f) return null;
+                return (
+                  <motion.div key={fid} className="w-full min-w-0" initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }}>
+                    <FeatureCard feature={f} claim={claim} token={token}
+                      onClaim={() => {}} onUnclaim={() => {}} onAccept={() => {}} onSubmit={() => {}} onPayout={(amt) => requestPayout(fid, amt)}
+                      fake={false} myInstagram={myInstagram} />
+                  </motion.div>
+                );
+              })}
+              {/* Cashed-out completed features */}
+              {completedFeatures.map((feature) => (
+                <motion.div key={feature.id} className="w-full min-w-0" initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }}>
+                  <FeatureCard feature={feature} claim={claims[feature.id]} token={token}
+                    onClaim={() => {}} onUnclaim={() => {}} onAccept={() => {}} onSubmit={() => {}} onPayout={(amt) => requestPayout(feature.id, amt)}
+                    fake={false} myInstagram={myInstagram} />
+                </motion.div>
+              ))}
+            </div>
+          );
+        })()}
+
+        {/* Activity tab — claimed by others + fake examples */}
+        {portalTab === "activity" && (
+          <div className="w-full flex flex-col gap-4">
+            <p className="text-xs text-neutral-500">Features recently claimed by other creators.</p>
+            {[
+              ...features.filter(f => f.status === "completed" && (f as any).winnerInstagram?.replace(/^@/,"").toLowerCase() !== (creator?.instagram || "").replace(/^@/,"").toLowerCase()).slice().reverse(),
+              ...FAKE_FEATURES,
+            ].map((feature, i) => (
+              <motion.div key={feature.id} className="w-full min-w-0" initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }}>
+                <FeatureCard feature={feature} claim={undefined} token={token}
+                  onClaim={() => {}} onUnclaim={() => {}} onAccept={() => {}} onSubmit={() => {}} onPayout={() => {}}
+                  fake={true} claimedBy={(feature as any).claimedBy || (feature as any).winnerInstagram || ""} myInstagram={creator?.instagram || ""} />
+              </motion.div>
+            ))}
+          </div>
+        )}
+      </main>
+
+      {/* Footer */}
+
+      <footer className="relative z-10 border-t border-white/10 px-6 py-8 mt-6">
+        <div className="max-w-2xl mx-auto flex flex-col sm:flex-row items-center justify-between gap-4">
+          <span className="text-sm font-semibold tracking-[0.2em] text-white">C O N T Y N T</span>
+          <p className="text-xs text-neutral-500 text-center">
+            Questions?{" "}
+            <a href="mailto:team@getcontynt.com" className="text-neutral-400 hover:text-white transition-colors underline underline-offset-2">
+              team@getcontynt.com
+            </a>
+          </p>
+          <p className="text-xs text-neutral-600">© {new Date().getFullYear()} Contynt</p>
+        </div>
+      </footer>
+    </div>
+  );
+}
