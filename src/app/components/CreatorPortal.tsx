@@ -6,12 +6,6 @@ import { projectId, publicAnonKey } from "/utils/supabase/info";
 const BASE = `https://${projectId}.supabase.co/functions/v1/make-server-f5961d0c`;
 const AUTH = { Authorization: `Bearer ${publicAnonKey}`, "Content-Type": "application/json" };
 const api = (path: string, opts?: RequestInit) => fetch(`${BASE}${path}`, { ...opts, headers: { ...AUTH, ...(opts?.headers ?? {}) } });
-const DB = `https://${projectId}.supabase.co/rest/v1`;
-const dbInsert = (table: string, data: object) => fetch(`${DB}/${table}`, {
-  method: "POST",
-  headers: { "Content-Type": "application/json", "Authorization": `Bearer ${publicAnonKey}`, "apikey": publicAnonKey, "Prefer": "return=minimal" },
-  body: JSON.stringify(data),
-});
 
 interface Feature {
   id: string;
@@ -402,11 +396,9 @@ function FeatureCard({ feature, claim, token, onClaim, onUnclaim, onAccept, onSu
                         className="w-full px-3 py-2.5 bg-white/10 border border-white/20 rounded-xl text-white text-sm placeholder:text-neutral-500 focus:outline-none focus:ring-2 focus:ring-white/20" />
                       <button onClick={async () => {
                         if (!paymentInfo.trim()) return;
-                        const REST = `https://${projectId}.supabase.co/rest/v1`;
-                        const RHEAD = { "Content-Type": "application/json", Authorization: `Bearer ${publicAnonKey}`, apikey: publicAnonKey };
-                        await fetch(`${REST}/submissions_f5961d0c?token=eq.${encodeURIComponent(token)}&feature_id=eq.${feature.id}`, {
-                          method: "PATCH", headers: RHEAD,
-                          body: JSON.stringify({ payment_method: paymentMethod, payment_info: paymentInfo }),
+                        await api("/creator-portal/cash-out", {
+                          method: "POST",
+                          body: JSON.stringify({ token, featureId: feature.id, paymentMethod, paymentInfo }),
                         }).catch(() => {});
                         setPayoutRequested(true);
                         onPayout(payoutAmount);
@@ -720,21 +712,8 @@ export function CreatorPortal({ token }: { token: string }) {
       const json = await res.json();
       if (!res.ok) { setError(json.error || "Invalid link."); setPhase("error"); return; }
       setCreator(json.creator);
-      const baseFeatures: Feature[] = json.features || [];
-      // Fetch all columns (no select filter) so admin_notes comes through if the column exists
-      if (baseFeatures.length > 0) {
-        const ids = baseFeatures.map((f: Feature) => `"${f.id}"`).join(",");
-        fetch(`${DB}/features_f5961d0c?id=in.(${ids})`, {
-          headers: { Authorization: `Bearer ${publicAnonKey}`, apikey: publicAnonKey },
-        }).then(r => r.json()).then((rows: any[]) => {
-          if (!Array.isArray(rows)) { setFeatures(baseFeatures); return; }
-          const notesMap: Record<string, string> = {};
-          rows.forEach(r => { if (r.admin_notes) notesMap[r.id] = r.admin_notes; });
-          setFeatures(baseFeatures.map(f => ({ ...f, adminNotes: notesMap[f.id] || "" })));
-        }).catch(() => { setFeatures(baseFeatures); });
-      } else {
-        setFeatures(baseFeatures);
-      }
+      // adminNotes now comes back from /creator-portal directly.
+      setFeatures(json.features || []);
 
       // If admin reset after last save, wipe localStorage so state clears
       if (json.resetAt) {
@@ -789,23 +768,15 @@ export function CreatorPortal({ token }: { token: string }) {
       saveLocalClaims(updated);
       return updated;
     });
-    // Also write directly to SQL so admin's approve PATCH can find the row
-    const REST = `https://${projectId}.supabase.co/rest/v1`;
-    const RHEAD = { "Content-Type": "application/json", Authorization: `Bearer ${publicAnonKey}`, apikey: publicAnonKey, Prefer: "resolution=merge-duplicates" };
-    fetch(`${REST}/creator_claims_f5961d0c`, {
-      method: "POST", headers: RHEAD,
-      body: JSON.stringify({ feature_id: featureId, creator_token: token, creator_instagram: creator?.instagram || "", status: "interested", claimed_at: new Date().toISOString() }),
-    }).catch(() => {});
+    // The server upserts the claim row itself, so no direct SQL write is needed.
     api("/creator-portal/claim", { method: "POST", body: JSON.stringify({ token, featureId }) }).catch(() => {});
   };
   const acceptFeature = async (featureId: string) => {
-    const REST = `https://${projectId}.supabase.co/rest/v1`;
-    const RHEAD = { "Content-Type": "application/json", Authorization: `Bearer ${publicAnonKey}`, apikey: publicAnonKey };
-    const expiresAt = new Date(Date.now() + 5 * 24 * 60 * 60 * 1000).toISOString();
-    await fetch(`${REST}/creator_claims_f5961d0c?creator_token=eq.${encodeURIComponent(token)}&feature_id=eq.${featureId}`, {
-      method: "PATCH", headers: RHEAD, body: JSON.stringify({ status: "claimed", expires_at: expiresAt, claimed_at: new Date().toISOString() }),
-    }).catch(() => {});
-    api("/creator-portal/accept-feature", { method: "POST", body: JSON.stringify({ token, featureId }) }).catch(() => {});
+    // The server sets the claim status and the expiry window; it returns the
+    // authoritative expiresAt so the UI does not compute a second, divergent one.
+    const res = await api("/creator-portal/accept-feature", { method: "POST", body: JSON.stringify({ token, featureId }) }).catch(() => null);
+    const expiresAt = (await res?.json().catch(() => null))?.expiresAt
+      ?? new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
     setClaims(prev => {
       const updated = { ...prev, [featureId]: { ...prev[featureId], status: "claimed" as const, expiresAt } };
       saveLocalClaims(updated);
@@ -831,47 +802,36 @@ export function CreatorPortal({ token }: { token: string }) {
       saveLocalClaims(updated);
       return updated;
     });
-    // Retry up to 3 times to ensure submission lands on server
     const instagram = creator?.instagram || "";
-    const submissionId = `sub_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
-    // Try Edge Function first; fall back to direct SQL only if it fails
     const body = JSON.stringify({ token, featureId, reelUrl, instagram });
-    api("/creator-portal/submit", { method: "POST", body }).catch(() => {
-      // Edge Function failed — write directly to SQL as fallback
-      dbInsert("submissions_f5961d0c", {
-        id: submissionId, feature_id: featureId, token, creator_id: "", creator_instagram: instagram, reel_url: reelUrl, status: "pending",
-      }).catch(() => {});
-    });
+    api("/creator-portal/submit", { method: "POST", body }).catch(() => {});
   };
-  // Poll SQL directly for approval — no Edge Function needed, works regardless of deployment
+  // One consolidated poll replaces the four separate PostgREST polls this
+  // component used to run. The server scopes claims and submissions to this
+  // creator's own token, so no other creator's data comes back over the wire.
   useEffect(() => {
     if (phase !== "ready") return;
-    const hasInterested = Object.values(claims).some(c => c.status === "interested" || (c.status as any) === "admin_approved");
-    if (!hasInterested) return;
-    const REST = `https://${projectId}.supabase.co/rest/v1`;
-    const RHEAD = { Authorization: `Bearer ${publicAnonKey}`, apikey: publicAnonKey };
     const check = async () => {
       try {
-        const res = await fetch(
-          `${REST}/creator_claims_f5961d0c?creator_token=eq.${encodeURIComponent(token)}&status=in.(approved,claimed)&approved_at=not.is.null&select=feature_id,status,approved_at,expires_at,acceptance_expires_at`,
-          { headers: RHEAD }
-        );
+        const res = await api(`/creator-portal/sync?t=${encodeURIComponent(token)}`);
         if (!res.ok) return;
-        const rows: any[] = await res.json();
-        if (!rows.length) return;
+        const data = await res.json();
+        const claimRows: any[] = data.claims || [];
+        const subRows: any[] = data.submissions || [];
+        const featRows: any[] = data.features || [];
+
+        // Claim approvals: admin approved → creator has 24h to accept.
         setClaims(prev => {
           let changed = false;
           const updated = { ...prev };
-          for (const row of rows) {
-            const fid = row.feature_id;
-            const serverStatus = row.status;
-            if (serverStatus === "approved" && prev[fid]?.status === "interested") {
-              // Admin approved — creator must accept within 24hrs
-              updated[fid] = { ...prev[fid], status: "admin_approved" as any, approvedAt: row.approved_at, acceptanceExpiresAt: row.acceptance_expires_at };
+          for (const row of claimRows) {
+            const fid = row.featureId;
+            if (!row.approvedAt) continue;
+            if (row.status === "approved" && prev[fid]?.status === "interested") {
+              updated[fid] = { ...prev[fid], status: "admin_approved" as any, approvedAt: row.approvedAt, acceptanceExpiresAt: row.acceptanceExpiresAt };
               changed = true;
-            } else if (serverStatus === "claimed" && (prev[fid]?.status === "interested" || prev[fid]?.status === "admin_approved" as any)) {
-              // Creator already accepted (detected on reload)
-              updated[fid] = { ...prev[fid], status: "claimed" as const, approvedAt: row.approved_at, expiresAt: row.expires_at };
+            } else if (row.status === "claimed" && (prev[fid]?.status === "interested" || prev[fid]?.status === ("admin_approved" as any))) {
+              updated[fid] = { ...prev[fid], status: "claimed" as const, approvedAt: row.approvedAt, expiresAt: row.expiresAt };
               changed = true;
               setStats(p => ({ ...p, activeClaims: p.activeClaims + 1 }));
             }
@@ -879,128 +839,53 @@ export function CreatorPortal({ token }: { token: string }) {
           if (changed) saveLocalClaims(updated);
           return changed ? updated : prev;
         });
-      } catch {}
-    };
-    check();
-    const interval = setInterval(check, 5000);
-    return () => clearInterval(interval);
-  }, [phase, token, Object.values(claims).some(c => c.status === "interested")]);
 
-  // Poll submissions for payout approval + denied state every 10s
-  useEffect(() => {
-    if (phase !== "ready") return;
-    const hasRelevant = Object.values(claims).some(c => c.status === "submitted" || c.status === "approved");
-    if (!hasRelevant) return;
-    const REST = `https://${projectId}.supabase.co/rest/v1`;
-    const RHEAD = { Authorization: `Bearer ${publicAnonKey}`, apikey: publicAnonKey };
-    const check = async () => {
-      try {
-        const res = await fetch(`${REST}/submissions_f5961d0c?token=eq.${encodeURIComponent(token)}&select=id,feature_id,reel_url,admin_payout_approved,stripe_link,payout_amount,denied,admin_report_note,cashed_out_at`, { headers: RHEAD });
-        if (!res.ok) return;
-        const rows: any[] = await res.json();
+        // Payout approval and denials on this creator's own submissions.
         setClaims(prev => {
           let changed = false;
           const updated = { ...prev };
-          for (const row of rows) {
-            const fid = row.feature_id;
+          for (const row of subRows) {
+            const fid = row.featureId;
             const existing = prev[fid];
             if (!existing) continue;
-            // Denied
             if (row.denied && existing.status !== "denied") {
-              updated[fid] = { ...existing, status: "denied", deniedNote: row.admin_report_note || "" };
+              updated[fid] = { ...existing, status: "denied", deniedNote: row.adminReportNote || "" };
               changed = true;
             }
-            // Payout approved — flip creator to Cash Out (or straight to cashed_out if already done)
-            if (row.admin_payout_approved && existing.status === "submitted" && !existing.stripeLink) {
-              const alreadyCashedOut = !!row.cashed_out_at;
-              updated[fid] = { ...existing, status: alreadyCashedOut ? "cashed_out" : "approved", stripeLink: row.stripe_link, payoutAmount: row.payout_amount };
+            if (row.adminPayoutApproved && existing.status === "submitted" && !existing.stripeLink) {
+              const alreadyCashedOut = !!row.cashedOutAt;
+              updated[fid] = { ...existing, status: alreadyCashedOut ? "cashed_out" : "approved", stripeLink: row.stripeLink, payoutAmount: row.payoutAmount };
               changed = true;
               if (!alreadyCashedOut) {
-                // Add to Earned stats only when showing Cash Out (not when already done)
-                const earnedAmt = parseInt((row.payout_amount || "0").replace(/[^0-9]/g, "") || "0");
+                const earnedAmt = parseInt((row.payoutAmount || "0").replace(/[^0-9]/g, "") || "0");
                 if (earnedAmt > 0) setStats(p => ({ ...p, totalPayout: p.totalPayout + earnedAmt }));
               }
-              // Mark feature as completed in SQL so other creators' portals see it as CLAIMED
-              const REST2 = `https://${projectId}.supabase.co/rest/v1`;
-              const RHEAD2 = { "Content-Type": "application/json", Authorization: `Bearer ${publicAnonKey}`, apikey: publicAnonKey };
-              fetch(`${REST2}/features_f5961d0c?id=eq.${fid}`, {
-                method: "PATCH", headers: RHEAD2,
-                body: JSON.stringify({ status: "completed", winner_instagram: creator?.instagram || "", completed_at: new Date().toISOString() }),
-              }).catch(() => {});
-              // Update local features state immediately so current creator's UI reflects it
-              setFeatures(prev => prev.map(f => f.id === fid ? { ...f, status: "completed" as const } : f));
+              setFeatures(fs => fs.map(f => f.id === fid ? { ...f, status: "completed" as const } : f));
             }
-            // Already cashed out (was "approved" in prev state) — flip claim to cashed_out
-            if (row.cashed_out_at && existing.status === "approved") {
+            if (row.cashedOutAt && existing.status === "approved") {
               updated[fid] = { ...existing, status: "cashed_out" };
               changed = true;
-              setFeatures(prev => prev.map(f => f.id === fid ? { ...f, status: "completed" as const } : f));
+              setFeatures(fs => fs.map(f => f.id === fid ? { ...f, status: "completed" as const } : f));
             }
           }
           if (changed) saveLocalClaims(updated);
           return changed ? updated : prev;
         });
-      } catch {}
-    };
-    check();
-    const interval = setInterval(check, 10000);
-    return () => clearInterval(interval);
-  }, [phase, token, Object.values(claims).map(c => c.status).join(",")]);
 
-  // Poll approved submissions to detect when cash out enabled → mark feature completed for all creators
-  useEffect(() => {
-    if (phase !== "ready") return;
-    const REST = `https://${projectId}.supabase.co/rest/v1`;
-    const RHEAD = { Authorization: `Bearer ${publicAnonKey}`, apikey: publicAnonKey };
-    const check = async () => {
-      try {
-        // submissions_f5961d0c has RLS disabled — anon key works
-        const res = await fetch(
-          `${REST}/submissions_f5961d0c?admin_payout_approved=eq.true&select=feature_id,creator_instagram`,
-          { headers: RHEAD }
-        );
-        if (!res.ok) return;
-        const rows: any[] = await res.json();
-        if (!rows.length) return;
+        // Feature status and admin notes.
         const myIg = creator?.instagram?.replace(/^@+/, "").toLowerCase() || "";
         setFeatures(prev => {
           const updated = prev.map(f => {
-            const match = rows.find(r => r.feature_id === f.id);
-            if (!match || f.status === "completed") return f;
-            // Don't mark as completed for the winner themselves — they need to see Cash Out first
-            const winnerIg = (match.creator_instagram || "").replace(/^@+/, "").toLowerCase();
-            if (myIg && winnerIg === myIg) return f;
-            return { ...f, status: "completed" as const, winnerInstagram: match.creator_instagram || "" };
-          });
-          return JSON.stringify(updated) !== JSON.stringify(prev) ? updated : prev;
-        });
-      } catch {}
-    };
-    check();
-    const interval = setInterval(check, 8000);
-    const onVisible = () => { if (document.visibilityState === "visible") check(); };
-    document.addEventListener("visibilitychange", onVisible);
-    return () => { clearInterval(interval); document.removeEventListener("visibilitychange", onVisible); };
-  }, [phase]);
-
-  // Old feature poll (keeping for initial load sync)
-  useEffect(() => {
-    if (phase !== "ready") return;
-    const REST = `https://${projectId}.supabase.co/rest/v1`;
-    const RHEAD = { Authorization: `Bearer ${publicAnonKey}`, apikey: publicAnonKey };
-    const check = async () => {
-      try {
-        const res = await fetch(`${REST}/features_f5961d0c`, { headers: RHEAD });
-        if (!res.ok) return;
-        const rows: any[] = await res.json();
-        setFeatures(prev => {
-          const updated = prev.map(f => {
-            const row = rows.find(r => r.id === f.id);
+            const row = featRows.find(r => r.id === f.id);
             if (!row) return f;
-            const statusChanged = row.status !== f.status;
-            const notesChanged = (row.admin_notes || "") !== (f.adminNotes || "");
-            if (statusChanged || notesChanged) {
-              return { ...f, status: row.status, winnerInstagram: row.winner_instagram || "", adminNotes: row.admin_notes || "" };
+            // The winner's own card must stay actionable until they cash out,
+            // so don't let the completed status flip it out from under them.
+            const winnerIg = (row.winnerInstagram || "").replace(/^@+/, "").toLowerCase();
+            const isWinner = !!myIg && winnerIg === myIg;
+            const nextStatus = isWinner && f.status !== "completed" ? f.status : row.status;
+            const notesChanged = (row.adminNotes || "") !== (f.adminNotes || "");
+            if (nextStatus !== f.status || notesChanged) {
+              return { ...f, status: nextStatus, winnerInstagram: row.winnerInstagram || "", adminNotes: row.adminNotes || "" };
             }
             return f;
           });
@@ -1008,36 +893,27 @@ export function CreatorPortal({ token }: { token: string }) {
         });
       } catch {}
     };
-    check(); // run immediately on mount
-    const interval = setInterval(check, 8000); // poll every 8s for faster cross-portal updates
-    // Also re-check when the tab becomes visible (user switches back to portal)
+    check();
+    const interval = setInterval(check, 6000);
     const onVisible = () => { if (document.visibilityState === "visible") check(); };
     document.addEventListener("visibilitychange", onVisible);
     return () => { clearInterval(interval); document.removeEventListener("visibilitychange", onVisible); };
-  }, [phase]);
-
-  // Removed: old polling that checked status=eq.approved (triggered Cash Out on admin approve — wrong)
-  // Cash Out is now only enabled by admin_payout_approved=true (set after business approves + admin enters Stripe link)
+  }, [phase, token]);
 
   const requestPayout = (featureId: string, passedAmount?: string) => {
     const claim = claims[featureId];
     const feature = features.find(f => f.id === featureId);
     const payoutAmount = passedAmount || claim?.payoutAmount || feature?.payoutRange || "";
-    const now = new Date().toISOString();
     // IMMEDIATELY update UI — before any async calls so nothing can interrupt
     setFeatures(prev => prev.map(f => f.id === featureId ? { ...f, status: "completed" as const, winnerInstagram: creator?.instagram || "" } : f));
     setClaims(prev => prev[featureId] ? { ...prev, [featureId]: { ...prev[featureId], status: "cashed_out" } } : prev);
     // totalPayout already added when Cash Out card appeared — just mark completed
     setStats((p) => ({ ...p, completed: p.completed + 1 }));
-    // Fire async updates in background
-    const REST = `https://${projectId}.supabase.co/rest/v1`;
-    const RHEAD = { "Content-Type": "application/json", Authorization: `Bearer ${publicAnonKey}`, apikey: publicAnonKey };
-    fetch(`${REST}/submissions_f5961d0c?token=eq.${encodeURIComponent(token)}&feature_id=eq.${featureId}`, {
-      method: "PATCH", headers: RHEAD, body: JSON.stringify({ cashed_out_at: now }),
-    }).catch(() => {});
-    fetch(`${REST}/features_f5961d0c?id=eq.${featureId}`, {
-      method: "PATCH", headers: RHEAD,
-      body: JSON.stringify({ status: "completed", winner_instagram: creator?.instagram || "", total_payout: payoutAmount, claimed_by: creator?.instagram || "", claimed_at: now }),
+    // Fire async updates in background. The server marks the submission cashed
+    // out and closes the feature in one call, scoped to this creator's token.
+    api("/creator-portal/complete-payout", {
+      method: "POST",
+      body: JSON.stringify({ token, featureId, payoutAmount, instagram: creator?.instagram || "" }),
     }).catch(() => {});
   };
 

@@ -532,7 +532,7 @@ app.get("/make-server-f5961d0c/creator-portal", async (c) => {
       db().from("creator_claims_f5961d0c").select("*").eq("creator_token", token).neq("status", "unclaimed"),
       db().from("submissions_f5961d0c").select("id, feature_id, status").eq("token", token),
     ]);
-    const features = (featRes.data ?? []).map((r: any) => ({ id: r.id, businessId: r.business_id, businessName: r.business_name, address: r.address, city: r.city, category: r.category, payoutRange: r.payout_range, status: r.status, approvedAt: r.approved_at, winnerInstagram: r.winner_instagram || "", businessInstagram: r.business_instagram || "" }));
+    const features = (featRes.data ?? []).map((r: any) => ({ id: r.id, businessId: r.business_id, businessName: r.business_name, address: r.address, city: r.city, category: r.category, payoutRange: r.payout_range, status: r.status, approvedAt: r.approved_at, winnerInstagram: r.winner_instagram || "", businessInstagram: r.business_instagram || "", adminNotes: r.admin_notes || "" }));
     // SQL only — no KV merge needed
     const claimsMap: Record<string, any> = {};
     for (const cl of (claimsRes.data ?? [])) {
@@ -636,6 +636,124 @@ app.post("/make-server-f5961d0c/creator-portal/view-feature", async (c) => {
     }
     return c.json({ ok: true });
   } catch { return c.json({ ok: true }); }
+});
+
+// ─── Creator portal: consolidated poll ───────────────────────────────────────
+// Replaces five separate PostgREST polls the client used to run. Everything is
+// filtered by the caller's own token server-side, so a creator can only ever
+// see their own claims and submissions — no other creator's token is exposed.
+app.get("/make-server-f5961d0c/creator-portal/sync", async (c) => {
+  try {
+    const token = c.req.query("t");
+    if (!token) return c.json({ error: "Token required" }, 400);
+    const creatorData = await kv.get(`ctoken_${token}`).catch(() => null);
+    if (!creatorData) return c.json({ error: "Invalid or expired link" }, 401);
+
+    const [claimsRes, subsRes, featRes] = await Promise.all([
+      db().from("creator_claims_f5961d0c")
+        .select("feature_id, status, approved_at, expires_at, acceptance_expires_at")
+        .eq("creator_token", token),
+      db().from("submissions_f5961d0c")
+        .select("id, feature_id, reel_url, admin_payout_approved, stripe_link, payout_amount, denied, admin_report_note, cashed_out_at")
+        .eq("token", token),
+      db().from("features_f5961d0c")
+        .select("id, business_id, business_name, address, city, category, payout_range, status, approved_at, winner_instagram, business_instagram, admin_notes"),
+    ]);
+
+    return c.json({
+      claims: (claimsRes.data ?? []).map((r: any) => ({
+        featureId: r.feature_id, status: r.status,
+        approvedAt: r.approved_at || null, expiresAt: r.expires_at || null,
+        acceptanceExpiresAt: r.acceptance_expires_at || null,
+      })),
+      submissions: (subsRes.data ?? []).map((r: any) => ({
+        id: r.id, featureId: r.feature_id, reelUrl: r.reel_url || "",
+        adminPayoutApproved: !!r.admin_payout_approved, stripeLink: r.stripe_link || "",
+        payoutAmount: r.payout_amount || "", denied: !!r.denied,
+        adminReportNote: r.admin_report_note || "", cashedOutAt: r.cashed_out_at || null,
+      })),
+      features: (featRes.data ?? []).map((r: any) => ({
+        id: r.id, businessId: r.business_id, businessName: r.business_name,
+        address: r.address, city: r.city, category: r.category,
+        payoutRange: r.payout_range, status: r.status, approvedAt: r.approved_at,
+        winnerInstagram: r.winner_instagram || "", businessInstagram: r.business_instagram || "",
+        adminNotes: r.admin_notes || "",
+      })),
+    });
+  } catch (e: any) { return c.json({ error: "Failed to sync", details: e.message }, 500); }
+});
+
+// ─── Creator portal: cash out (record payment details) ───────────────────────
+app.post("/make-server-f5961d0c/creator-portal/cash-out", async (c) => {
+  try {
+    const { token, featureId, paymentMethod, paymentInfo } = await c.req.json();
+    if (!token || !featureId || !paymentMethod || !paymentInfo) {
+      return c.json({ error: "token, featureId, paymentMethod, and paymentInfo required" }, 400);
+    }
+    const creatorData = await kv.get(`ctoken_${token}`).catch(() => null);
+    if (!creatorData) return c.json({ error: "Invalid token" }, 401);
+    // Scoped by token so a creator can only cash out their own submission.
+    const { error } = await db().from("submissions_f5961d0c")
+      .update({ payment_method: paymentMethod, payment_info: paymentInfo, cashed_out_at: new Date().toISOString() })
+      .eq("token", token).eq("feature_id", featureId);
+    if (error) throw error;
+    return c.json({ success: true });
+  } catch (e: any) { return c.json({ error: e.message }, 500); }
+});
+
+// ─── Creator portal: finish cashing out ──────────────────────────────────────
+app.post("/make-server-f5961d0c/creator-portal/complete-payout", async (c) => {
+  try {
+    const { token, featureId, payoutAmount, instagram } = await c.req.json();
+    if (!token || !featureId) return c.json({ error: "token and featureId required" }, 400);
+    const creatorData = await kv.get(`ctoken_${token}`).catch(() => null);
+    if (!creatorData) return c.json({ error: "Invalid token" }, 401);
+    const ig = creatorData.instagram || instagram || "";
+    const now = new Date().toISOString();
+    await db().from("submissions_f5961d0c")
+      .update({ cashed_out_at: now })
+      .eq("token", token).eq("feature_id", featureId);
+    await db().from("features_f5961d0c").update({
+      status: "completed", winner_instagram: ig,
+      total_payout: payoutAmount || "", claimed_by: ig, claimed_at: now,
+    }).eq("id", featureId);
+    return c.json({ success: true });
+  } catch (e: any) { return c.json({ error: e.message }, 500); }
+});
+
+// ─── Admin: approve payout ───────────────────────────────────────────────────
+// The client used to PATCH submissions and features directly for this. Doing it
+// server-side also lets us close out the feature in the same call, so the
+// creator portal no longer needs write access to mark features completed.
+app.post("/make-server-f5961d0c/admin/approve-payout", async (c) => {
+  try {
+    const { submissionId, payoutAmount } = await c.req.json();
+    if (!submissionId) return c.json({ error: "submissionId required" }, 400);
+    const { data: sub, error: subErr } = await db().from("submissions_f5961d0c").select("*").eq("id", submissionId).single();
+    if (subErr || !sub) return c.json({ error: "Submission not found" }, 404);
+    await db().from("submissions_f5961d0c")
+      .update({ payout_amount: payoutAmount || "", admin_payout_approved: true })
+      .eq("id", submissionId);
+    await db().from("features_f5961d0c").update({
+      status: "completed",
+      winner_instagram: sub.creator_instagram || "",
+      completed_at: new Date().toISOString(),
+    }).eq("id", sub.feature_id);
+    return c.json({ success: true });
+  } catch (e: any) { return c.json({ error: e.message }, 500); }
+});
+
+// ─── Admin: deny/report a submission ─────────────────────────────────────────
+app.post("/make-server-f5961d0c/admin/deny-submission", async (c) => {
+  try {
+    const { submissionId, note } = await c.req.json();
+    if (!submissionId) return c.json({ error: "submissionId required" }, 400);
+    const { error } = await db().from("submissions_f5961d0c")
+      .update({ admin_report_note: note || "", denied: true })
+      .eq("id", submissionId);
+    if (error) throw error;
+    return c.json({ success: true });
+  } catch (e: any) { return c.json({ error: e.message }, 500); }
 });
 
 // ─── Creator portal: update email ────────────────────────────────────────────
