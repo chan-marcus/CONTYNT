@@ -1,0 +1,7 @@
+project_id = "kskqipduwovvedcuhwre"
+
+# Figma Make named the source file index.tsx, but the CLI looks for index.ts —
+# so the entrypoint has to be spelled out. The directory name must match the
+# deployed function slug (make-server-f5961d0c), not the folder Make shipped.
+[functions.make-server-f5961d0c]
+entrypoint = "./functions/make-server-f5961d0c/index.tsx"
