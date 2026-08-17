@@ -188,6 +188,31 @@ api GET "/creator-portal/sync?t=$CTOK" 200 && {
 api POST /creator-portal/request-payout 400 "{\"token\":\"$CTOK\",\"method\":\"Venmo\",\"handle\":\"@${TAG}\"}" \
   && ok "second request blocked (no balance left)" || bad "double cash-out allowed" "$HTTP"
 
+head_ "admin sees balances"
+api GET /signups 200 && {
+  python3 - "$BODY" "${TAG}_creator" <<'PY' && ok "creator row carries balances" || bad "balances missing from /signups"
+import sys, json
+d = json.loads(sys.argv[1]); tag = sys.argv[2]
+row = next((s for s in d.get("signups", []) if s.get("instagram") == tag), None)
+sys.exit(0 if row and row.get("totalEarned") == 25 and row.get("pendingEarnings") == 25 else 1)
+PY
+} || bad "/signups" "$HTTP"
+api GET /admin/payout-requests 200 && ok "payout request queue readable" || bad "payout-requests" "$HTTP"
+
+head_ "mark as paid"
+api POST /admin/mark-paid 200 "{\"creatorToken\":\"$CTOK\"}" && ok "mark as paid" || bad "mark-paid" "$HTTP $BODY"
+assert_sql "balance settles to zero" \
+  "select coalesce(sum(case when status='paid' then amount else 0 end),0) - coalesce((select sum(amount) from public.creator_earnings_f5961d0c where creator_token='$CTOK'),0) from public.creator_payout_requests_f5961d0c where creator_token='$CTOK';" "0.00"
+assert_sql "request marked paid, not deleted" \
+  "select status from public.creator_payout_requests_f5961d0c where creator_token='$CTOK';" "paid"
+assert_sql "credit history preserved" \
+  "select count(*) from public.creator_earnings_f5961d0c where creator_token='$CTOK';" "1"
+
+api GET "/creator-portal/sync?t=$CTOK" 200 && {
+  [ "$(echo "$BODY" | jget balance totalEarned)" = "0" ] \
+    && ok "creator sees \$0 after payout" || bad "post-payout balance" "got $(echo "$BODY" | jget balance totalEarned)"
+} || bad "sync post-payout" "$HTTP"
+
 head_ "database state (the assertions that matter)"
 assert_sql "feature is completed"      "select status from public.features_f5961d0c where id='$FEAT';" "completed"
 assert_sql "winner recorded"           "select winner_instagram from public.features_f5961d0c where id='$FEAT';" "${TAG}_creator"

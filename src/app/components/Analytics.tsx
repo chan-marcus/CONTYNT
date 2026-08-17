@@ -15,7 +15,7 @@ const apiFetch = (path: string, opts?: RequestInit) =>
 
 type Tab = "creators" | "businesses" | "reels" | "pageviews";
 
-interface Signup { id: string; instagram: string; email: string; city: string; createdAt: string; }
+interface Signup { id: string; instagram: string; email: string; city: string; createdAt: string; totalEarned?: number; pendingEarnings?: number; availableEarnings?: number; }
 interface BusinessSignup { id: string; businessName: string; instagram: string; email: string; city: string; address: string; preferredContact: string; createdAt: string; }
 interface Submission { id: string; featureId: string; creatorInstagram: string; reelUrl: string; status: string; submittedAt: string; reportNote?: string; metrics?: any; businessFeedback?: { reaction: "approve" | "report"; note?: string; submittedAt: string; businessName?: string }; }
 interface PageView { visitorId: string; referrer: string; timestamp: string; country?: string; city?: string; }
@@ -28,9 +28,13 @@ function igHandle(raw: string) {
   return raw ? `@${raw.replace(/^@+/, "")}` : "—";
 }
 
-function CreatorRow({ signup, token, onGenerate, onCopy, generating, copied, claims, features }: {
+function CreatorRow({ signup, token, onGenerate, onCopy, generating, copied, claims, features, onMarkPaid, markingPaid }: {
   signup: Signup; token?: string; onGenerate: () => void; onCopy: () => void; generating: boolean; copied: boolean; claims: Claim[]; features: Feature[];
+  onMarkPaid: () => void; markingPaid: boolean;
 }) {
+  const money = (n?: number) => `$${(n ?? 0).toFixed(2).replace(/\.00$/, "")}`;
+  const totalEarned = signup.totalEarned ?? 0;
+  const owesMoney = totalEarned > 0;
   const [expanded, setExpanded] = useState(false);
   const portalUrl = token ? `${window.location.origin}?creator=${token}` : null;
   const activeClaims = claims.filter(c => c.status === "claimed");
@@ -90,6 +94,25 @@ function CreatorRow({ signup, token, onGenerate, onCopy, generating, copied, cla
             </>
           )}
         </div>
+      </div>
+
+      {/* Earnings — total is what a Mark as Paid would settle */}
+      <div className="px-4 pb-3 flex flex-wrap items-center gap-x-5 gap-y-1.5 border-t border-white/10 pt-2.5">
+        <span className="text-xs text-neutral-500">
+          Total earned <span className={`font-semibold ${owesMoney ? "text-green-400" : "text-neutral-400"}`}>{money(totalEarned)}</span>
+        </span>
+        <span className="text-xs text-neutral-500">
+          Pending <span className="font-semibold text-yellow-400">{money(signup.pendingEarnings)}</span>
+        </span>
+        <span className="text-xs text-neutral-500">
+          Available <span className="font-semibold text-neutral-300">{money(signup.availableEarnings)}</span>
+        </span>
+        {owesMoney && (
+          <button onClick={onMarkPaid} disabled={markingPaid}
+            className="ml-auto px-3 py-1.5 text-xs bg-green-600 text-white rounded-lg hover:bg-green-500 transition-all disabled:opacity-50 whitespace-nowrap">
+            {markingPaid ? "Marking…" : `Mark as Paid (${money(totalEarned)})`}
+          </button>
+        )}
       </div>
 
       {/* Feature Activity — active claims only */}
@@ -677,6 +700,7 @@ export function Analytics({ adminToken }: { adminToken?: string } = {}) {
   const [copiedAdmin, setCopiedAdmin] = useState(false);
   const [loading, setLoading] = useState(true);
   const [planClicksMap, setPlanClicksMap] = useState<Record<string, number>>({});
+  const [markingPaid, setMarkingPaid] = useState<string | null>(null);
 
   // The password is checked server-side against ADMIN_SECRET; on success the
   // server hands back a session token that authorizes every later admin call.
@@ -816,6 +840,17 @@ export function Analytics({ adminToken }: { adminToken?: string } = {}) {
 
   useEffect(() => { if (isAuthenticated) fetchAll(); }, [isAuthenticated, fetchAll]);
 
+
+  const markCreatorPaid = async (id: string, token?: string, label?: string) => {
+    if (!window.confirm(`Mark ${label || "this creator"} as paid? This settles their balance to $0 and records the payout.`)) return;
+    setMarkingPaid(id);
+    await apiFetch("/admin/mark-paid", {
+      method: "POST",
+      body: JSON.stringify({ creatorId: id, creatorToken: token }),
+    }).catch(() => {});
+    setMarkingPaid(null);
+    await fetchAll();
+  };
 
   const generateCreatorLink = async (id: string) => {
     setGeneratingCreatorLink(id);
@@ -1022,7 +1057,9 @@ export function Analytics({ adminToken }: { adminToken?: string } = {}) {
                             generating={generatingCreatorLink === s.id}
                             copied={copiedCreator === s.id}
                             claims={creatorClaims}
-                            features={features} />
+                            features={features}
+                            onMarkPaid={() => markCreatorPaid(s.id, token, igHandle(s.instagram))}
+                            markingPaid={markingPaid === s.id} />
                         );
                       })}
                     </div>

@@ -56,6 +56,33 @@ async function creatorBalance(token: string) {
   };
 }
 
+// Same derivation as creatorBalance, but for every creator at once — the admin
+// list needs all of them and per-creator queries would be N round trips.
+async function allCreatorBalances(): Promise<Record<string, any>> {
+  const supabase = db();
+  const [earnRes, payRes] = await Promise.all([
+    supabase.from("creator_earnings_f5961d0c").select("creator_token, amount"),
+    supabase.from("creator_payout_requests_f5961d0c").select("creator_token, amount, status"),
+  ]);
+  const acc: Record<string, { credits: number; paid: number; requested: number }> = {};
+  const slot = (t: string) => (acc[t] ??= { credits: 0, paid: 0, requested: 0 });
+  for (const r of (earnRes.data ?? [])) slot(r.creator_token).credits += parseAmount(r.amount);
+  for (const r of (payRes.data ?? [])) {
+    if (r.status === "paid") slot(r.creator_token).paid += parseAmount(r.amount);
+    else if (r.status === "requested") slot(r.creator_token).requested += parseAmount(r.amount);
+  }
+  const round = (n: number) => Math.round(n * 100) / 100;
+  const out: Record<string, any> = {};
+  for (const [t, v] of Object.entries(acc)) {
+    out[t] = {
+      totalEarned: round(Math.max(0, v.credits - v.paid)),
+      pendingEarnings: round(v.requested),
+      availableEarnings: round(Math.max(0, v.credits - v.paid - v.requested)),
+    };
+  }
+  return out;
+}
+
 function uid(prefix = "") {
   return `${prefix}${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
 }
@@ -190,7 +217,18 @@ app.get("/make-server-f5961d0c/signups", async (c) => {
   try {
     const { data, error } = await db().from("creator_signups_f5961d0c").select("id, instagram, email, city, created_at").order("created_at", { ascending: false });
     if (error) throw error;
-    return c.json({ signups: (data ?? []).map((r: any) => ({ id: r.id, instagram: r.instagram, email: r.email, city: r.city, createdAt: r.created_at })), total: data?.length ?? 0 });
+    // Balances live against the portal token, so map creator id -> token first.
+    const [balances, refs] = await Promise.all([allCreatorBalances(), kv.getByPrefix("ctokenref_")]);
+    const tokenFor: Record<string, string> = {};
+    for (const ref of refs) if (ref?.creatorId && ref?.token) tokenFor[ref.creatorId] = ref.token;
+    const zero = { totalEarned: 0, pendingEarnings: 0, availableEarnings: 0 };
+    return c.json({
+      signups: (data ?? []).map((r: any) => ({
+        id: r.id, instagram: r.instagram, email: r.email, city: r.city, createdAt: r.created_at,
+        ...(balances[tokenFor[r.id]] ?? zero),
+      })),
+      total: data?.length ?? 0,
+    });
   } catch (e: any) { return c.json({ error: "Failed to fetch signups", details: e.message }, 500); }
 });
 
@@ -823,6 +861,61 @@ app.post("/make-server-f5961d0c/creator-portal/complete-payout", async (c) => {
       total_payout: payoutAmount || "", claimed_by: ig, claimed_at: now,
     }).eq("id", featureId));
     return c.json({ success: true });
+  } catch (e: any) { return c.json({ error: e.message }, 500); }
+});
+
+// ─── Admin: mark a creator as paid ───────────────────────────────────────────
+// Zeroes the creator's balance by settling what they are owed. Nothing is
+// deleted — the credits stay in the ledger and the settlement is recorded as a
+// paid payout row, so history survives the reset.
+app.post("/make-server-f5961d0c/admin/mark-paid", async (c) => {
+  try {
+    const { creatorId, creatorToken, method, handle } = await c.req.json();
+    let token = creatorToken || "";
+    if (!token && creatorId) token = (await kv.get(`ctokenref_${creatorId}`).catch(() => null))?.token || "";
+    if (!token) return c.json({ error: "creatorToken or a creatorId with an issued link is required" }, 400);
+
+    const before = await creatorBalance(token);
+    if (before.totalEarned <= 0) return c.json({ success: true, paid: 0, balance: before });
+
+    const now = new Date().toISOString();
+    // Settle anything the creator already requested.
+    await must("mark-paid: settle requests", db().from("creator_payout_requests_f5961d0c")
+      .update({ status: "paid", paid_at: now })
+      .eq("creator_token", token).eq("status", "requested"));
+
+    // Anything credited but never requested still needs a record to net off.
+    if (before.availableEarnings > 0) {
+      const creatorData = await kv.get(`ctoken_${token}`).catch(() => null);
+      await must("mark-paid: record direct payout", db().from("creator_payout_requests_f5961d0c").insert({
+        creator_token: token,
+        creator_id: creatorData?.creatorId || null,
+        creator_instagram: creatorData?.instagram || "",
+        amount: before.availableEarnings,
+        method: method || "Manual",
+        handle: handle || "paid outside CONTYNT",
+        status: "paid",
+        paid_at: now,
+      }));
+    }
+    return c.json({ success: true, paid: before.totalEarned, balance: await creatorBalance(token) });
+  } catch (e: any) { return c.json({ error: e.message }, 500); }
+});
+
+// ─── Admin: outstanding cash-out requests ────────────────────────────────────
+app.get("/make-server-f5961d0c/admin/payout-requests", async (c) => {
+  try {
+    const { data, error } = await db().from("creator_payout_requests_f5961d0c")
+      .select("*").order("requested_at", { ascending: false });
+    if (error) throw error;
+    return c.json({
+      requests: (data ?? []).map((r: any) => ({
+        id: r.id, creatorToken: r.creator_token, creatorId: r.creator_id,
+        creatorInstagram: r.creator_instagram || "", amount: parseAmount(r.amount),
+        method: r.method, handle: r.handle, status: r.status,
+        requestedAt: r.requested_at, paidAt: r.paid_at,
+      })),
+    });
   } catch (e: any) { return c.json({ error: e.message }, 500); }
 });
 
