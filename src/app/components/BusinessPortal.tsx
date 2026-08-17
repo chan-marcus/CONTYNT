@@ -55,14 +55,19 @@ interface BizData {
 
 // Founder pricing. originalPrice is held at a consistent 40% discount — the
 // same ratio the previous prices used — so the strike-through stays honest.
+// Founder pricing. Each tier adds a new *kind* of value rather than just more
+// volume — choice and priority at Growth, then content rights and strategy at
+// Pro — and perCreator makes the falling unit price explicit, since that is the
+// clearest reason to move up a tier.
 const PLANS = [
   {
     icon: "🌱", name: "Starter", price: "$69", originalPrice: "$115", tag: null,
-    tagline: "One local creator features your spot every month.",
+    perCreator: "$69 per creator",
+    tagline: "Prove it works. One local creator, one reel, real neighbourhood reach.",
     features: [
-      "1 Creator/month, filmed and posted by a local creator",
+      "1 Creator/month, filmed and posted for you",
       "Collab post — lives on your profile like organic content",
-      "Location tagged for nearby customers",
+      "Location + business tagged for nearby customers",
       "Performance dashboard",
     ],
     cta: "Get Your First Reel",
@@ -70,24 +75,29 @@ const PLANS = [
   },
   {
     icon: "⭐", name: "Growth", price: "$119", originalPrice: "$199", tag: "Most Popular",
-    tagline: "Two creators. Two audiences. New faces finding you every month.",
+    perCreator: "$60 per creator — save $19/mo",
+    tagline: "Two creators, two separate audiences. Twice the people discovering you.",
     features: [
-      "2 Different Creators/month, each with their own audience",
+      "2 Different Creators/month, each with their own following",
+      "Pick your creator from matched profiles",
+      "Priority matching — your features get filled first",
+      "Compare creator performance side by side",
       "Everything in Starter",
-      "Reach foodies AND lifestyle crowds",
-      "Side-by-side creator performance tracking",
     ],
     cta: "Get Started",
     ctaStyle: "bg-white text-neutral-900 hover:bg-neutral-100",
   },
   {
     icon: "🔥", name: "Pro", price: "$199", originalPrice: "$329", tag: null,
-    tagline: "An always-on creator presence. Your business shows up every week.",
+    perCreator: "$50 per creator — save $77/mo",
+    tagline: "A new creator every week. Your business stays in the feed all month.",
     features: [
-      "4 Different Creators/month from a rotating roster",
+      "4 Different Creators/month — weekly presence",
+      "First pick of top-rated creators",
+      "Full usage rights — reuse every reel in your ads and channels",
+      "Monthly trend report across all your creators",
+      "Direct line to the CONTYNT team",
       "Everything in Starter + Growth",
-      "First pick of top-scoring creators",
-      "Monthly trend dashboard across all your creators",
     ],
     cta: "Get Started",
     ctaStyle: "bg-neutral-800 text-white hover:bg-neutral-700 border border-white/10",
@@ -99,6 +109,7 @@ const ONE_OFF = {
   name: "One-Time Feature",
   price: "$89",
   description: "Receive one professionally created Reel from a local CONTYNT creator.",
+  note: "No subscription. Starter gets you the same reel every month for $69.",
   cta: "Buy One Feature",
 };
 
@@ -381,6 +392,8 @@ function PlanCard({ plan, featured }: { plan: typeof PLANS[0]; featured: boolean
           <span className="text-neutral-600 text-sm line-through">{plan.originalPrice}</span>
           <span className="text-xs bg-green-500/20 text-green-400 border border-green-500/30 px-1.5 py-0.5 rounded font-medium">40% off</span>
         </div>
+        {/* Unit price — the upgrade argument, stated plainly. */}
+        <p className="text-xs text-neutral-500 mt-1.5">{plan.perCreator}</p>
         <p className="text-sm text-neutral-400 mt-2">{plan.tagline}</p>
       </div>
       <ul className="space-y-2 flex-1">
@@ -835,7 +848,7 @@ export function BusinessPortal({ token }: { token: string }) {
             className="w-full flex items-center justify-center gap-4 bg-gradient-to-r from-blue-600/20 via-purple-600/20 to-blue-600/20 border border-blue-500/30 rounded-2xl px-6 py-5 hover:from-blue-600/30 hover:via-purple-600/30 hover:to-blue-600/30 hover:border-blue-500/50 transition-all text-center relative group">
             <div className="flex-1 text-center">
               <h2 className="text-lg font-bold text-white">Consistent Reels. Simple pricing.</h2>
-              <p className="text-sm text-blue-300/80 mt-0.5">Founding partner plans start at $59/month.</p>
+              <p className="text-sm text-blue-300/80 mt-0.5">Founding partner plans start at {PLANS[0].price}/month.</p>
             </div>
             <ChevronDown className={`w-5 h-5 text-blue-400 shrink-0 transition-transform duration-300 ${plansExpanded ? "rotate-180" : ""}`} />
           </button>
@@ -861,6 +874,9 @@ export function BusinessPortal({ token }: { token: string }) {
                     <span className="text-sm font-semibold text-white">{ONE_OFF.price}</span>
                   </div>
                   <p className="text-xs text-neutral-400 mt-1 leading-relaxed">{ONE_OFF.description}</p>
+                  {/* One-off costs more than a month of Starter — say so, so the
+                      cheaper subscription reads as the obvious choice. */}
+                  <p className="text-[11px] text-neutral-500 mt-1.5">{ONE_OFF.note}</p>
                 </div>
                 <button
                   className="shrink-0 px-4 py-2.5 text-sm font-medium rounded-xl bg-neutral-800 text-white border border-white/10 hover:bg-neutral-700 transition-all">
