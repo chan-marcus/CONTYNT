@@ -1,0 +1,126 @@
+import { useEffect, useState } from "react";
+import { motion } from "motion/react";
+import { CheckCircle, ArrowRight } from "lucide-react";
+import { projectId, publicAnonKey } from "/utils/supabase/info";
+
+const BASE = `https://${projectId}.supabase.co/functions/v1/make-server-f5961d0c`;
+const AUTH = { Authorization: `Bearer ${publicAnonKey}`, "Content-Type": "application/json" };
+const api = (path: string, opts?: RequestInit) =>
+  fetch(`${BASE}${path}`, { ...opts, headers: { ...AUTH, ...(opts?.headers ?? {}) } });
+
+/**
+ * Landing page for a business that scanned an Ambassador's QR code or opened
+ * their referral link. The owner is typically standing in their own shop with
+ * the creator, so this stays to two fields and never leaves them stuck: an
+ * unrecognised code still lets them sign up, just without attribution.
+ */
+export function ReferralLanding({ code }: { code: string }) {
+  const [creator, setCreator] = useState<string | null>(null);
+  const [checked, setChecked] = useState(false);
+  const [name, setName] = useState("");
+  const [email, setEmail] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    api(`/referral/${encodeURIComponent(code)}`)
+      .then(r => r.json())
+      .then(d => { if (d?.valid) setCreator(d.creatorInstagram || ""); })
+      .catch(() => {})
+      .finally(() => setChecked(true));
+  }, [code]);
+
+  const submit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!name.trim() || !email.trim()) return;
+    setBusy(true); setError("");
+    try {
+      const res = await api(`/referral/${encodeURIComponent(code)}/business`, {
+        method: "POST",
+        body: JSON.stringify({ businessName: name.trim(), businessEmail: email.trim() }),
+      });
+      const d = await res.json().catch(() => null);
+      if (!res.ok || !d?.portalToken) {
+        setError(d?.error || "Something went wrong. Please try again.");
+        setBusy(false);
+        return;
+      }
+      // Straight into the portal — the owner should not have to wait for a link.
+      window.location.href = `${window.location.origin}?biz=${d.portalToken}`;
+    } catch {
+      setError("Could not reach the server. Please try again.");
+      setBusy(false);
+    }
+  };
+
+  const handle = (creator || "").replace(/^@+/, "");
+
+  return (
+    <div className="min-h-screen bg-neutral-950 text-white flex flex-col">
+      <header className="border-b border-white/10 px-6 py-4">
+        <div className="max-w-lg mx-auto flex items-center justify-between">
+          <span className="text-sm font-semibold tracking-[0.2em]">C O N T Y N T</span>
+          <span className="text-xs text-neutral-500">For Businesses</span>
+        </div>
+      </header>
+
+      <main className="flex-1 w-full max-w-lg mx-auto px-5 py-10 space-y-7">
+        <motion.div initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.4 }} className="space-y-3 text-center">
+          <h1 className="text-2xl font-bold leading-snug">Welcome to CONTYNT</h1>
+          {checked && handle && (
+            <div className="inline-flex items-center gap-2 bg-purple-500/15 border border-purple-400/30 px-3 py-1.5 rounded-full">
+              <span className="w-6 h-6 rounded-full bg-purple-500/30 border border-purple-400/40 flex items-center justify-center text-[10px] font-bold text-purple-100">
+                {handle.slice(0, 2).toUpperCase()}
+              </span>
+              <span className="text-xs text-purple-100">Referred by @{handle}</span>
+            </div>
+          )}
+          <p className="text-base text-neutral-300 leading-relaxed pt-1">
+            Grow your business with authentic local creators.
+          </p>
+          <p className="text-sm text-neutral-500 leading-relaxed">
+            Local creators visit your business, film a short Reel, and post it to their own
+            audience — tagged to your profile and your location.
+          </p>
+        </motion.div>
+
+        <div className="space-y-2.5">
+          {["A vetted local creator features your business",
+            "Posted as a collab, so it lives on your profile too",
+            "Tagged to your location so nearby customers find you"].map(b => (
+            <div key={b} className="flex items-start gap-2.5 text-sm text-neutral-300">
+              <CheckCircle className="w-4 h-4 text-green-400 shrink-0 mt-0.5" />{b}
+            </div>
+          ))}
+        </div>
+
+        <form onSubmit={submit} className="space-y-3 bg-white/5 border border-white/10 rounded-2xl p-5">
+          <div className="space-y-1.5">
+            <label className="text-xs font-medium text-neutral-300">Business name</label>
+            <input value={name} onChange={e => setName(e.target.value)} required
+              placeholder="e.g. Duboce Park Cafe"
+              className="w-full px-3 py-2.5 bg-white/10 border border-white/20 rounded-xl text-white text-sm placeholder:text-neutral-500 focus:outline-none focus:ring-2 focus:ring-white/20" />
+          </div>
+          <div className="space-y-1.5">
+            <label className="text-xs font-medium text-neutral-300">Business email</label>
+            <input value={email} onChange={e => setEmail(e.target.value)} required type="email"
+              placeholder="owner@yourbusiness.com"
+              className="w-full px-3 py-2.5 bg-white/10 border border-white/20 rounded-xl text-white text-sm placeholder:text-neutral-500 focus:outline-none focus:ring-2 focus:ring-white/20" />
+          </div>
+          {error && <p className="text-xs text-red-400">{error}</p>}
+          <button type="submit" disabled={busy || !name.trim() || !email.trim()}
+            className="w-full py-3 bg-white text-neutral-900 text-sm font-semibold rounded-xl hover:bg-neutral-100 transition-all disabled:opacity-40 flex items-center justify-center gap-2">
+            {busy ? "Setting up…" : <>Continue <ArrowRight className="w-4 h-4" /></>}
+          </button>
+          <p className="text-[11px] text-neutral-600 text-center">
+            No payment required to get started.
+          </p>
+        </form>
+      </main>
+
+      <footer className="border-t border-white/10 px-6 py-5 text-center">
+        <p className="text-xs text-neutral-600">© {new Date().getFullYear()} Contynt</p>
+      </footer>
+    </div>
+  );
+}

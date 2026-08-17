@@ -13,6 +13,7 @@ import { Header } from "./components/Header";
 import { Analytics } from "./components/Analytics";
 import { Info } from "./components/Info";
 import { CreatorPortal } from "./components/CreatorPortal";
+import { ReferralLanding } from "./components/ReferralLanding";
 import { CreatorSubmissionPending } from "./components/CreatorSubmissionPending";
 import { BusinessPortal } from "./components/BusinessPortal";
 import faviconUrl from "../imports/favicon_(1)-1.png";
@@ -38,6 +39,8 @@ export default function App() {
   const bizToken = params.get("biz");
   const adminToken = params.get("admin");
   const view = params.get("view");
+  const referralCode = params.get("ref");
+  if (referralCode) return <ReferralLanding code={referralCode} />;
   if (adminToken) return <Analytics adminToken={adminToken} />;
   if (creatorToken) return <CreatorPortal token={creatorToken} />;
   if (bizToken) return <BusinessPortal token={bizToken} />;

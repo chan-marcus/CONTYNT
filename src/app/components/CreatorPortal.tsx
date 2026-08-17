@@ -2,7 +2,7 @@ import { useEffect, useState, useRef } from "react";
 import { motion, AnimatePresence } from "motion/react";
 import { MapPin, DollarSign, CheckCircle, Lock, X, ExternalLink, AlertCircle, Users, Zap, TrendingUp, Award } from "lucide-react";
 import { projectId, publicAnonKey } from "/utils/supabase/info";
-import { AmbassadorPanel, AmbassadorUpsell, AmbassadorEmptyState, useAmbassador } from "./Ambassador";
+import { AmbassadorPanel, AmbassadorUpsell, AmbassadorEmptyState, AmbassadorInstructions, useAmbassador } from "./Ambassador";
 
 const BASE = `https://${projectId}.supabase.co/functions/v1/make-server-f5961d0c`;
 const AUTH = { Authorization: `Bearer ${publicAnonKey}`, "Content-Type": "application/json" };
@@ -337,12 +337,12 @@ function ViewerCount({ featureId }: { featureId: string }) {
 }
 
 // ─── Feature card ─────────────────────────────────────────────────────────────
-function FeatureCard({ feature, claim, token, onClaim, onUnclaim, onAccept, onSubmit, onPayout, fake, claimedBy, myInstagram, needsAttention, onSeen, showAmbassadorUpsell, onLearnAmbassador }: {
+function FeatureCard({ feature, claim, token, onClaim, onUnclaim, onAccept, onSubmit, onPayout, fake, claimedBy, myInstagram, needsAttention, onSeen, showAmbassadorUpsell, onLearnAmbassador, isAmbassador }: {
   feature: Feature; claim?: Claim; token: string; myInstagram?: string;
   onClaim: () => void; onUnclaim: () => void; onAccept: () => void;
   onSubmit: (url: string) => void; onPayout: (amount?: string) => void; fake?: boolean; claimedBy?: string;
   needsAttention?: boolean; onSeen?: () => void;
-  showAmbassadorUpsell?: boolean; onLearnAmbassador?: () => void;
+  showAmbassadorUpsell?: boolean; onLearnAmbassador?: () => void; isAmbassador?: boolean;
 }) {
   const [reelUrl, setReelUrl] = useState(claim?.reelUrl || "");
   const [urlError, setUrlError] = useState("");
@@ -711,6 +711,7 @@ function FeatureCard({ feature, claim, token, onClaim, onUnclaim, onAccept, onSu
               <p>• Posts must remain live for at least <span className="text-white">72 hours</span> to be approved.</p>
             </div>
             {showAmbassadorUpsell && <AmbassadorUpsell onLearnMore={onLearnAmbassador!} />}
+            {isAmbassador && <AmbassadorInstructions />}
             {expiresAt && (
               <div className="bg-white/5 border border-white/10 rounded-xl px-4 py-2.5 space-y-1 text-center">
                 <p className="text-[10px] text-neutral-500 uppercase tracking-widest">Time Remaining</p>
@@ -1298,6 +1299,7 @@ export function CreatorPortal({ token }: { token: string }) {
                 <motion.div key={fid} className="w-full min-w-0" initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }}>
                   <FeatureCard feature={f} claim={claim} token={token} needsAttention={featureNeedsAttention(f.id)} onSeen={() => markActionSeen(f.id)}
                     showAmbassadorUpsell={!ambassador.state?.enabled && claim.status === "claimed"}
+                    isAmbassador={!!ambassador.state?.enabled && claim.status === "claimed"}
                     onLearnAmbassador={() => setPortalTab("ambassador")}
                     onClaim={() => claimFeature(fid)} onUnclaim={() => unclaimFeature(fid)}
                     onAccept={() => acceptFeature(fid)}
@@ -1311,7 +1313,7 @@ export function CreatorPortal({ token }: { token: string }) {
               <motion.div key={feature.id} className="w-full min-w-0"
                 initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }}
                 transition={{ duration: 0.35, delay: i * 0.05 }}>
-                <FeatureCard feature={feature} claim={claims[feature.id]} token={token} needsAttention={featureNeedsAttention(feature.id)} onSeen={() => markActionSeen(feature.id)} showAmbassadorUpsell={!ambassador.state?.enabled && claims[feature.id]?.status === "claimed"} onLearnAmbassador={() => setPortalTab("ambassador")}
+                <FeatureCard feature={feature} claim={claims[feature.id]} token={token} needsAttention={featureNeedsAttention(feature.id)} onSeen={() => markActionSeen(feature.id)} showAmbassadorUpsell={!ambassador.state?.enabled && claims[feature.id]?.status === "claimed"} isAmbassador={!!ambassador.state?.enabled && claims[feature.id]?.status === "claimed"} onLearnAmbassador={() => setPortalTab("ambassador")}
                   onClaim={() => claimFeature(feature.id)} onUnclaim={() => unclaimFeature(feature.id)}
                   onAccept={() => acceptFeature(feature.id)}
                   onSubmit={(url) => submitReel(feature.id, url)} onPayout={(amt) => requestPayout(feature.id, amt)}
@@ -1361,7 +1363,7 @@ export function CreatorPortal({ token }: { token: string }) {
               {/* Cashed-out completed features */}
               {completedFeatures.map((feature) => (
                 <motion.div key={feature.id} className="w-full min-w-0" initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }}>
-                  <FeatureCard feature={feature} claim={claims[feature.id]} token={token} needsAttention={featureNeedsAttention(feature.id)} onSeen={() => markActionSeen(feature.id)} showAmbassadorUpsell={!ambassador.state?.enabled && claims[feature.id]?.status === "claimed"} onLearnAmbassador={() => setPortalTab("ambassador")}
+                  <FeatureCard feature={feature} claim={claims[feature.id]} token={token} needsAttention={featureNeedsAttention(feature.id)} onSeen={() => markActionSeen(feature.id)} showAmbassadorUpsell={!ambassador.state?.enabled && claims[feature.id]?.status === "claimed"} isAmbassador={!!ambassador.state?.enabled && claims[feature.id]?.status === "claimed"} onLearnAmbassador={() => setPortalTab("ambassador")}
                     onClaim={() => {}} onUnclaim={() => {}} onAccept={() => {}} onSubmit={() => {}} onPayout={(amt) => requestPayout(feature.id, amt)}
                     fake={false} myInstagram={myInstagram} />
                 </motion.div>
