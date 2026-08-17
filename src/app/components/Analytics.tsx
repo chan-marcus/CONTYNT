@@ -3,7 +3,6 @@ import { CheckCircle, Copy, RefreshCw, ExternalLink, ThumbsUp, ThumbsDown, Link,
 import { projectId, publicAnonKey } from "/utils/supabase/info";
 
 const BASE = `https://${projectId}.supabase.co/functions/v1/make-server-f5961d0c`;
-const REST = `https://${projectId}.supabase.co/rest/v1`;
 const AUTH = { Authorization: `Bearer ${publicAnonKey}` };
 // Admin session token from /admin/login (or an admin private link). Read per
 // call so it picks up a fresh login without a reload.
@@ -12,10 +11,6 @@ const apiFetch = (path: string, opts?: RequestInit) =>
   fetch(`${BASE}${path}`, {
     ...opts,
     headers: { ...AUTH, "Content-Type": "application/json", "x-admin-token": adminSession(), ...(opts?.headers ?? {}) },
-  });
-const restFetch = (table: string, params = "") =>
-  fetch(`${REST}/${table}?${params}&order=submitted_at.desc`, {
-    headers: { Authorization: `Bearer ${publicAnonKey}`, apikey: publicAnonKey },
   });
 
 type Tab = "creators" | "businesses" | "reels" | "pageviews";
@@ -222,7 +217,6 @@ function FeatureClaimRow({ claim, featureId, onApprove, onReset }: any) {
 
 const TIER_LIMITS: Record<string, number> = { Starter: 1, Growth: 2, Pro: 4, Scale: 8 };
 const TIERS = ["Starter", "Growth", "Pro", "Scale"];
-const RHEAD_GLOBAL = { "Content-Type": "application/json", Authorization: `Bearer ${publicAnonKey}`, apikey: publicAnonKey };
 
 function AdminNoteInput({ value, onChange }: { value: string; onChange: (v: string) => void }) {
   return (
@@ -244,8 +238,8 @@ function InlineFeatureEdit({ featureId, category, payoutRange, onSaved }: { feat
 
   const save = async () => {
     setSaving(true);
-    await fetch(`${REST}/features_f5961d0c?id=eq.${featureId}`, {
-      method: "PATCH", headers: RHEAD_GLOBAL, body: JSON.stringify({ category: cat, payout_range: pay }),
+    await apiFetch("/admin/update-feature", {
+      method: "POST", body: JSON.stringify({ featureId, category: cat, payoutRange: pay }),
     }).catch(() => {});
     onSaved(cat, pay);
     setSaving(false);
@@ -286,8 +280,6 @@ function BusinessCard({ signup, bizToken, approved, onApprove, onGenerateLink, o
   const [pendingNotes, setPendingNotes] = useState<Record<string, string>>({});
   const [tier, setTierLocal] = useState(signup.subscriptionTier || "");
   const [offeringSaving, setOfferingSaving] = useState(false);
-  const RHEAD3 = { "Content-Type": "application/json", Authorization: `Bearer ${publicAnonKey}`, apikey: publicAnonKey };
-  const REST3 = `https://${projectId}.supabase.co/rest/v1`;
 
   const tierLimit = TIER_LIMITS[tier] || 0;
   // Count offered/pending/available/completed features this month as "used"
@@ -295,25 +287,22 @@ function BusinessCard({ signup, bizToken, approved, onApprove, onGenerateLink, o
 
   const offerFeature = async (isTrial = false) => {
     setOfferingSaving(true);
-    const newId = `feat_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
     const now = new Date().toISOString();
-    await fetch(`${REST3}/features_f5961d0c`, {
-      method: "POST", headers: { ...RHEAD3, Prefer: "return=minimal" },
-      body: JSON.stringify({
-        id: newId, business_id: signup.id,
-        business_name: signup.businessName || "", address: signup.address || "", city: signup.city || "",
-        status: "offered", category: "", payout_range: "", is_trial: isTrial,
-        offered_at: now, request_notes: "", submitted_by_business: false,
-      }),
-    }).catch(() => {});
-    onFeatureOffered?.({ id: newId, businessId: signup.id, businessName: signup.businessName || "", category: "", payoutRange: "", status: "offered", isTrial, offeredAt: now });
+    // The server builds the row from the business record and returns the id.
+    const res = await apiFetch("/admin/offer-feature", {
+      method: "POST", body: JSON.stringify({ businessId: signup.id, isTrial }),
+    }).catch(() => null);
+    const newId = (await res?.json().catch(() => null))?.featureId || "";
+    if (newId) {
+      onFeatureOffered?.({ id: newId, businessId: signup.id, businessName: signup.businessName || "", category: "", payoutRange: "", status: "offered", isTrial, offeredAt: now });
+    }
     setOfferingSaving(false);
   };
 
   const saveTier = async (newTier: string) => {
     setTierLocal(newTier);
-    await fetch(`${REST3}/business_signups_f5961d0c?id=eq.${signup.id}`, {
-      method: "PATCH", headers: RHEAD3, body: JSON.stringify({ subscription_tier: newTier }),
+    await apiFetch("/admin/set-tier", {
+      method: "POST", body: JSON.stringify({ businessId: signup.id, tier: newTier }),
     }).catch(() => {});
   };
 
@@ -479,8 +468,6 @@ function BusinessCard({ signup, bizToken, approved, onApprove, onGenerateLink, o
   );
 }
 
-const REST2 = `https://${projectId}.supabase.co/rest/v1`;
-const RHEAD2 = { "Content-Type": "application/json", Authorization: `Bearer ${publicAnonKey}`, apikey: publicAnonKey };
 
 function SubmissionCard({ sub, onApprove, approving, businessName, featurePayout, onPayoutSaved }: any) {
   const [thumbnail, setThumbnail] = useState<string | null>(sub.metrics?.thumbnail || null);
@@ -745,18 +732,23 @@ export function Analytics({ adminToken }: { adminToken?: string } = {}) {
         apiFetch("/analytics/stats"),
         apiFetch("/signups"),
         apiFetch("/business-signups"),
-        restFetch("submissions_f5961d0c"),
+        apiFetch("/admin/submissions"),
         apiFetch("/creator-links"),
         apiFetch("/business-links"),
-        // Fetch features directly from REST so pending business submissions always show
-        fetch(`${REST}/features_f5961d0c`, {
-          headers: { Authorization: `Bearer ${publicAnonKey}`, apikey: publicAnonKey },
-        }).then(async r => { const d = await r.json(); return Array.isArray(d) ? d : []; }).catch(() => []),
-        fetch(`https://${projectId}.supabase.co/functions/v1/make-server-f5961d0c/admin/claims`, { headers: AUTH }),
+        apiFetch("/admin/features"),
+        apiFetch("/admin/claims"),
       ]);
       if (statsRes.ok) { const d = await statsRes.json(); setStats(d); setPageViews(d.recentPageviews || []); }
       if (signupsRes.ok) { const d = await signupsRes.json(); setSignups(d.signups || []); }
-      if (bizRes.ok) { const d = await bizRes.json(); setBusinessSignups(d.signups || []); }
+      if (bizRes.ok) {
+        const d = await bizRes.json();
+        const rows = d.signups || [];
+        setBusinessSignups(rows);
+        // planClicks now comes back with the signup rather than a second query.
+        const map: Record<string, number> = {};
+        for (const r of rows) if (r.planClicks) map[r.id] = r.planClicks;
+        setPlanClicksMap(map);
+      }
       if (subsRes.ok) {
         const rows = await subsRes.json();
         const mapSub = (r: any) => ({
@@ -792,22 +784,24 @@ export function Analytics({ adminToken }: { adminToken?: string } = {}) {
       }
       if (linksRes.ok) { const d = await linksRes.json(); setCreatorLinks(d.links || {}); }
       if (bizLinksRes.ok) { const d = await bizLinksRes.json(); setBizLinks(d.links || {}); }
-      // Map REST snake_case features to camelCase Feature interface
-      if (Array.isArray(featuresRows) && featuresRows.length >= 0) {
-        const baseFeats: Feature[] = featuresRows.map((f: any) => ({
+      // The server returns camelCase for the fields it renames and snake_case
+      // for the ones the admin UI reads verbatim, so accept either.
+      if (featuresRows.ok) {
+        const featData = await featuresRows.json();
+        const baseFeats: Feature[] = (featData.features || []).map((f: any) => ({
           id: f.id,
-          businessId: f.business_id || "",
-          businessName: f.business_name || "",
+          businessId: f.businessId || f.business_id || "",
+          businessName: f.businessName || f.business_name || "",
           category: f.category || "",
-          payoutRange: f.payout_range || "",
+          payoutRange: f.payoutRange || f.payout_range || "",
           status: f.status || "",
           total_payout: f.total_payout || "",
           claimed_by: f.claimed_by || "",
           winner_instagram: f.winner_instagram || "",
           claimed_at: f.claimed_at || "",
-          isTrial: f.is_trial || false,
-          requestNotes: f.request_notes || "",
-          submittedByBusiness: f.submitted_by_business || false,
+          isTrial: f.isTrial ?? f.is_trial ?? false,
+          requestNotes: f.requestNotes || f.request_notes || "",
+          submittedByBusiness: f.submittedByBusiness ?? f.submitted_by_business ?? false,
           admin_notes: f.admin_notes || "",
           address: f.address || "",
           city: f.city || "",
@@ -817,15 +811,6 @@ export function Analytics({ adminToken }: { adminToken?: string } = {}) {
         setApprovedBusinesses(approvedIds);
       }
       if (claimsRes.ok) { const d = await claimsRes.json(); setClaims(d.claims || []); }
-      // Fetch plan_clicks per business
-      fetch(`${REST}/business_signups_f5961d0c?select=id,plan_clicks`, {
-        headers: { Authorization: `Bearer ${publicAnonKey}`, apikey: publicAnonKey },
-      }).then(r => r.ok ? r.json() : []).then((rows: any[]) => {
-        if (!Array.isArray(rows)) return;
-        const map: Record<string, number> = {};
-        rows.forEach(r => { if (r.plan_clicks) map[r.id] = r.plan_clicks; });
-        setPlanClicksMap(map);
-      }).catch(() => {});
     } finally { setLoading(false); }
   }, []);
 
@@ -849,30 +834,27 @@ export function Analytics({ adminToken }: { adminToken?: string } = {}) {
   };
   const approveBusiness = async (id: string, overrideCategory?: string, overridePayout?: string, existingFeatureId?: string, adminNotes?: string) => {
     setApprovingBiz(id);
-    const RHEAD4 = { "Content-Type": "application/json", Authorization: `Bearer ${publicAnonKey}`, apikey: publicAnonKey };
     if (existingFeatureId) {
       const cat = overrideCategory || "";
       const pay = overridePayout || "";
-      // Core publish — always succeeds regardless of whether admin_notes column exists
-      await fetch(`https://${projectId}.supabase.co/rest/v1/features_f5961d0c?id=eq.${existingFeatureId}`, {
-        method: "PATCH", headers: RHEAD4, body: JSON.stringify({ status: "available", approved_at: new Date().toISOString(), ...(cat && { category: cat }), ...(pay && { payout_range: pay }) }),
+      await apiFetch("/admin/publish-feature", {
+        method: "POST",
+        body: JSON.stringify({ featureId: existingFeatureId, category: cat, payoutRange: pay, adminNotes }),
       }).catch(() => {});
-      // Save admin notes separately so a missing column doesn't block the publish
-      if (adminNotes) {
-        fetch(`https://${projectId}.supabase.co/rest/v1/features_f5961d0c?id=eq.${existingFeatureId}`, {
-          method: "PATCH", headers: RHEAD4, body: JSON.stringify({ admin_notes: adminNotes }),
-        }).catch(() => {});
-      }
       setFeatures(prev => prev.map(f => f.id === existingFeatureId ? { ...f, status: "available", ...(cat && { category: cat }), ...(pay && { payoutRange: pay }) } : f));
     } else {
-      const newId = `feat_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
       const biz = businessSignups.find(b => b.id === id);
-      await fetch(`https://${projectId}.supabase.co/rest/v1/features_f5961d0c`, {
-        method: "POST", headers: { ...RHEAD4, Prefer: "return=minimal" },
-        body: JSON.stringify({ id: newId, business_id: id, business_name: biz?.businessName || "", address: (biz as any)?.address || "", city: biz?.city || "", status: "available", category: "", payout_range: "", offered_at: new Date().toISOString(), approved_at: new Date().toISOString() }),
-      }).catch(() => {});
-      setApprovedBusinesses((p) => new Set([...p, id]));
-      setFeatures((prev) => [...prev, { id: newId, businessId: id, businessName: biz?.businessName || "", category: "", payoutRange: "", status: "available" }]);
+      // The server reads the business record itself, so the feature's
+      // denormalised name/address/city can't drift from the source row.
+      const res = await apiFetch("/admin/approve-business", {
+        method: "POST",
+        body: JSON.stringify({ businessId: id, category: overrideCategory || "Business", payoutRange: overridePayout || " " }),
+      }).catch(() => null);
+      const newId = (await res?.json().catch(() => null))?.featureId || "";
+      if (newId) {
+        setApprovedBusinesses((p) => new Set([...p, id]));
+        setFeatures((prev) => [...prev, { id: newId, businessId: id, businessName: biz?.businessName || "", category: overrideCategory || "", payoutRange: overridePayout || "", status: "available" }]);
+      }
     }
     setApprovingBiz(null);
   };
@@ -887,32 +869,19 @@ export function Analytics({ adminToken }: { adminToken?: string } = {}) {
     navigator.clipboard.writeText(`${window.location.origin}?biz=${token}`);
     setCopiedBiz(id); setTimeout(() => setCopiedBiz(null), 2000);
   };
-  const RHEAD = { "Content-Type": "application/json", Authorization: `Bearer ${publicAnonKey}`, apikey: publicAnonKey };
+  // These three already had server endpoints doing the same writes; the direct
+  // SQL calls alongside them were redundant.
   const approveCreatorClaim = async (featureId: string, creatorToken: string) => {
-    const now = new Date();
-    const approvedAt = now.toISOString();
-    const expiresAt = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000).toISOString();
-    // Write directly to SQL — no Edge Function needed
-    await fetch(`${REST}/creator_claims_f5961d0c?feature_id=eq.${featureId}&creator_token=eq.${encodeURIComponent(creatorToken)}`, {
-      method: "PATCH", headers: RHEAD,
-      body: JSON.stringify({ status: "approved", approved_at: approvedAt, acceptance_expires_at: new Date(now.getTime() + 24 * 60 * 60 * 1000).toISOString() }),
-    });
-    // Also try Edge Function for KV update
-    apiFetch("/admin/approve-creator-claim", { method: "POST", body: JSON.stringify({ featureId, creatorToken }) }).catch(() => {});
+    await apiFetch("/admin/approve-creator-claim", { method: "POST", body: JSON.stringify({ featureId, creatorToken }) }).catch(() => {});
     await fetchAll();
   };
   const removeFeature = async (featureId: string) => {
     if (!window.confirm("Remove this feature?")) return;
-    await fetch(`${REST}/features_f5961d0c?id=eq.${featureId}`, {
-      method: "DELETE", headers: RHEAD,
-    }).catch(() => {});
+    await apiFetch("/admin/remove-feature", { method: "POST", body: JSON.stringify({ featureId }) }).catch(() => {});
     setFeatures((prev: Feature[]) => prev.filter((f) => f.id !== featureId));
   };
   const resetCreatorClaim = async (featureId: string, creatorToken: string) => {
-    await fetch(`${REST}/creator_claims_f5961d0c?feature_id=eq.${featureId}&creator_token=eq.${encodeURIComponent(creatorToken)}`, {
-      method: "DELETE", headers: RHEAD,
-    });
-    apiFetch("/admin/reset-creator-claim", { method: "POST", body: JSON.stringify({ featureId, creatorToken }) }).catch(() => {});
+    await apiFetch("/admin/reset-creator-claim", { method: "POST", body: JSON.stringify({ featureId, creatorToken }) }).catch(() => {});
     await fetchAll();
   };
   const approveReel = async (id: string) => {
@@ -1102,7 +1071,7 @@ export function Analytics({ adminToken }: { adminToken?: string } = {}) {
           <div>
             <div className="flex items-center justify-between mb-4">
               <h2 className="text-lg font-semibold text-white">Submitted Reels</h2>
-              <button onClick={async () => { const res = await restFetch("submissions_f5961d0c"); if (res.ok) { const rows = await res.json(); const all = (Array.isArray(rows) ? rows : []).map((r: any) => ({ id: r.id, featureId: r.feature_id, creatorInstagram: r.creator_instagram || "", reelUrl: r.reel_url || "", status: r.status, submittedAt: r.submitted_at, approvedAt: r.approved_at, metrics: r.metrics || {}, businessFeedback: r.business_feedback || null, reportNote: r.report_note || "", business_approved: r.business_approved ?? false, admin_payout_approved: r.admin_payout_approved ?? false, payout_amount: r.payout_amount || "", stripe_link: r.stripe_link || "", cashed_out_at: r.cashed_out_at || null, denied: r.denied ?? false, admin_report_note: r.admin_report_note || "" })); const seen = new Map(); for (const s of all) { const k = `${s.reelUrl}|${s.featureId}`; if (!seen.has(k) || new Date(s.submittedAt) > new Date(seen.get(k).submittedAt)) seen.set(k, s); } setSubmissions(Array.from(seen.values())); } }}
+              <button onClick={() => fetchAll()}
                 className="flex items-center gap-1.5 px-3 py-1.5 text-xs bg-white/10 text-neutral-300 rounded-lg hover:bg-white/15 transition-all">
                 <RefreshCw className="w-3 h-3" />Refresh
               </button>

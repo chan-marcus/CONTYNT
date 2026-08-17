@@ -151,9 +151,9 @@ app.get("/make-server-f5961d0c/signups", async (c) => {
 // ─── Get business signups ─────────────────────────────────────────────────────
 app.get("/make-server-f5961d0c/business-signups", async (c) => {
   try {
-    const { data, error } = await db().from("business_signups_f5961d0c").select("id, business_name, instagram, email, city, address, preferred_contact, created_at, subscription_tier, feature_status").order("created_at", { ascending: false });
+    const { data, error } = await db().from("business_signups_f5961d0c").select("id, business_name, instagram, email, city, address, preferred_contact, created_at, subscription_tier, feature_status, plan_clicks").order("created_at", { ascending: false });
     if (error) throw error;
-    return c.json({ signups: (data ?? []).map((r: any) => ({ id: r.id, businessName: r.business_name, instagram: r.instagram, email: r.email, city: r.city, address: r.address, preferredContact: r.preferred_contact, createdAt: r.created_at, subscriptionTier: r.subscription_tier || null, featureStatus: r.feature_status || null })), total: data?.length ?? 0 });
+    return c.json({ signups: (data ?? []).map((r: any) => ({ id: r.id, businessName: r.business_name, instagram: r.instagram, email: r.email, city: r.city, address: r.address, preferredContact: r.preferred_contact, createdAt: r.created_at, subscriptionTier: r.subscription_tier || null, featureStatus: r.feature_status || null, planClicks: r.plan_clicks || 0 })), total: data?.length ?? 0 });
   } catch (e: any) { return c.json({ error: "Failed to fetch business signups", details: e.message }, 500); }
 });
 
@@ -310,12 +310,64 @@ app.post("/make-server-f5961d0c/admin/approve-business", async (c) => {
   } catch (e: any) { return c.json({ error: "Failed to approve business", details: e.message }, 500); }
 });
 
+// ─── Admin: edit a feature's category / payout / notes ───────────────────────
+app.post("/make-server-f5961d0c/admin/update-feature", async (c) => {
+  try {
+    const { featureId, category, payoutRange, adminNotes } = await c.req.json();
+    if (!featureId) return c.json({ error: "featureId required" }, 400);
+    const patch: Record<string, any> = {};
+    if (category !== undefined) patch.category = category;
+    if (payoutRange !== undefined) patch.payout_range = payoutRange;
+    if (adminNotes !== undefined) patch.admin_notes = adminNotes;
+    if (!Object.keys(patch).length) return c.json({ success: true });
+    const { error } = await db().from("features_f5961d0c").update(patch).eq("id", featureId);
+    if (error) throw error;
+    return c.json({ success: true });
+  } catch (e: any) { return c.json({ error: e.message }, 500); }
+});
+
+// ─── Admin: publish an existing feature (make it claimable) ──────────────────
+app.post("/make-server-f5961d0c/admin/publish-feature", async (c) => {
+  try {
+    const { featureId, category, payoutRange, adminNotes } = await c.req.json();
+    if (!featureId) return c.json({ error: "featureId required" }, 400);
+    const patch: Record<string, any> = { status: "available", approved_at: new Date().toISOString() };
+    if (category) patch.category = category;
+    if (payoutRange) patch.payout_range = payoutRange;
+    if (adminNotes) patch.admin_notes = adminNotes;
+    const { error } = await db().from("features_f5961d0c").update(patch).eq("id", featureId);
+    if (error) throw error;
+    return c.json({ success: true });
+  } catch (e: any) { return c.json({ error: e.message }, 500); }
+});
+
+// ─── Admin: remove a feature ─────────────────────────────────────────────────
+app.post("/make-server-f5961d0c/admin/remove-feature", async (c) => {
+  try {
+    const { featureId } = await c.req.json();
+    if (!featureId) return c.json({ error: "featureId required" }, 400);
+    const { error } = await db().from("features_f5961d0c").delete().eq("id", featureId);
+    if (error) throw error;
+    return c.json({ success: true });
+  } catch (e: any) { return c.json({ error: e.message }, 500); }
+});
+
 // ─── Admin: get all features ──────────────────────────────────────────────────
 app.get("/make-server-f5961d0c/admin/features", async (c) => {
   try {
     const { data, error } = await db().from("features_f5961d0c").select("*").order("offered_at", { ascending: false });
     if (error) throw error;
-    const features = (data ?? []).map((r: any) => ({ id: r.id, businessId: r.business_id, businessName: r.business_name, address: r.address, city: r.city, category: r.category, payoutRange: r.payout_range, status: r.status, approvedAt: r.approved_at, isTrial: r.is_trial || false, requestNotes: r.request_notes || "", submittedByBusiness: r.submitted_by_business || false }));
+    const features = (data ?? []).map((r: any) => ({
+      id: r.id, businessId: r.business_id || "", businessName: r.business_name || "",
+      address: r.address || "", city: r.city || "",
+      category: r.category || "", payoutRange: r.payout_range || "",
+      status: r.status || "", approvedAt: r.approved_at,
+      isTrial: r.is_trial || false, requestNotes: r.request_notes || "",
+      submittedByBusiness: r.submitted_by_business || false,
+      admin_notes: r.admin_notes || "", total_payout: r.total_payout || "",
+      claimed_by: r.claimed_by || "", winner_instagram: r.winner_instagram || "",
+      claimed_at: r.claimed_at || "",
+    }));
     return c.json({ features });
   } catch (e: any) { return c.json({ error: "Failed to fetch features", details: e.message }, 500); }
 });
@@ -337,41 +389,32 @@ app.get("/make-server-f5961d0c/admin/claims", async (c) => {
 // ─── Admin: get all submissions ───────────────────────────────────────────────
 app.get("/make-server-f5961d0c/admin/submissions", async (c) => {
   try {
-    // Read from KV (always works) — merge with SQL for approved/metrics data
-    const kvSubs = await kv.getByPrefix("submission_");
-    const { data: sqlSubs } = await db().from("submissions_f5961d0c").select("*").order("submitted_at", { ascending: false });
-
-    // Build a map from SQL by id for merging
-    const sqlMap: Record<string, any> = {};
-    for (const r of (sqlSubs ?? [])) sqlMap[r.id] = r;
-
-    // Merge: KV is source of truth, SQL fills in metrics/feedback/approval
-    const merged = kvSubs.map((kv: any) => {
-      const sql = sqlMap[kv.id];
-      return {
-        id: kv.id,
-        featureId: kv.featureId,
-        token: kv.token,
-        creatorInstagram: kv.creatorInstagram || "",
-        reelUrl: kv.reelUrl,
-        status: sql?.status || kv.status,
-        metrics: sql?.metrics || {},
-        businessFeedback: sql?.business_feedback || null,
-        reportNote: sql?.report_note || "",
-        submittedAt: kv.submittedAt,
-        approvedAt: sql?.approved_at || null,
-      };
-    });
-
-    // Also include any SQL-only submissions (approved before KV migration)
-    for (const r of (sqlSubs ?? [])) {
-      if (!merged.find((m: any) => m.id === r.id)) {
-        merged.push({ id: r.id, featureId: r.feature_id, token: r.token, creatorInstagram: r.creator_instagram, reelUrl: r.reel_url, status: r.status, metrics: r.metrics || {}, businessFeedback: r.business_feedback, reportNote: r.report_note, submittedAt: r.submitted_at, approvedAt: r.approved_at });
-      }
+    // SQL is the only writer now — the KV copy came from /store-submission,
+    // which was removed, so the old KV/SQL merge no longer has a second source.
+    const { data, error } = await db().from("submissions_f5961d0c").select("*").order("submitted_at", { ascending: false });
+    if (error) throw error;
+    // Same de-duplication the admin panel used to do client-side: one row per
+    // (reel, feature), keeping the most recent submission.
+    const newest = new Map<string, any>();
+    for (const r of (data ?? [])) {
+      const key = `${r.reel_url}|${r.feature_id}`;
+      const prev = newest.get(key);
+      if (!prev || new Date(r.submitted_at) > new Date(prev.submitted_at)) newest.set(key, r);
     }
-
-    merged.sort((a: any, b: any) => new Date(b.submittedAt).getTime() - new Date(a.submittedAt).getTime());
-    return c.json({ submissions: merged });
+    const submissions = [...newest.values()].map((r: any) => ({
+      id: r.id, featureId: r.feature_id, token: r.token,
+      creatorInstagram: r.creator_instagram || "", reelUrl: r.reel_url || "",
+      status: r.status, metrics: r.metrics || {},
+      businessFeedback: r.business_feedback || null, reportNote: r.report_note || "",
+      submittedAt: r.submitted_at, approvedAt: r.approved_at || null,
+      business_approved: r.business_approved ?? false,
+      admin_payout_approved: r.admin_payout_approved ?? false,
+      payout_amount: r.payout_amount || "", stripe_link: r.stripe_link || "",
+      cashed_out_at: r.cashed_out_at || null, denied: r.denied ?? false,
+      admin_report_note: r.admin_report_note || "",
+      payment_method: r.payment_method || "", payment_info: r.payment_info || "",
+    }));
+    return c.json({ submissions });
   } catch (e: any) { return c.json({ error: "Failed to fetch submissions", details: e.message }, 500); }
 });
 
