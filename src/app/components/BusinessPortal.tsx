@@ -53,12 +53,14 @@ interface BizData {
   planClicks?: number;
 }
 
+// Founder pricing. originalPrice is held at a consistent 40% discount — the
+// same ratio the previous prices used — so the strike-through stays honest.
 const PLANS = [
   {
-    icon: "🌱", name: "Starter", price: "$59", originalPrice: "$99", tag: null,
+    icon: "🌱", name: "Starter", price: "$69", originalPrice: "$115", tag: null,
     tagline: "One local creator features your spot every month.",
     features: [
-      "1 Reel/month, filmed and posted by a local creator",
+      "1 Creator/month, filmed and posted by a local creator",
       "Collab post — lives on your profile like organic content",
       "Location tagged for nearby customers",
       "Performance dashboard",
@@ -70,7 +72,7 @@ const PLANS = [
     icon: "⭐", name: "Growth", price: "$119", originalPrice: "$199", tag: "Most Popular",
     tagline: "Two creators. Two audiences. New faces finding you every month.",
     features: [
-      "2 Reels/month from two different creators",
+      "2 Different Creators/month, each with their own audience",
       "Everything in Starter",
       "Reach foodies AND lifestyle crowds",
       "Side-by-side creator performance tracking",
@@ -79,18 +81,26 @@ const PLANS = [
     ctaStyle: "bg-white text-neutral-900 hover:bg-neutral-100",
   },
   {
-    icon: "🔥", name: "Pro", price: "$229", originalPrice: "$379", tag: null,
+    icon: "🔥", name: "Pro", price: "$199", originalPrice: "$329", tag: null,
     tagline: "An always-on creator presence. Your business shows up every week.",
     features: [
-      "4 Reels/month from a rotating roster",
+      "4 Different Creators/month from a rotating roster",
       "Everything in Starter + Growth",
       "First pick of top-scoring creators",
-      "Monthly trend dashboard across all your Reels",
+      "Monthly trend dashboard across all your creators",
     ],
     cta: "Get Started",
     ctaStyle: "bg-neutral-800 text-white hover:bg-neutral-700 border border-white/10",
   },
 ];
+
+// Sits beneath the subscription plans — deliberately secondary styling.
+const ONE_OFF = {
+  name: "One-Time Feature",
+  price: "$89",
+  description: "Receive one professionally created Reel from a local CONTYNT creator.",
+  cta: "Buy One Feature",
+};
 
 const FAQ_ITEMS = [
   { q: "Who films the content?", a: "Our vetted local creators who already love spots like yours. You approve nothing, ship nothing, and edit nothing. They film, post, and tag you." },
@@ -531,11 +541,24 @@ export function BusinessPortal({ token }: { token: string }) {
       method: "POST", headers: { ...AUTH, "Content-Type": "application/json" },
       body: JSON.stringify({ bizToken: token, submissionId, reaction, note }),
     }).catch(() => {});
-    setData(prev => prev ? {
-      ...prev,
-      reels: prev.reels.map(r => r.id === submissionId
-        ? { ...r, businessFeedback: { reaction, note: note || "", submittedAt: now } } : r),
-    } : prev);
+    setData(prev => {
+      if (!prev) return prev;
+      const sub = prev.reels.find(r => r.id === submissionId);
+      const featureId = sub?.featureId;
+      return {
+        ...prev,
+        reels: prev.reels.map(r => r.id === submissionId
+          ? { ...r, businessFeedback: { reaction, note: note || "", submittedAt: now } } : r),
+        // Approving closes the feature server-side, so reflect that in Your
+        // Features immediately instead of waiting for the next poll.
+        publishedFeatures: reaction === "approve" && featureId
+          ? prev.publishedFeatures.map(f => f.id === featureId ? { ...f, status: "completed" } : f)
+          : prev.publishedFeatures,
+        inProgressCreators: reaction === "approve" && featureId
+          ? prev.inProgressCreators.filter(c => c.featureId !== featureId)
+          : prev.inProgressCreators,
+      };
+    });
   };
 
   const toggleFaq = (i: number) => {
@@ -828,6 +851,22 @@ export function BusinessPortal({ token }: { token: string }) {
                 ))}
               </div>
               <p className="text-center text-xs text-neutral-500">Cancel anytime. No contracts.</p>
+
+              {/* One-off purchase — secondary to the subscription plans above,
+                  so it reuses the muted card styling rather than PlanCard. */}
+              <div className="bg-white/5 border border-white/10 rounded-2xl px-5 py-4 flex flex-col sm:flex-row sm:items-center gap-4">
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-baseline gap-2">
+                    <p className="text-sm font-semibold text-white">{ONE_OFF.name}</p>
+                    <span className="text-sm font-semibold text-white">{ONE_OFF.price}</span>
+                  </div>
+                  <p className="text-xs text-neutral-400 mt-1 leading-relaxed">{ONE_OFF.description}</p>
+                </div>
+                <button
+                  className="shrink-0 px-4 py-2.5 text-sm font-medium rounded-xl bg-neutral-800 text-white border border-white/10 hover:bg-neutral-700 transition-all">
+                  {ONE_OFF.cta}
+                </button>
+              </div>
 
               {/* FAQ — collapsible */}
               <div className="space-y-2">
