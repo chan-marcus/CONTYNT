@@ -10,6 +10,19 @@ app.use("/*", cors({ origin: "*", allowHeaders: ["Content-Type", "Authorization"
 
 const db = () => createClient(Deno.env.get("SUPABASE_URL")!, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!);
 
+// Supabase returns failures on the result object rather than throwing, so an
+// unchecked write looks identical to a successful one. A missing column made
+// every feature-completion write fail silently while still reporting success —
+// route writes that matter through here so that can't happen unnoticed.
+async function must<T extends { error: any }>(label: string, q: PromiseLike<T>): Promise<T> {
+  const res = await q;
+  if (res.error) {
+    console.error(`[db] ${label} failed:`, res.error.message ?? res.error);
+    throw new Error(`${label}: ${res.error.message ?? "database error"}`);
+  }
+  return res;
+}
+
 function uid(prefix = "") {
   return `${prefix}${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
 }
@@ -425,7 +438,7 @@ app.post("/make-server-f5961d0c/admin/approve-reel", async (c) => {
     const { data: sub, error: subErr } = await db().from("submissions_f5961d0c").select("*").eq("id", submissionId).single();
     if (subErr || !sub) return c.json({ error: "Submission not found" }, 404);
     await db().from("submissions_f5961d0c").update({ status: "approved", approved_at: new Date().toISOString() }).eq("id", submissionId);
-    await db().from("features_f5961d0c").update({ status: "completed", completed_at: new Date().toISOString(), winner_instagram: sub.creator_instagram || "" }).eq("id", sub.feature_id);
+    await must("approve-reel: complete feature", db().from("features_f5961d0c").update({ status: "completed", completed_at: new Date().toISOString(), winner_instagram: sub.creator_instagram || "" }).eq("id", sub.feature_id));
     await db().from("creator_claims_f5961d0c").update({ status: "approved" }).eq("feature_id", sub.feature_id).eq("creator_token", sub.token);
     // Also update KV so admin Feature Activity reflects approved state
     const kvKey = `creator_claim_${sub.token}_${sub.feature_id}`;
@@ -762,10 +775,10 @@ app.post("/make-server-f5961d0c/creator-portal/complete-payout", async (c) => {
     await db().from("submissions_f5961d0c")
       .update({ cashed_out_at: now })
       .eq("token", token).eq("feature_id", featureId);
-    await db().from("features_f5961d0c").update({
+    await must("complete-payout: close feature", db().from("features_f5961d0c").update({
       status: "completed", winner_instagram: ig,
       total_payout: payoutAmount || "", claimed_by: ig, claimed_at: now,
-    }).eq("id", featureId);
+    }).eq("id", featureId));
     return c.json({ success: true });
   } catch (e: any) { return c.json({ error: e.message }, 500); }
 });
@@ -783,11 +796,11 @@ app.post("/make-server-f5961d0c/admin/approve-payout", async (c) => {
     await db().from("submissions_f5961d0c")
       .update({ payout_amount: payoutAmount || "", admin_payout_approved: true })
       .eq("id", submissionId);
-    await db().from("features_f5961d0c").update({
+    await must("approve-payout: close feature", db().from("features_f5961d0c").update({
       status: "completed",
       winner_instagram: sub.creator_instagram || "",
       completed_at: new Date().toISOString(),
-    }).eq("id", sub.feature_id);
+    }).eq("id", sub.feature_id));
     return c.json({ success: true });
   } catch (e: any) { return c.json({ error: e.message }, 500); }
 });
@@ -804,10 +817,10 @@ app.post("/make-server-f5961d0c/admin/deny-submission", async (c) => {
     if (error) throw error;
     // Put the feature back on the board so another creator can claim it.
     if (sub?.feature_id) {
-      await db().from("features_f5961d0c").update({
+      await must("deny-submission: reopen feature", db().from("features_f5961d0c").update({
         status: "available", winner_instagram: "", total_payout: "",
         claimed_by: "", claimed_at: null,
-      }).eq("id", sub.feature_id);
+      }).eq("id", sub.feature_id));
     }
     return c.json({ success: true });
   } catch (e: any) { return c.json({ error: e.message }, 500); }
@@ -953,7 +966,7 @@ app.post("/make-server-f5961d0c/business-portal/feedback", async (c) => {
       const { data: sub } = await db().from("submissions_f5961d0c").select("*").eq("id", submissionId).single();
       if (sub && sub.status !== "approved") {
         await db().from("submissions_f5961d0c").update({ status: "approved", approved_at: new Date().toISOString() }).eq("id", submissionId);
-        await db().from("features_f5961d0c").update({ status: "completed", completed_at: new Date().toISOString(), winner_instagram: sub.creator_instagram || "" }).eq("id", sub.feature_id);
+        await must("approve-reel: complete feature", db().from("features_f5961d0c").update({ status: "completed", completed_at: new Date().toISOString(), winner_instagram: sub.creator_instagram || "" }).eq("id", sub.feature_id));
         await db().from("creator_claims_f5961d0c").update({ status: "approved" }).eq("feature_id", sub.feature_id).eq("creator_token", sub.token);
         const kvKey = `creator_claim_${sub.token}_${sub.feature_id}`;
         const existing = await kv.get(kvKey);
