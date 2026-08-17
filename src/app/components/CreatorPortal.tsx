@@ -336,10 +336,11 @@ function ViewerCount({ featureId }: { featureId: string }) {
 }
 
 // ─── Feature card ─────────────────────────────────────────────────────────────
-function FeatureCard({ feature, claim, token, onClaim, onUnclaim, onAccept, onSubmit, onPayout, fake, claimedBy, myInstagram }: {
+function FeatureCard({ feature, claim, token, onClaim, onUnclaim, onAccept, onSubmit, onPayout, fake, claimedBy, myInstagram, needsAttention, onSeen }: {
   feature: Feature; claim?: Claim; token: string; myInstagram?: string;
   onClaim: () => void; onUnclaim: () => void; onAccept: () => void;
   onSubmit: (url: string) => void; onPayout: (amount?: string) => void; fake?: boolean; claimedBy?: string;
+  needsAttention?: boolean; onSeen?: () => void;
 }) {
   const [reelUrl, setReelUrl] = useState(claim?.reelUrl || "");
   const [urlError, setUrlError] = useState("");
@@ -443,9 +444,12 @@ function FeatureCard({ feature, claim, token, onClaim, onUnclaim, onAccept, onSu
   const isExpired = expiresAt && new Date(expiresAt).getTime() < Date.now();
 
   const borderClass =
-    cardState === "approved" ? "border-green-500/30" :
+    // Green is reserved for "accepted and awaiting your next action", and
+    // clears once the creator has looked at the card.
+    needsAttention ? "border-green-500/40 shadow-[0_0_14px_rgba(74,222,128,0.20)]" :
     cardState === "denied" ? "border-red-500/20" :
-    cardState === ("admin_approved" as any) ? "border-green-500/30" :
+    cardState === "approved" ? "border-white/15" :
+    cardState === ("admin_approved" as any) ? "border-white/20" :
     cardState === "interested" ? "border-white/20" :
     cardState === "claimed" ? "border-blue-500/30" :
     cardState === "submitted" ? "border-white/10" :
@@ -457,7 +461,8 @@ function FeatureCard({ feature, claim, token, onClaim, onUnclaim, onAccept, onSu
     "bg-white/5";
 
   return (
-    <div className={`w-full min-w-0 ${bgClass} border ${borderClass} rounded-2xl overflow-hidden transition-colors duration-300`} style={{ borderColor: cardState === "claimed" ? "rgba(59,130,246,0.3)" : undefined }}>
+    <div onClick={() => { if (needsAttention) onSeen?.(); }}
+      className={`w-full min-w-0 ${bgClass} border ${borderClass} rounded-2xl overflow-hidden transition-colors duration-300`} style={{ borderColor: cardState === "claimed" ? "rgba(59,130,246,0.3)" : undefined }}>
       <div className="w-full min-w-0 p-5 space-y-4">
 
           {/* ── Denied ── */}
@@ -808,6 +813,21 @@ export function CreatorPortal({ token }: { token: string }) {
   const lastBalanceRef = useRef<number | null>(null);
   const [earnedGlow, setEarnedGlow] = useState(false);
   const [creditUnread, setCreditUnread] = useState(false);
+  const seenActionsKey = `contynt_seen_actions_${token}`;
+  const [seenActions, setSeenActions] = useState<Set<string>>(() => {
+    try { return new Set(JSON.parse(localStorage.getItem(seenActionsKey) || "[]")); } catch { return new Set(); }
+  });
+  const markActionSeen = (featureId: string) => {
+    setSeenActions(prev => {
+      if (prev.has(featureId)) return prev;
+      const next = new Set(prev); next.add(featureId);
+      try { localStorage.setItem(seenActionsKey, JSON.stringify([...next])); } catch {}
+      return next;
+    });
+  };
+  // Action required = admin approved the claim and the creator has yet to accept.
+  const featureNeedsAttention = (featureId: string) =>
+    (claims[featureId]?.status as any) === "admin_approved" && !seenActions.has(featureId);
   const [walletOpen, setWalletOpen] = useState(false);
   const [error, setError] = useState("");
   const [portalTab, setPortalTab] = useState<"features" | "completed" | "activity">("features");
@@ -1257,7 +1277,7 @@ export function CreatorPortal({ token }: { token: string }) {
               if (f.status === "completed" && claim.status !== "approved") return null;
               return (
                 <motion.div key={fid} className="w-full min-w-0" initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }}>
-                  <FeatureCard feature={f} claim={claim} token={token}
+                  <FeatureCard feature={f} claim={claim} token={token} needsAttention={featureNeedsAttention(f.id)} onSeen={() => markActionSeen(f.id)}
                     onClaim={() => claimFeature(fid)} onUnclaim={() => unclaimFeature(fid)}
                     onAccept={() => acceptFeature(fid)}
                     onSubmit={(url) => submitReel(fid, url)} onPayout={(amt) => requestPayout(fid, amt)}
@@ -1270,7 +1290,7 @@ export function CreatorPortal({ token }: { token: string }) {
               <motion.div key={feature.id} className="w-full min-w-0"
                 initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }}
                 transition={{ duration: 0.35, delay: i * 0.05 }}>
-                <FeatureCard feature={feature} claim={claims[feature.id]} token={token}
+                <FeatureCard feature={feature} claim={claims[feature.id]} token={token} needsAttention={featureNeedsAttention(feature.id)} onSeen={() => markActionSeen(feature.id)}
                   onClaim={() => claimFeature(feature.id)} onUnclaim={() => unclaimFeature(feature.id)}
                   onAccept={() => acceptFeature(feature.id)}
                   onSubmit={(url) => submitReel(feature.id, url)} onPayout={(amt) => requestPayout(feature.id, amt)}
@@ -1306,7 +1326,7 @@ export function CreatorPortal({ token }: { token: string }) {
                 if (!f) return null;
                 return (
                   <motion.div key={fid} className="w-full min-w-0" initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }}>
-                    <FeatureCard feature={f} claim={claim} token={token}
+                    <FeatureCard feature={f} claim={claim} token={token} needsAttention={featureNeedsAttention(f.id)} onSeen={() => markActionSeen(f.id)}
                       onClaim={() => {}} onUnclaim={() => {}} onAccept={() => {}} onSubmit={() => {}} onPayout={(amt) => requestPayout(fid, amt)}
                       fake={false} myInstagram={myInstagram} />
                   </motion.div>
@@ -1315,7 +1335,7 @@ export function CreatorPortal({ token }: { token: string }) {
               {/* Cashed-out completed features */}
               {completedFeatures.map((feature) => (
                 <motion.div key={feature.id} className="w-full min-w-0" initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }}>
-                  <FeatureCard feature={feature} claim={claims[feature.id]} token={token}
+                  <FeatureCard feature={feature} claim={claims[feature.id]} token={token} needsAttention={featureNeedsAttention(feature.id)} onSeen={() => markActionSeen(feature.id)}
                     onClaim={() => {}} onUnclaim={() => {}} onAccept={() => {}} onSubmit={() => {}} onPayout={(amt) => requestPayout(feature.id, amt)}
                     fake={false} myInstagram={myInstagram} />
                 </motion.div>

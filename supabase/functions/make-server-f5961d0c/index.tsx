@@ -153,6 +153,185 @@ app.post("/make-server-f5961d0c/admin/login", async (c) => {
   } catch (e: any) { return c.json({ error: e.message }, 500); }
 });
 
+// ─── Ambassador ───────────────────────────────────────────────────────────────
+const SITE_ORIGIN = Deno.env.get("SITE_ORIGIN") || "https://getcontynt.com";
+const REFERRAL_REWARD = 25;
+
+// JANEDOE123 — handle in caps, stripped to letters and digits, plus a short
+// suffix so two creators with similar handles cannot collide.
+function referralCodeFor(instagram: string): string {
+  const base = (instagram || "creator").replace(/^@+/, "").replace(/[^A-Za-z0-9]/g, "").toUpperCase().slice(0, 12) || "CREATOR";
+  return `${base}${Math.floor(100 + Math.random() * 900)}`;
+}
+const referralUrlFor = (code: string) => `${SITE_ORIGIN}/?ref=${code}`;
+
+async function ambassadorForToken(token: string) {
+  const creatorData = await creatorFromToken(token);
+  if (!creatorData?.creatorId) return { creatorData: null, ambassador: null };
+  const { data } = await db().from("ambassadors_f5961d0c").select("*").eq("creator_id", creatorData.creatorId).maybeSingle();
+  return { creatorData, ambassador: data ?? null };
+}
+
+function ambassadorPayload(a: any) {
+  if (!a) return null;
+  return {
+    ambassadorId: a.ambassador_id, creatorId: a.creator_id,
+    creatorInstagram: a.creator_instagram || "",
+    referralCode: a.referral_code, referralUrl: a.referral_url,
+    enabled: !!a.enabled_status, createdAt: a.created_at,
+  };
+}
+
+// Creator-facing: current ambassador state plus referral performance.
+app.get("/make-server-f5961d0c/creator-portal/ambassador", async (c) => {
+  try {
+    const token = c.req.query("t");
+    if (!token) return c.json({ error: "Token required" }, 400);
+    const { creatorData, ambassador } = await ambassadorForToken(token);
+    if (!creatorData) return c.json({ error: "Invalid or expired link" }, 401);
+    if (!ambassador) return c.json({ enabled: false, ambassador: null, referrals: [], stats: null });
+
+    const { data: refs } = await db().from("ambassador_referrals_f5961d0c")
+      .select("*").eq("ambassador_id", ambassador.ambassador_id).order("created_at", { ascending: false });
+    const rows = refs ?? [];
+    const stats = {
+      businessesReferred: rows.length,
+      pendingReferrals: rows.filter((r: any) => r.reward_status === "pending").length,
+      activeBusinesses: rows.filter((r: any) => !!r.subscription_active_at).length,
+      rewardsEarned: rows.filter((r: any) => r.reward_status === "paid").reduce((s: number, r: any) => s + parseAmount(r.reward_amount), 0),
+      rewardsPending: rows.filter((r: any) => r.reward_status !== "paid").reduce((s: number, r: any) => s + parseAmount(r.reward_amount), 0),
+    };
+    return c.json({
+      enabled: !!ambassador.enabled_status,
+      ambassador: ambassadorPayload(ambassador),
+      stats,
+      referrals: rows.map((r: any) => ({
+        id: r.id, businessName: r.business_name, businessEmail: r.business_email,
+        status: r.status, rewardStatus: r.reward_status,
+        rewardAmount: parseAmount(r.reward_amount), createdAt: r.created_at,
+      })),
+    });
+  } catch (e: any) { return c.json({ error: e.message }, 500); }
+});
+
+// Creator opts in. Idempotent — re-enabling an existing ambassador keeps the
+// same referral code, so printables and QR codes already handed out stay valid.
+app.post("/make-server-f5961d0c/creator-portal/ambassador/enable", async (c) => {
+  try {
+    const { token } = await c.req.json();
+    if (!token) return c.json({ error: "token required" }, 400);
+    const { creatorData, ambassador } = await ambassadorForToken(token);
+    if (!creatorData) return c.json({ error: "Invalid or expired link" }, 401);
+
+    if (ambassador) {
+      if (!ambassador.enabled_status) {
+        await must("ambassador: re-enable", db().from("ambassadors_f5961d0c")
+          .update({ enabled_status: true }).eq("ambassador_id", ambassador.ambassador_id));
+      }
+      return c.json({ success: true, ambassador: ambassadorPayload({ ...ambassador, enabled_status: true }) });
+    }
+
+    // Retry on the unlikely code collision rather than failing the opt-in.
+    let created: any = null;
+    for (let i = 0; i < 5 && !created; i++) {
+      const code = referralCodeFor(creatorData.instagram);
+      const { data, error } = await db().from("ambassadors_f5961d0c").insert({
+        creator_id: creatorData.creatorId,
+        creator_token: token,
+        creator_instagram: creatorData.instagram || "",
+        referral_code: code,
+        referral_url: referralUrlFor(code),
+        enabled_status: true,
+      }).select("*").single();
+      if (!error) created = data;
+      else if (!String(error.message || "").includes("duplicate")) throw error;
+    }
+    if (!created) return c.json({ error: "Could not allocate a referral code" }, 500);
+    return c.json({ success: true, ambassador: ambassadorPayload(created) });
+  } catch (e: any) { return c.json({ error: e.message }, 500); }
+});
+
+// Public: who does this referral code belong to? Drives the landing page.
+app.get("/make-server-f5961d0c/referral/:code", async (c) => {
+  try {
+    const code = c.req.param("code");
+    const { data } = await db().from("ambassadors_f5961d0c")
+      .select("referral_code, creator_instagram, enabled_status").eq("referral_code", code).maybeSingle();
+    if (!data || !data.enabled_status) return c.json({ valid: false });
+    return c.json({ valid: true, referralCode: data.referral_code, creatorInstagram: data.creator_instagram || "" });
+  } catch { return c.json({ valid: false }); }
+});
+
+// Public: a referred business submits its name and email.
+//
+// This must never dead-end — an owner standing in their shop with the creator
+// should always land in the portal. So an existing business is matched and
+// linked, and anything unmatched is created rather than rejected.
+app.post("/make-server-f5961d0c/referral/:code/business", async (c) => {
+  try {
+    const code = c.req.param("code");
+    const { businessName, businessEmail } = await c.req.json();
+    if (!businessName || !businessEmail) return c.json({ error: "Business name and email are required" }, 400);
+
+    const { data: amb } = await db().from("ambassadors_f5961d0c")
+      .select("*").eq("referral_code", code).maybeSingle();
+    if (!amb || !amb.enabled_status) return c.json({ error: "This referral link is no longer active" }, 404);
+
+    const email = String(businessEmail).trim().toLowerCase();
+    const name = String(businessName).trim();
+
+    // Match on email first (the stronger key), then on name.
+    let biz: any = null;
+    const byEmail = await db().from("business_signups_f5961d0c").select("*").ilike("email", email).limit(1);
+    biz = byEmail.data?.[0] ?? null;
+    if (!biz) {
+      const byName = await db().from("business_signups_f5961d0c").select("*").ilike("business_name", name).limit(1);
+      biz = byName.data?.[0] ?? null;
+    }
+
+    let createdBusiness = false;
+    if (!biz) {
+      const { data: made, error } = await db().from("business_signups_f5961d0c").insert({
+        business_name: name, email, instagram: "", city: "", address: "", preferred_contact: "",
+        referral_code: code, referral_source: "ambassador", referred_by_creator: amb.creator_id,
+      }).select("*").single();
+      if (error) throw error;
+      biz = made; createdBusiness = true;
+    } else if (!biz.referral_code) {
+      // Existing business, first time attributed — do not overwrite an earlier referral.
+      await db().from("business_signups_f5961d0c").update({
+        referral_code: code, referral_source: "ambassador", referred_by_creator: amb.creator_id,
+      }).eq("id", biz.id);
+    }
+
+    // One referral row per (ambassador, business).
+    const { data: existing } = await db().from("ambassador_referrals_f5961d0c")
+      .select("id").eq("ambassador_id", amb.ambassador_id).eq("business_id", biz.id).limit(1);
+    if (!existing?.length) {
+      const now = new Date().toISOString();
+      await must("referral: record", db().from("ambassador_referrals_f5961d0c").insert({
+        ambassador_id: amb.ambassador_id,
+        creator_id: amb.creator_id,
+        creator_instagram: amb.creator_instagram || "",
+        referral_code: code,
+        referral_url: amb.referral_url,
+        business_id: biz.id, business_name: biz.business_name, business_email: biz.email,
+        referral_source: "ambassador",
+        status: createdBusiness ? "business_created" : "lead_created",
+        reward_amount: REFERRAL_REWARD,
+        business_created_at: createdBusiness ? now : null,
+      }));
+    }
+
+    // Give the owner a way straight into their portal.
+    const token = token32();
+    await kv.set(`biztoken_${token}`, { businessId: biz.id, businessName: biz.business_name, city: biz.city || "", createdAt: new Date().toISOString() });
+    await kv.set(`biztokenref_${biz.id}`, { token, businessId: biz.id, createdAt: new Date().toISOString() });
+
+    return c.json({ success: true, businessId: biz.id, businessCreated: createdBusiness, portalToken: token });
+  } catch (e: any) { return c.json({ error: "Could not complete signup", details: e.message }, 500); }
+});
+
 // ─── Health ───────────────────────────────────────────────────────────────────
 app.get("/make-server-f5961d0c/health", (c) => c.json({ status: "ok" }));
 

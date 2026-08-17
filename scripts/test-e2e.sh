@@ -76,7 +76,7 @@ cleanup() {
     delete from public.features_f5961d0c                where business_name like '${TAG}%';
     delete from public.ambassador_referrals_f5961d0c    where business_name like '${TAG}%' or creator_instagram like '${TAG}%';
     delete from public.ambassadors_f5961d0c             where creator_instagram like '${TAG}%';
-    delete from public.business_signups_f5961d0c        where business_name like '${TAG}%';
+    delete from public.business_signups_f5961d0c        where business_name like '${TAG}%' or email like '${TAG}%';
     delete from public.creator_signups_f5961d0c         where instagram like '${TAG}%';
     delete from public.kv_store_f5961d0c                where value::text like '%${TAG}%';
   " >/dev/null 2>&1
@@ -212,6 +212,53 @@ api GET "/creator-portal/sync?t=$CTOK" 200 && {
   [ "$(echo "$BODY" | jget balance totalEarned)" = "0" ] \
     && ok "creator sees \$0 after payout" || bad "post-payout balance" "got $(echo "$BODY" | jget balance totalEarned)"
 } || bad "sync post-payout" "$HTTP"
+
+head_ "ambassador"
+api GET "/creator-portal/ambassador?t=$CTOK" 200 && {
+  [ "$(echo "$BODY" | jget enabled)" = "False" ] && ok "starts disabled" || bad "should start disabled"
+} || bad "ambassador status" "$HTTP"
+api POST /creator-portal/ambassador/enable 401 '{"token":"nope"}' \
+  && ok "enable rejects bad token" || bad "enable accepted bad token" "$HTTP"
+api POST /creator-portal/ambassador/enable 200 "{\"token\":\"$CTOK\"}" \
+  && { RCODE=$(echo "$BODY" | jget ambassador referralCode); ok "enabled — code $RCODE"; } || bad "enable" "$HTTP $BODY"
+
+# Handing out a printable then changing the code would invalidate it.
+api POST /creator-portal/ambassador/enable 200 "{\"token\":\"$CTOK\"}"
+[ "$(echo "$BODY" | jget ambassador referralCode)" = "$RCODE" ] \
+  && ok "re-enabling keeps the same code" || bad "code changed on re-enable"
+
+api GET "/referral/$RCODE" 200 && {
+  [ "$(echo "$BODY" | jget valid)" = "True" ] && ok "referral code resolves" || bad "code did not resolve"
+} || bad "referral lookup" "$HTTP"
+api GET "/referral/NOSUCHCODE999" 200 && {
+  [ "$(echo "$BODY" | jget valid)" = "False" ] && ok "unknown code returns invalid" || bad "unknown code looked valid"
+} || bad "unknown code" "$HTTP"
+
+head_ "referral capture (must never dead-end)"
+api POST "/referral/$RCODE/business" 200 "{\"businessName\":\"${TAG} Referred\",\"businessEmail\":\"${TAG}ref@example.invalid\"}" \
+  && { [ "$(echo "$BODY" | jget businessCreated)" = "True" ] && ok "new business created" || bad "should have created business"; } \
+  || bad "referral capture" "$HTTP $BODY"
+assert_sql "referral row recorded" \
+  "select count(*) from public.ambassador_referrals_f5961d0c where business_name='${TAG} Referred';" "1"
+assert_sql "business carries attribution" \
+  "select referral_source from public.business_signups_f5961d0c where business_name='${TAG} Referred';" "ambassador"
+
+# An existing business must link, not duplicate.
+api POST "/referral/$RCODE/business" 200 "{\"businessName\":\"${TAG} Cafe\",\"businessEmail\":\"${TAG}@example.invalid\"}" \
+  && { [ "$(echo "$BODY" | jget businessCreated)" = "False" ] && ok "existing business linked, not duplicated" || bad "duplicated an existing business"; } \
+  || bad "existing business referral" "$HTTP"
+assert_sql "no duplicate business row" \
+  "select count(*) from public.business_signups_f5961d0c where business_name='${TAG} Cafe';" "1"
+
+# Same business scanned twice should not create a second referral.
+api POST "/referral/$RCODE/business" 200 "{\"businessName\":\"${TAG} Referred\",\"businessEmail\":\"${TAG}ref@example.invalid\"}" >/dev/null
+assert_sql "re-scan does not duplicate the referral" \
+  "select count(*) from public.ambassador_referrals_f5961d0c where business_name='${TAG} Referred';" "1"
+
+api GET "/creator-portal/ambassador?t=$CTOK" 200 && {
+  [ "$(echo "$BODY" | jget stats businessesReferred)" = "2" ] \
+    && ok "ambassador stats count 2 referrals" || bad "stats" "got $(echo "$BODY" | jget stats businessesReferred)"
+} || bad "ambassador stats" "$HTTP"
 
 head_ "database state (the assertions that matter)"
 assert_sql "feature is completed"      "select status from public.features_f5961d0c where id='$FEAT';" "completed"
