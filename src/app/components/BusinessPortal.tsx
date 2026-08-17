@@ -37,11 +37,6 @@ function CreatorSubmissionCard({ label, date, badge, badgeColor, dim }: {
   );
 }
 
-const REST = `https://${projectId}.supabase.co/rest/v1`;
-const RHEAD = { "Content-Type": "application/json", Authorization: `Bearer ${publicAnonKey}`, apikey: publicAnonKey };
-const sqlPatch = (table: string, filter: string, data: object) =>
-  fetch(`${REST}/${table}?${filter}`, { method: "PATCH", headers: RHEAD, body: JSON.stringify(data) });
-
 interface Reel {
   id: string; featureId?: string;
   creatorInstagram: string; reelUrl: string; approvedAt: string; submittedAt?: string;
@@ -195,8 +190,8 @@ function ReelCard({ reel, onFeedback }: { reel: Reel; onFeedback: (id: string, r
   );
 }
 
-function RequestSlotCard({ businessId, businessName, address, city, reelsLeft, reelsLimit, onSubmitted }: {
-  businessId: string; businessName: string; address?: string; city?: string; reelsLeft: number; reelsLimit: number;
+function RequestSlotCard({ bizToken, reelsLeft, reelsLimit, onSubmitted }: {
+  bizToken: string; reelsLeft: number; reelsLimit: number;
   onSubmitted: (newId: string, notes: string) => void;
 }) {
   const [expanded, setExpanded] = useState(false);
@@ -205,21 +200,17 @@ function RequestSlotCard({ businessId, businessName, address, city, reelsLeft, r
 
   const submit = async () => {
     setSubmitting(true);
-    const newId = `feat_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
     const notesVal = requestNotes.trim() || "No specific requests, creator's choice";
-    await fetch(`${REST}/features_f5961d0c`, {
-      method: "POST", headers: { ...RHEAD, Prefer: "return=minimal" },
-      body: JSON.stringify({
-        id: newId, business_id: businessId, business_name: businessName,
-        address: address || "", city: city || "",
-        status: "pending", request_notes: notesVal,
-        submitted_by_business: true,
-        offered_at: new Date().toISOString(), category: "", payout_range: "",
-      }),
-    }).catch(() => {});
+    // The server creates the row (and owns the id) from the business the token
+    // belongs to, so business_id can't be spoofed from the client.
+    const res = await fetch(`${BASE}/business-portal/submit-feature`, {
+      method: "POST", headers: { ...AUTH, "Content-Type": "application/json" },
+      body: JSON.stringify({ bizToken, requestNotes: notesVal, isNewRequest: true }),
+    }).catch(() => null);
+    const newId = (await res?.json().catch(() => null))?.featureId || "";
     setSubmitting(false);
     setExpanded(false);
-    onSubmitted(newId, notesVal);
+    if (newId) onSubmitted(newId, notesVal);
   };
 
   return (
@@ -259,8 +250,8 @@ function RequestSlotCard({ businessId, businessName, address, city, reelsLeft, r
   );
 }
 
-function FeatureNoteCard({ feature: f, bizPortalData: data, onNoteSaved, onSubmitted }: {
-  feature: PublishedFeature; bizPortalData: BizData;
+function FeatureNoteCard({ feature: f, bizPortalData: data, bizToken, onNoteSaved, onSubmitted }: {
+  feature: PublishedFeature; bizPortalData: BizData; bizToken: string;
   onNoteSaved: (id: string, notes: string) => void; onSubmitted?: (id: string) => void;
 }) {
   const [expanded, setExpanded] = useState(false);
@@ -274,18 +265,18 @@ function FeatureNoteCard({ feature: f, bizPortalData: data, onNoteSaved, onSubmi
   const label = isCompleted ? "Completed" : isPending ? "Submitted" : hasInProgress ? "In Progress" : isOffered ? "New Feature Available" : "Live & Active";
   const dotColor = isCompleted ? "bg-green-400" : isPending ? "bg-yellow-400" : hasInProgress ? "bg-blue-400 animate-pulse" : isOffered ? "bg-green-400 animate-pulse" : "bg-blue-400 animate-pulse";
   const badgeColor = isCompleted ? "bg-green-500/15 text-green-400 border-green-500/25" : isPending ? "bg-yellow-500/15 text-yellow-400 border-yellow-500/25" : hasInProgress ? "bg-blue-500/15 text-blue-400 border-blue-500/25" : isOffered ? "bg-white/15 text-white border-white/25" : "bg-blue-500/15 text-blue-400 border-blue-500/25";
-  const RHEAD2 = { "Content-Type": "application/json", Authorization: `Bearer ${publicAnonKey}`, apikey: publicAnonKey };
   const reelsLimit = data.reelsLimit || 0;
   const reelsUsed = data.reelsUsed || 0;
 
   const submitRequest = async () => {
     setSubmitting(true);
-    await fetch(`${REST}/features_f5961d0c?id=eq.${f.id}`, {
-      method: "PATCH", headers: RHEAD2,
+    // Server-side the update is scoped by business_id as well as feature id, so
+    // one business cannot submit against another's feature.
+    await fetch(`${BASE}/business-portal/submit-feature`, {
+      method: "POST", headers: { ...AUTH, "Content-Type": "application/json" },
       body: JSON.stringify({
-        status: "pending",
-        request_notes: requestNotes.trim() || "No specific requests, creator's choice",
-        submitted_by_business: true,
+        bizToken, featureId: f.id,
+        requestNotes: requestNotes.trim() || "No specific requests, creator's choice",
       }),
     }).catch(() => {});
     setSubmitted(true);
@@ -423,51 +414,44 @@ export function BusinessPortal({ token }: { token: string }) {
 
   const TIER_LIMITS_BIZ: Record<string, number> = { Starter: 1, Growth: 2, Pro: 4, Scale: 8 };
 
-  const loadFeatures = async (currentBizId: string) => {
-    const [tierRows, featRows] = await Promise.all([
-      fetch(`${REST}/business_signups_f5961d0c?id=eq.${currentBizId}&select=subscription_tier,reels_used_this_month,reels_reset_month,address,instagram,email,plan_clicks`, { headers: RHEAD }).then(r => r.json()).catch(() => []),
-      fetch(`${REST}/features_f5961d0c?business_id=eq.${currentBizId}&select=id,category,payout_range,status,approved_at,business_notes,is_trial,request_notes,submitted_by_business&order=offered_at.desc`, { headers: RHEAD }).then(r => r.json()).catch(() => []),
-    ]);
-    const tierRow = Array.isArray(tierRows) ? tierRows[0] : null;
-    const subscriptionTier: string | null = tierRow?.subscription_tier || null;
-    const reelsLimit = subscriptionTier ? (TIER_LIMITS_BIZ[subscriptionTier] || 0) : 0;
-    const address: string = tierRow?.address || "";
-    const instagram: string = tierRow?.instagram || "";
-    const email: string = tierRow?.email || "";
-    const publishedFeatures: PublishedFeature[] = (Array.isArray(featRows) ? featRows : []).map((f: any) => ({
-      id: f.id, category: f.category || "", payoutRange: f.payout_range || "",
-      status: f.status || "offered", approvedAt: f.approved_at || null,
-      businessNotes: f.business_notes || "", isTrial: f.is_trial || false,
-      requestNotes: f.request_notes || "", submittedByBusiness: f.submitted_by_business || false,
+  // One authenticated call replaces six PostgREST reads. The server scopes
+  // every row to the business this token belongs to, so the portal can no
+  // longer read another business's features or creators' submissions.
+  const loadFeatures = async (_currentBizId?: string) => {
+    const res = await fetch(`${BASE}/business-portal?t=${token}`, { headers: AUTH });
+    if (!res.ok) throw new Error("Failed to load business portal");
+    const json = await res.json();
+    const publishedFeatures: PublishedFeature[] = (json.publishedFeatures || []).map((f: any) => ({
+      id: f.id, category: f.category || "", payoutRange: f.payoutRange || "",
+      status: f.status || "offered", approvedAt: f.approvedAt || null,
+      businessNotes: f.businessNotes || "", isTrial: f.isTrial || false,
+      requestNotes: f.requestNotes || "", submittedByBusiness: f.submittedByBusiness || false,
     }));
-    const reelsUsed = publishedFeatures.filter(f => ["pending","available","completed"].includes(f.status) && !f.isTrial).length;
+    const subscriptionTier: string | null = json.subscriptionTier || null;
+    const reelsLimit = subscriptionTier ? (TIER_LIMITS_BIZ[subscriptionTier] || 0) : 0;
+    // Derived from features rather than the stored counter, matching what the
+    // portal displayed before.
+    const reelsUsed = publishedFeatures.filter(f => ["pending", "available", "completed"].includes(f.status) && !f.isTrial).length;
     const completedFeatureIds = new Set(publishedFeatures.filter(f => f.status === "completed").map(f => f.id));
-    const featureIds = publishedFeatures.map(f => f.id);
-    let reels: Reel[] = [];
-    let requestingCreators: RequestingCreator[] = [];
-    let inProgressCreators: InProgressCreator[] = [];
-    if (featureIds.length > 0) {
-      const idList = featureIds.map(id => `"${id}"`).join(",");
-      const [subsRows, claimRows] = await Promise.all([
-        fetch(`${REST}/submissions_f5961d0c?feature_id=in.(${idList})&status=eq.approved&select=id,feature_id,token,creator_instagram,reel_url,status,metrics,business_feedback,approved_at,submitted_at&order=submitted_at.desc`, { headers: RHEAD }).then(r => r.json()).catch(() => []),
-        fetch(`${REST}/creator_claims_f5961d0c?feature_id=in.(${idList})&select=feature_id,creator_instagram,status,claimed_at`, { headers: RHEAD }).then(r => r.json()).catch(() => []),
-      ]);
-      reels = (Array.isArray(subsRows) ? subsRows : []).map((s: any) => ({
-        id: s.id, featureId: s.feature_id,
-        creatorInstagram: s.creator_instagram, reelUrl: s.reel_url, status: s.status,
-        metrics: s.metrics || {}, businessFeedback: s.business_feedback,
-        approvedAt: s.approved_at, submittedAt: s.submitted_at,
-      }));
-      for (const cl of (Array.isArray(claimRows) ? claimRows : [])) {
-        if (cl.status === "interested") {
-          requestingCreators.push({ featureId: cl.feature_id, instagram: cl.creator_instagram || "", requestedAt: cl.claimed_at || "" });
-        } else if ((cl.status === "claimed" || cl.status === "approved") && !completedFeatureIds.has(cl.feature_id)) {
-          inProgressCreators.push({ featureId: cl.feature_id, instagram: cl.creator_instagram || "", approvedAt: cl.claimed_at || "", expiresAt: "" });
-        }
-      }
-    }
-    const planClicks: number = tierRow?.plan_clicks || 0;
-    return { publishedFeatures, reelsLimit, reelsUsed, subscriptionTier, reels, requestingCreators, inProgressCreators, address, instagram, email, planClicks };
+    const reels: Reel[] = (json.reels || []).map((s: any) => ({
+      id: s.id, featureId: s.featureId,
+      creatorInstagram: s.creatorInstagram, reelUrl: s.reelUrl, status: s.status,
+      metrics: s.metrics || {}, businessFeedback: s.businessFeedback,
+      approvedAt: s.approvedAt, submittedAt: s.submittedAt,
+    }));
+    const requestingCreators: RequestingCreator[] = json.requestingCreators || [];
+    const inProgressCreators: InProgressCreator[] = (json.inProgressCreators || [])
+      .filter((c: any) => !completedFeatureIds.has(c.featureId))
+      .map((c: any) => ({ featureId: c.featureId, instagram: c.instagram || "", approvedAt: c.approvedAt || "", expiresAt: "" }));
+    return {
+      publishedFeatures, reelsLimit, reelsUsed, subscriptionTier, reels,
+      requestingCreators, inProgressCreators,
+      address: json.address || "", instagram: json.instagram || "",
+      email: json.email || "", planClicks: json.planClicks || 0,
+      businessId: json.business?.businessId || "",
+      businessName: json.business?.businessName || "",
+      city: json.business?.city || "",
+    };
   };
 
   const refreshFeatures = async () => {
@@ -483,19 +467,13 @@ export function BusinessPortal({ token }: { token: string }) {
   useEffect(() => {
     const load = async () => {
       try {
-        const res = await fetch(`${BASE}/business-portal?t=${token}`, { headers: AUTH });
-        const json = await res.json();
-        if (!res.ok) { setError(json.error || "Invalid link."); setLoading(false); return; }
-        const id: string = json.business?.businessId || "";
-        const businessName: string = json.business?.businessName || "";
-        const city: string = json.business?.city || "";
-        if (!id) { setError("Invalid link."); setLoading(false); return; }
-        setResolvedBizId(id);
-        setBizId(id);
-        const result = await loadFeatures(id);
-        setData({ businessName, city, ...result });
+        const result = await loadFeatures();
+        if (!result.businessId) { setError("Invalid link."); setLoading(false); return; }
+        setResolvedBizId(result.businessId);
+        setBizId(result.businessId);
+        setData(result);
         setEmailInput(result.email || "");
-      } catch { setError("Failed to load portal."); }
+      } catch { setError("Invalid or expired link."); }
       finally { setLoading(false); }
     };
     load();
@@ -537,9 +515,9 @@ export function BusinessPortal({ token }: { token: string }) {
   }, [data?.inProgressCreators]);
 
   const saveEmail = async (newEmail: string) => {
-    if (!bizId) return;
-    await fetch(`${REST}/business_signups_f5961d0c?id=eq.${bizId}`, {
-      method: "PATCH", headers: RHEAD, body: JSON.stringify({ email: newEmail }),
+    await fetch(`${BASE}/business-portal/update-email`, {
+      method: "POST", headers: { ...AUTH, "Content-Type": "application/json" },
+      body: JSON.stringify({ bizToken: token, email: newEmail }),
     }).catch(() => {});
     setData(prev => prev ? { ...prev, email: newEmail } : prev);
     setEditingEmail(false);
@@ -547,19 +525,9 @@ export function BusinessPortal({ token }: { token: string }) {
 
   const handleFeedback = async (submissionId: string, reaction: "approve" | "report", note?: string) => {
     const now = new Date().toISOString();
-    await sqlPatch("submissions_f5961d0c", `id=eq.${submissionId}`, {
-      business_approved: reaction === "approve",
-      business_feedback: { reaction, note: note || "", submittedAt: now },
-    });
-    if (reaction === "approve") {
-      const sub = data?.reels.find(r => r.id === submissionId);
-      if (sub) {
-        await sqlPatch("features_f5961d0c", `id=eq.${sub.featureId}`, {
-          status: "completed", winner_instagram: sub.creatorInstagram || "", completed_at: now,
-        }).catch(() => {});
-      }
-    }
-    fetch(`${BASE}/business-portal/feedback`, {
+    // The server records the feedback and, on approve, closes out the feature —
+    // the client no longer writes either table itself.
+    await fetch(`${BASE}/business-portal/feedback`, {
       method: "POST", headers: { ...AUTH, "Content-Type": "application/json" },
       body: JSON.stringify({ bizToken: token, submissionId, reaction, note }),
     }).catch(() => {});
@@ -744,7 +712,7 @@ export function BusinessPortal({ token }: { token: string }) {
             {bizTab === "features" && <div className="space-y-3">
             {/* Free features first */}
             {freeFeatures.map(f => (
-              <FeatureNoteCard key={f.id} feature={f} bizPortalData={data}
+              <FeatureNoteCard key={f.id} feature={f} bizPortalData={data} bizToken={token}
                 onNoteSaved={(id, notes) => setData(prev => prev ? {
                   ...prev, publishedFeatures: prev.publishedFeatures.map(pf => pf.id === id ? { ...pf, businessNotes: notes } : pf)
                 } : prev)}
@@ -757,10 +725,7 @@ export function BusinessPortal({ token }: { token: string }) {
             {/* Request slots */}
             {Array.from({ length: Math.max(0, (data.reelsLimit || 0) - (data.reelsUsed || 0)) }).map((_, i) => (
               <RequestSlotCard key={`slot-${i}`}
-                businessId={bizId}
-                businessName={data.businessName}
-                address={data.address}
-                city={data.city}
+                bizToken={token}
                 reelsLeft={(data.reelsLimit || 0) - (data.reelsUsed || 0)}
                 reelsLimit={data.reelsLimit || 0}
                 onSubmitted={(newId, notes) => setData(prev => prev ? {
@@ -774,7 +739,7 @@ export function BusinessPortal({ token }: { token: string }) {
             ))}
             {/* Other features */}
             {otherFeatures.map(f => (
-              <FeatureNoteCard key={f.id} feature={f} bizPortalData={data}
+              <FeatureNoteCard key={f.id} feature={f} bizPortalData={data} bizToken={token}
                 onNoteSaved={(id, notes) => setData(prev => prev ? {
                   ...prev, publishedFeatures: prev.publishedFeatures.map(pf => pf.id === id ? { ...pf, businessNotes: notes } : pf)
                 } : prev)}
@@ -835,11 +800,12 @@ export function BusinessPortal({ token }: { token: string }) {
           <button onClick={() => {
             const opening = !plansExpanded;
             setPlansExpanded(opening);
-            if (opening && bizId) {
-              const next = (data?.planClicks || 0) + 1;
-              setData(prev => prev ? { ...prev, planClicks: next } : prev);
-              fetch(`${REST}/business_signups_f5961d0c?id=eq.${bizId}`, {
-                method: "PATCH", headers: RHEAD, body: JSON.stringify({ plan_clicks: next }),
+            if (opening) {
+              // Optimistic bump; the server owns the authoritative increment.
+              setData(prev => prev ? { ...prev, planClicks: (prev.planClicks || 0) + 1 } : prev);
+              fetch(`${BASE}/business-portal/track-plan-click`, {
+                method: "POST", headers: { ...AUTH, "Content-Type": "application/json" },
+                body: JSON.stringify({ bizToken: token }),
               }).catch(() => {});
             }
           }}

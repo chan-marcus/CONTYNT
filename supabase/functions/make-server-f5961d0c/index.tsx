@@ -259,10 +259,12 @@ app.post("/make-server-f5961d0c/business-portal/submit-feature", async (c) => {
     if (!bizData) return c.json({ error: "Invalid token" }, 401);
     const now = new Date().toISOString().slice(0, 7); // YYYY-MM
     const notes = requestNotes || "No specific requests, creator's choice";
+    let resultFeatureId = featureId || "";
     if (isNewRequest || !featureId) {
       const bizInfoRes = await db().from("business_signups_f5961d0c").select("business_name, address, city").eq("id", bizData.businessId).single();
       const bizInfo2 = bizInfoRes.data as any;
       const newId = uid("feat_");
+      resultFeatureId = newId;
       await db().from("features_f5961d0c").insert({
         id: newId, business_id: bizData.businessId, business_name: bizInfo2?.business_name || "",
         address: bizInfo2?.address || "", city: bizInfo2?.city || "",
@@ -280,7 +282,7 @@ app.post("/make-server-f5961d0c/business-portal/submit-feature", async (c) => {
     const reelsBiz = reelsRes.data as any;
     const used = reelsBiz?.reels_reset_month === now ? (reelsBiz?.reels_used_this_month || 0) : 0;
     await db().from("business_signups_f5961d0c").update({ reels_used_this_month: used + 1, reels_reset_month: String(now) }).eq("id", bizData.businessId);
-    return c.json({ success: true });
+    return c.json({ success: true, featureId: resultFeatureId });
   } catch (e: any) { return c.json({ error: e.message }, 500); }
 });
 
@@ -810,7 +812,7 @@ app.get("/make-server-f5961d0c/business-portal", async (c) => {
 
     // Reels count
     const tierMap: Record<string, number> = { Starter: 1, Growth: 2, Pro: 4, Scale: 8 };
-    const { data: bizInfo } = await db().from("business_signups_f5961d0c").select("subscription_tier, reels_used_this_month, reels_reset_month").eq("id", bizId).single();
+    const { data: bizInfo } = await db().from("business_signups_f5961d0c").select("subscription_tier, reels_used_this_month, reels_reset_month, address, instagram, email, plan_clicks").eq("id", bizId).single();
     const tier = (bizInfo as any)?.subscription_tier || null;
     const tierLimit = tier ? (tierMap[tier] || 1) : 0;
     const currentMonth = new Date().toISOString().slice(0, 7);
@@ -818,7 +820,12 @@ app.get("/make-server-f5961d0c/business-portal", async (c) => {
     result.reelsLimit = tierLimit;
     result.reelsUsed = reelsUsed;
     result.subscriptionTier = tier;
-    const featRes = await db().from("features_f5961d0c").select("id, category, payout_range, status, approved_at, business_notes, is_trial, request_notes, submitted_by_business").eq("business_id", bizId);
+    // Profile fields the portal used to read straight from PostgREST.
+    result.address = (bizInfo as any)?.address || "";
+    result.instagram = (bizInfo as any)?.instagram || "";
+    result.email = (bizInfo as any)?.email || "";
+    result.planClicks = (bizInfo as any)?.plan_clicks || 0;
+    const featRes = await db().from("features_f5961d0c").select("id, category, payout_range, status, approved_at, business_notes, is_trial, request_notes, submitted_by_business").eq("business_id", bizId).order("offered_at", { ascending: false });
     const featureIds: string[] = (featRes.data ?? []).map((f: any) => String(f.id));
     result.publishedFeatures = (featRes.data ?? []).map((f: any) => ({ id: f.id, category: f.category, payoutRange: f.payout_range, status: f.status, approvedAt: f.approved_at || null, businessNotes: f.business_notes || "", isTrial: f.is_trial || false, requestNotes: f.request_notes || "", submittedByBusiness: f.submitted_by_business || false }));
     if (featureIds.length === 0) return c.json(result);
@@ -855,6 +862,35 @@ app.get("/make-server-f5961d0c/business-portal", async (c) => {
   return c.json(result);
 });
 
+// ─── Business portal: update contact email ───────────────────────────────────
+app.post("/make-server-f5961d0c/business-portal/update-email", async (c) => {
+  try {
+    const { bizToken, email } = await c.req.json();
+    if (!bizToken || !email) return c.json({ error: "bizToken and email required" }, 400);
+    const bizData = await kv.get(`biztoken_${bizToken}`).catch(() => null);
+    if (!bizData) return c.json({ error: "Invalid token" }, 401);
+    // Scoped to the token's own business — the id never comes from the client.
+    const { error } = await db().from("business_signups_f5961d0c").update({ email }).eq("id", bizData.businessId);
+    if (error) throw error;
+    return c.json({ success: true });
+  } catch (e: any) { return c.json({ error: e.message }, 500); }
+});
+
+// ─── Business portal: record a pricing-plan click ────────────────────────────
+app.post("/make-server-f5961d0c/business-portal/track-plan-click", async (c) => {
+  try {
+    const { bizToken } = await c.req.json();
+    if (!bizToken) return c.json({ error: "bizToken required" }, 400);
+    const bizData = await kv.get(`biztoken_${bizToken}`).catch(() => null);
+    if (!bizData) return c.json({ error: "Invalid token" }, 401);
+    // Read-then-write server-side so the client cannot set an arbitrary count.
+    const { data: row } = await db().from("business_signups_f5961d0c").select("plan_clicks").eq("id", bizData.businessId).single();
+    const next = ((row as any)?.plan_clicks || 0) + 1;
+    await db().from("business_signups_f5961d0c").update({ plan_clicks: next }).eq("id", bizData.businessId);
+    return c.json({ success: true, planClicks: next });
+  } catch (e: any) { return c.json({ error: e.message }, 500); }
+});
+
 // ─── Business portal: submit feedback on a reel ──────────────────────────────
 app.post("/make-server-f5961d0c/business-portal/feedback", async (c) => {
   try {
@@ -865,6 +901,7 @@ app.post("/make-server-f5961d0c/business-portal/feedback", async (c) => {
 
     // Save feedback
     await db().from("submissions_f5961d0c").update({
+      business_approved: reaction === "approve",
       business_feedback: { reaction, note: note || "", submittedAt: new Date().toISOString(), businessName: bizData.businessName },
     }).eq("id", submissionId);
 
