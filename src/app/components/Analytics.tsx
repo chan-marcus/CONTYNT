@@ -504,27 +504,16 @@ function SubmissionCard({ sub, onApprove, approving, businessName, featurePayout
       .catch(() => {});
   }, [sub.reelUrl]);
 
+  // Both of these update the submission and the feature together, so the server
+  // does the pair in one call rather than the client issuing two writes that
+  // can half-apply.
   const savePayout = async () => {
     if (!payoutInput) return;
     setSavingPayout(true);
-    await fetch(`${REST2}/submissions_f5961d0c?id=eq.${sub.id}`, {
-      method: "PATCH", headers: RHEAD2,
-      body: JSON.stringify({ payout_amount: payoutInput, admin_payout_approved: true }),
-    });
-    // Mark feature as completed — use server (service role key bypasses RLS)
-    if (sub.featureId) {
-      await fetch(`${BASE}/feature-complete`, {
-        method: "POST",
-        headers: { ...AUTH, "Content-Type": "application/json" },
-        body: JSON.stringify({ featureId: sub.featureId, winnerInstagram: sub.creatorInstagram || "" }),
-      }).catch(() => {
-        // Fallback: direct REST
-        fetch(`${REST2}/features_f5961d0c?id=eq.${sub.featureId}`, {
-          method: "PATCH", headers: RHEAD2,
-          body: JSON.stringify({ status: "completed", winner_instagram: sub.creatorInstagram || "", completed_at: new Date().toISOString() }),
-        }).catch(() => {});
-      });
-    }
+    await apiFetch("/admin/approve-payout", {
+      method: "POST",
+      body: JSON.stringify({ submissionId: sub.id, payoutAmount: payoutInput }),
+    }).catch(() => {});
     setPayoutSaved(true);
     setSavingPayout(false);
     onPayoutSaved?.();
@@ -533,17 +522,10 @@ function SubmissionCard({ sub, onApprove, approving, businessName, featurePayout
   const saveReport = async () => {
     if (!reportNote) return;
     setSavingReport(true);
-    await fetch(`${REST2}/submissions_f5961d0c?id=eq.${sub.id}`, {
-      method: "PATCH", headers: RHEAD2,
-      body: JSON.stringify({ admin_report_note: reportNote, denied: true }),
-    });
-    // Reset feature back to available so it can be claimed again
-    if (sub.featureId) {
-      await fetch(`${REST2}/features_f5961d0c?id=eq.${sub.featureId}`, {
-        method: "PATCH", headers: RHEAD2,
-        body: JSON.stringify({ status: "available", winner_instagram: "", total_payout: "", claimed_by: "", claimed_at: null }),
-      }).catch(() => {});
-    }
+    await apiFetch("/admin/deny-submission", {
+      method: "POST",
+      body: JSON.stringify({ submissionId: sub.id, note: reportNote }),
+    }).catch(() => {});
     setReportSaved(true);
     setSavingReport(false);
   };

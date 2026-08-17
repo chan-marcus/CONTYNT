@@ -33,6 +33,14 @@ async function validAdminToken(token: string): Promise<boolean> {
   return !!priv?.token && priv.token === token;
 }
 
+// Creator portal links are bearer secrets: possession of the token is the only
+// credential. Every route that reads or writes a creator's rows must check it,
+// otherwise any caller can act as an arbitrary creator.
+async function creatorFromToken(token: string): Promise<any | null> {
+  if (!token) return null;
+  return await kv.get(`ctoken_${token}`).catch(() => null);
+}
+
 // These two ARE the auth handshake, so they cannot require auth themselves.
 const ADMIN_OPEN = new Set([
   "/make-server-f5961d0c/admin/login",
@@ -57,6 +65,8 @@ app.use("/make-server-f5961d0c/creator-links", adminGuard);
 app.use("/make-server-f5961d0c/creator-links/*", adminGuard);
 app.use("/make-server-f5961d0c/business-links", adminGuard);
 app.use("/make-server-f5961d0c/business-links/*", adminGuard);
+// Only the admin panel closes out a feature; it writes to any feature by id.
+app.use("/make-server-f5961d0c/feature-complete", adminGuard);
 
 app.post("/make-server-f5961d0c/admin/login", async (c) => {
   try {
@@ -327,7 +337,7 @@ app.get("/make-server-f5961d0c/admin/submissions", async (c) => {
   try {
     // Read from KV (always works) — merge with SQL for approved/metrics data
     const kvSubs = await kv.getByPrefix("submission_");
-    const { data: sqlSubs } = await db().from("submissions_f5961d0c").select("*").order("submitted_at", { ascending: false }).catch(() => ({ data: [] }));
+    const { data: sqlSubs } = await db().from("submissions_f5961d0c").select("*").order("submitted_at", { ascending: false });
 
     // Build a map from SQL by id for merging
     const sqlMap: Record<string, any> = {};
@@ -371,7 +381,7 @@ app.post("/make-server-f5961d0c/admin/approve-reel", async (c) => {
     if (subErr || !sub) return c.json({ error: "Submission not found" }, 404);
     await db().from("submissions_f5961d0c").update({ status: "approved", approved_at: new Date().toISOString() }).eq("id", submissionId);
     await db().from("features_f5961d0c").update({ status: "completed", completed_at: new Date().toISOString(), winner_instagram: sub.creator_instagram || "" }).eq("id", sub.feature_id);
-    await db().from("creator_claims_f5961d0c").update({ status: "approved" }).eq("feature_id", sub.feature_id).eq("creator_token", sub.token).catch(() => {});
+    await db().from("creator_claims_f5961d0c").update({ status: "approved" }).eq("feature_id", sub.feature_id).eq("creator_token", sub.token);
     // Also update KV so admin Feature Activity reflects approved state
     const kvKey = `creator_claim_${sub.token}_${sub.feature_id}`;
     const existing = await kv.get(kvKey);
@@ -467,8 +477,8 @@ app.post("/make-server-f5961d0c/admin/reset-creator", async (c) => {
       if (s?.token === token && s?.id) await kv.del(`submission_${s.id}`).catch(() => {});
     }
     // Clear SQL claims and submissions
-    await db().from("creator_claims_f5961d0c").delete().eq("creator_token", token).catch(() => {});
-    await db().from("submissions_f5961d0c").delete().eq("token", token).catch(() => {});
+    await db().from("creator_claims_f5961d0c").delete().eq("creator_token", token);
+    await db().from("submissions_f5961d0c").delete().eq("token", token);
     // Store reset timestamp so the creator portal can clear localStorage
     await kv.set(`reset_${token}`, { resetAt: new Date().toISOString() });
     return c.json({ success: true });
@@ -500,21 +510,10 @@ app.post("/make-server-f5961d0c/feature-complete", async (c) => {
   } catch (e: any) { return c.json({ error: e.message }, 500); }
 });
 
-// ─── Simple submission store (no auth check — used as reliable fallback) ─────
-app.post("/make-server-f5961d0c/store-submission", async (c) => {
-  try {
-    const { token, featureId, reelUrl, instagram } = await c.req.json();
-    if (!token || !featureId || !reelUrl) return c.json({ error: "Missing fields" }, 400);
-    const submissionId = uid();
-    await kv.set(`submission_${submissionId}`, {
-      id: submissionId, featureId, token,
-      creatorId: "", creatorInstagram: instagram || "",
-      reelUrl, status: "pending", submittedAt: new Date().toISOString()
-    });
-    await db().from("submissions_f5961d0c").insert({ id: submissionId, feature_id: featureId, token, creator_id: "", creator_instagram: instagram || "", reel_url: reelUrl, status: "pending" }).catch(() => {});
-    return c.json({ success: true, submissionId });
-  } catch (e: any) { return c.json({ error: e.message }, 500); }
-});
+// /store-submission was an unauthenticated write path that let any caller
+// insert a submission under an arbitrary creator token. It had no callers left
+// — /creator-portal/submit is the real path — so it is removed rather than
+// guarded.
 
 // ─── Creator portal ───────────────────────────────────────────────────────────
 app.get("/make-server-f5961d0c/creator-portal", async (c) => {
@@ -556,8 +555,9 @@ app.post("/make-server-f5961d0c/creator-portal/claim", async (c) => {
   try {
     const { token, featureId } = await c.req.json();
     if (!token || !featureId) return c.json({ error: "Token and featureId required" }, 400);
-    const creatorData = await kv.get(`ctoken_${token}`).catch(() => null);
-    const instagram = creatorData?.instagram || "";
+    const creatorData = await creatorFromToken(token);
+    if (!creatorData) return c.json({ error: "Invalid or expired link" }, 401);
+    const instagram = creatorData.instagram || "";
     const now = new Date().toISOString();
     await db().from("creator_claims_f5961d0c").upsert({ feature_id: featureId, creator_token: token, creator_instagram: instagram, status: "interested", claimed_at: now, interested_at: now }, { onConflict: "feature_id,creator_token" });
     return c.json({ success: true });
@@ -583,6 +583,7 @@ app.post("/make-server-f5961d0c/creator-portal/accept-feature", async (c) => {
   try {
     const { token, featureId } = await c.req.json();
     if (!token || !featureId) return c.json({ error: "token and featureId required" }, 400);
+    if (!(await creatorFromToken(token))) return c.json({ error: "Invalid or expired link" }, 401);
     const now = new Date();
     const expiresAt = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000).toISOString();
     await db().from("creator_claims_f5961d0c").update({ status: "claimed", expires_at: expiresAt, claimed_at: now.toISOString() }).eq("creator_token", token).eq("feature_id", featureId);
@@ -603,6 +604,7 @@ app.post("/make-server-f5961d0c/creator-portal/unclaim", async (c) => {
   try {
     const { token, featureId } = await c.req.json();
     if (!token || !featureId) return c.json({ error: "Token and featureId required" }, 400);
+    if (!(await creatorFromToken(token))) return c.json({ error: "Invalid or expired link" }, 401);
     await db().from("creator_claims_f5961d0c").update({ status: "unclaimed", unclaimed_at: new Date().toISOString() }).eq("creator_token", token).eq("feature_id", featureId);
     return c.json({ success: true });
   } catch (e: any) { return c.json({ error: "Failed to unclaim", details: e.message }, 500); }
@@ -612,13 +614,14 @@ app.post("/make-server-f5961d0c/creator-portal/submit", async (c) => {
   try {
     const { token, featureId, reelUrl, instagram } = await c.req.json();
     if (!token || !featureId || !reelUrl) return c.json({ error: "token, featureId, and reelUrl required" }, 400);
-    const creatorData = await kv.get(`ctoken_${token}`).catch(() => null);
-    const creatorInstagram = creatorData?.instagram || instagram || "";
-    const creatorId = creatorData?.creatorId || "";
+    const creatorData = await creatorFromToken(token);
+    if (!creatorData) return c.json({ error: "Invalid or expired link" }, 401);
+    const creatorInstagram = creatorData.instagram || instagram || "";
+    const creatorId = creatorData.creatorId || "";
     const submissionId = uid();
     // SQL only
     await db().from("submissions_f5961d0c").insert({ id: submissionId, feature_id: featureId, token, creator_id: creatorId, creator_instagram: creatorInstagram, reel_url: reelUrl, status: "pending" });
-    await db().from("creator_claims_f5961d0c").update({ status: "submitted", reel_url: reelUrl, submitted_at: new Date().toISOString() }).eq("creator_token", token).eq("feature_id", featureId).catch(() => {});
+    await db().from("creator_claims_f5961d0c").update({ status: "submitted", reel_url: reelUrl, submitted_at: new Date().toISOString() }).eq("creator_token", token).eq("feature_id", featureId);
     return c.json({ success: true, submissionId });
   } catch (e: any) { return c.json({ error: "Failed to submit reel", details: e.message }, 500); }
 });
@@ -628,11 +631,12 @@ app.post("/make-server-f5961d0c/creator-portal/view-feature", async (c) => {
   try {
     const { token, featureId } = await c.req.json();
     if (!token || !featureId) return c.json({ ok: true });
-    const creatorData = await kv.get(`ctoken_${token}`).catch(() => null);
+    const creatorData = await creatorFromToken(token);
+    if (!creatorData) return c.json({ error: "Invalid or expired link" }, 401);
     // Try updating last_viewed if row exists, otherwise insert a viewing record
     const { error } = await db().from("creator_claims_f5961d0c").update({ last_viewed: new Date().toISOString() }).eq("creator_token", token).eq("feature_id", featureId);
     if (error) {
-      await db().from("creator_claims_f5961d0c").insert({ feature_id: featureId, creator_token: token, creator_instagram: creatorData?.instagram || "", status: "viewing", last_viewed: new Date().toISOString(), claimed_at: new Date().toISOString() }).catch(() => {});
+      await db().from("creator_claims_f5961d0c").insert({ feature_id: featureId, creator_token: token, creator_instagram: creatorData?.instagram || "", status: "viewing", last_viewed: new Date().toISOString(), claimed_at: new Date().toISOString() });
     }
     return c.json({ ok: true });
   } catch { return c.json({ ok: true }); }
@@ -748,10 +752,18 @@ app.post("/make-server-f5961d0c/admin/deny-submission", async (c) => {
   try {
     const { submissionId, note } = await c.req.json();
     if (!submissionId) return c.json({ error: "submissionId required" }, 400);
+    const { data: sub } = await db().from("submissions_f5961d0c").select("feature_id").eq("id", submissionId).single();
     const { error } = await db().from("submissions_f5961d0c")
       .update({ admin_report_note: note || "", denied: true })
       .eq("id", submissionId);
     if (error) throw error;
+    // Put the feature back on the board so another creator can claim it.
+    if (sub?.feature_id) {
+      await db().from("features_f5961d0c").update({
+        status: "available", winner_instagram: "", total_payout: "",
+        claimed_by: "", claimed_at: null,
+      }).eq("id", sub.feature_id);
+    }
     return c.json({ success: true });
   } catch (e: any) { return c.json({ error: e.message }, 500); }
 });
@@ -774,6 +786,7 @@ app.post("/make-server-f5961d0c/creator-portal/payout", async (c) => {
   try {
     const { token, submissionId, featureId, payoutRange } = await c.req.json();
     if (!token || !submissionId) return c.json({ error: "token and submissionId required" }, 400);
+    if (!(await creatorFromToken(token))) return c.json({ error: "Invalid or expired link" }, 401);
     const { error } = await db().from("creator_payouts_f5961d0c").insert({ creator_token: token, submission_id: submissionId, feature_id: featureId, payout_range: payoutRange || "" });
     if (error) throw error;
     return c.json({ success: true });
@@ -797,7 +810,7 @@ app.get("/make-server-f5961d0c/business-portal", async (c) => {
 
     // Reels count
     const tierMap: Record<string, number> = { Starter: 1, Growth: 2, Pro: 4, Scale: 8 };
-    const { data: bizInfo } = await db().from("business_signups_f5961d0c").select("subscription_tier, reels_used_this_month, reels_reset_month").eq("id", bizId).single().catch(() => ({ data: null }));
+    const { data: bizInfo } = await db().from("business_signups_f5961d0c").select("subscription_tier, reels_used_this_month, reels_reset_month").eq("id", bizId).single();
     const tier = (bizInfo as any)?.subscription_tier || null;
     const tierLimit = tier ? (tierMap[tier] || 1) : 0;
     const currentMonth = new Date().toISOString().slice(0, 7);
@@ -861,7 +874,7 @@ app.post("/make-server-f5961d0c/business-portal/feedback", async (c) => {
       if (sub && sub.status !== "approved") {
         await db().from("submissions_f5961d0c").update({ status: "approved", approved_at: new Date().toISOString() }).eq("id", submissionId);
         await db().from("features_f5961d0c").update({ status: "completed", completed_at: new Date().toISOString(), winner_instagram: sub.creator_instagram || "" }).eq("id", sub.feature_id);
-        await db().from("creator_claims_f5961d0c").update({ status: "approved" }).eq("feature_id", sub.feature_id).eq("creator_token", sub.token).catch(() => {});
+        await db().from("creator_claims_f5961d0c").update({ status: "approved" }).eq("feature_id", sub.feature_id).eq("creator_token", sub.token);
         const kvKey = `creator_claim_${sub.token}_${sub.feature_id}`;
         const existing = await kv.get(kvKey);
         if (existing) await kv.set(kvKey, { ...existing, status: "approved" });
