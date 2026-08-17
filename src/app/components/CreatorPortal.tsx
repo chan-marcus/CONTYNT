@@ -144,6 +144,87 @@ function LoadingScreen() {
   );
 }
 
+// ─── Wallet / cash-out modal ─────────────────────────────────────────────────
+const PAYOUT_METHODS = ["PayPal", "Venmo", "Zelle"] as const;
+
+function WalletModal({ available, token, onClose, onRequested }: {
+  available: number; token: string; onClose: () => void; onRequested: () => void;
+}) {
+  const [method, setMethod] = useState<string>("");
+  const [handle, setHandle] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [done, setDone] = useState(false);
+  const [error, setError] = useState("");
+
+  const submit = async () => {
+    if (!method || !handle.trim()) return;
+    setBusy(true); setError("");
+    try {
+      const res = await api("/creator-portal/request-payout", {
+        method: "POST",
+        body: JSON.stringify({ token, method, handle: handle.trim() }),
+      });
+      const d = await res.json().catch(() => null);
+      if (!res.ok) { setError(d?.error || "Could not submit request."); setBusy(false); return; }
+      setDone(true); setBusy(false); onRequested();
+    } catch { setError("Could not reach the server."); setBusy(false); }
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center px-5 bg-black/70 backdrop-blur-sm" onClick={onClose}>
+      <div className="w-full max-w-sm bg-neutral-900 border border-white/15 rounded-2xl p-6 space-y-4" onClick={e => e.stopPropagation()}>
+        <div className="flex items-start justify-between gap-3">
+          <div>
+            <h2 className="text-lg font-bold text-white">Cash Out Earnings</h2>
+            <p className="text-xs text-neutral-400 mt-0.5">Available balance</p>
+          </div>
+          <button onClick={onClose} className="text-neutral-500 hover:text-white transition-colors"><X className="w-5 h-5" /></button>
+        </div>
+
+        <p className="text-3xl font-bold text-green-400">${available}</p>
+
+        {done ? (
+          <div className="bg-green-500/10 border border-green-500/25 rounded-xl p-4 space-y-1">
+            <p className="text-sm font-semibold text-green-300">Payout requested</p>
+            <p className="text-xs text-neutral-400">We'll send ${available} to your {method} ({handle}). You'll get a confirmation once it's sent.</p>
+          </div>
+        ) : available <= 0 ? (
+          <p className="text-sm text-neutral-400">You don't have any earnings available to cash out yet.</p>
+        ) : (
+          <>
+            <div className="space-y-1.5">
+              <p className="text-xs font-medium text-neutral-300">Payment method</p>
+              <div className="grid grid-cols-3 gap-2">
+                {PAYOUT_METHODS.map(m => (
+                  <button key={m} onClick={() => setMethod(m)}
+                    className={`py-2.5 text-sm rounded-xl border transition-all ${
+                      method === m ? "bg-white text-neutral-900 border-white font-semibold" : "bg-white/5 text-neutral-300 border-white/15 hover:border-white/30"
+                    }`}>{m}</button>
+                ))}
+              </div>
+            </div>
+            {method && (
+              <div className="space-y-1.5">
+                <p className="text-xs font-medium text-neutral-300">
+                  Your {method} {method === "Zelle" ? "phone or email" : method === "PayPal" ? "email" : "username"}
+                </p>
+                <input value={handle} onChange={e => setHandle(e.target.value)}
+                  placeholder={method === "Venmo" ? "@username" : method === "Zelle" ? "phone or email" : "email"}
+                  className="w-full px-3 py-2.5 bg-white/10 border border-white/20 rounded-xl text-white text-sm placeholder:text-neutral-500 focus:outline-none focus:ring-2 focus:ring-white/20" />
+              </div>
+            )}
+            {error && <p className="text-xs text-red-400">{error}</p>}
+            <button onClick={submit} disabled={!method || !handle.trim() || busy}
+              className="w-full py-3 bg-green-500 hover:bg-green-400 text-white text-sm font-semibold rounded-xl transition-all disabled:opacity-40">
+              {busy ? "Submitting…" : `Request $${available}`}
+            </button>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
 // ─── Stats bar ────────────────────────────────────────────────────────────────
 const CREATOR_SCORE_HELP =
   "Your Creator Score is based on completion rate, on-time submissions, approval rate, and overall reel performance.";
@@ -722,6 +803,12 @@ export function CreatorPortal({ token }: { token: string }) {
   const [features, setFeatures] = useState<Feature[]>([]);
   const [claims, setClaims] = useState<Record<string, Claim>>({});
   const [stats, setStats] = useState<PortalStats>({ completed: 0, activeClaims: 0, totalPayout: 0 });
+  // A rising balance means the admin just credited a reel — glow the Earned
+  // stat and flag Activity until the creator looks.
+  const lastBalanceRef = useRef<number | null>(null);
+  const [earnedGlow, setEarnedGlow] = useState(false);
+  const [creditUnread, setCreditUnread] = useState(false);
+  const [walletOpen, setWalletOpen] = useState(false);
   const [error, setError] = useState("");
   const [portalTab, setPortalTab] = useState<"features" | "completed" | "activity">("features");
   const featSeenKey = `contynt_cr_feats_seen_${token}`;
@@ -796,11 +883,10 @@ export function CreatorPortal({ token }: { token: string }) {
       const mergedValues = Object.values(merged);
       const mergedActiveClaims = mergedValues.filter((c) => c.status === "claimed" || c.status === "submitted").length;
       const mergedCompleted = mergedValues.filter((c) => c.status === "approved").length;
-      // Recompute totalPayout from approved claims with payoutAmount (survives page refresh)
-      const mergedTotalPayout = mergedValues
-        .filter((c) => c.status === "approved" && c.payoutAmount)
-        .reduce((sum, c) => sum + parseInt((c.payoutAmount || "0").replace(/[^0-9]/g, "") || "0"), 0);
-      setStats({ ...serverStats, activeClaims: mergedActiveClaims, completed: mergedCompleted, totalPayout: Math.max(serverStats.totalPayout || 0, mergedTotalPayout) });
+      // totalPayout is now backed by the earnings ledger, so take the server's
+      // figure as authoritative instead of reconstructing it from local claims.
+      setStats({ ...serverStats, activeClaims: mergedActiveClaims, completed: mergedCompleted });
+      lastBalanceRef.current = serverStats.totalPayout ?? 0;
       setPhase("ready");
     };
     load();
@@ -863,6 +949,18 @@ export function CreatorPortal({ token }: { token: string }) {
         const claimRows: any[] = data.claims || [];
         const subRows: any[] = data.submissions || [];
         const featRows: any[] = data.features || [];
+
+        // Balance is server-derived; a rise since the last poll is new money.
+        if (data.balance) {
+          const earned = data.balance.totalEarned ?? 0;
+          const prevBalance = lastBalanceRef.current;
+          if (prevBalance !== null && earned > prevBalance) {
+            setEarnedGlow(true);
+            setCreditUnread(true);
+          }
+          lastBalanceRef.current = earned;
+          setStats(p => ({ ...p, totalPayout: earned, ...data.balance }));
+        }
 
         // Claim approvals: admin approved → creator has 24h to accept.
         setClaims(prev => {
@@ -1058,7 +1156,12 @@ export function CreatorPortal({ token }: { token: string }) {
         </motion.div>
 
         {/* Stats */}
-        <StatsBar stats={stats} instagram={creator?.instagram || ""} />
+        <StatsBar
+          stats={stats}
+          instagram={creator?.instagram || ""}
+          earnedGlow={earnedGlow}
+          onOpenWallet={() => { setEarnedGlow(false); setWalletOpen(true); }}
+        />
 
         {/* Tabs */}
         {(() => {
@@ -1071,7 +1174,7 @@ export function CreatorPortal({ token }: { token: string }) {
 
           const featsUnread = availableCount > featsSeen && portalTab !== "features";
           const compUnread  = pendingCashOut > 0 && portalTab !== "completed";
-          const actUnread   = activityCount > actSeen && portalTab !== "activity";
+          const actUnread   = (activityCount > actSeen || creditUnread) && portalTab !== "activity";
 
           const handleTabClick = (tab: "features" | "completed" | "activity") => {
             setPortalTab(tab);
@@ -1082,6 +1185,8 @@ export function CreatorPortal({ token }: { token: string }) {
               setCompSeen(completedCount);
               try { localStorage.setItem(compSeenKey, String(completedCount)); } catch {}
             } else if (tab === "activity") {
+              setCreditUnread(false);
+              setEarnedGlow(false);
               setActSeen(activityCount);
               try { localStorage.setItem(actSeenKey, String(activityCount)); } catch {}
             }
@@ -1115,6 +1220,15 @@ export function CreatorPortal({ token }: { token: string }) {
         })()}
 
         {/* Features tab */}
+        {walletOpen && (
+          <WalletModal
+            available={(stats as any).availableEarnings ?? stats.totalPayout ?? 0}
+            token={token}
+            onClose={() => setWalletOpen(false)}
+            onRequested={() => { setEarnedGlow(false); }}
+          />
+        )}
+
         {portalTab === "features" && (
           <div className="w-full flex flex-col gap-4">
             {(() => {

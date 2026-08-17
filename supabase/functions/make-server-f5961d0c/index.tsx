@@ -23,6 +23,39 @@ async function must<T extends { error: any }>(label: string, q: PromiseLike<T>):
   return res;
 }
 
+// ─── Creator balances ─────────────────────────────────────────────────────────
+// Balances are derived from the two ledger tables rather than stored, so they
+// cannot drift out of sync with the rows that justify them.
+//
+//   totalEarned = credits - paid out      (this is what "Mark as Paid" zeroes)
+//   pending     = requested, not yet paid
+//   available   = credits - paid - requested
+function parseAmount(v: any): number {
+  if (typeof v === "number") return isFinite(v) ? v : 0;
+  const n = parseFloat(String(v ?? "").replace(/[^0-9.]/g, ""));
+  return isFinite(n) ? n : 0;
+}
+
+async function creatorBalance(token: string) {
+  const supabase = db();
+  const [earnRes, payRes] = await Promise.all([
+    supabase.from("creator_earnings_f5961d0c").select("amount").eq("creator_token", token),
+    supabase.from("creator_payout_requests_f5961d0c").select("amount, status").eq("creator_token", token),
+  ]);
+  const credits = (earnRes.data ?? []).reduce((s: number, r: any) => s + parseAmount(r.amount), 0);
+  let paid = 0, requested = 0;
+  for (const r of (payRes.data ?? [])) {
+    if (r.status === "paid") paid += parseAmount(r.amount);
+    else if (r.status === "requested") requested += parseAmount(r.amount);
+  }
+  const round = (n: number) => Math.round(n * 100) / 100;
+  return {
+    totalEarned: round(Math.max(0, credits - paid)),
+    pendingEarnings: round(requested),
+    availableEarnings: round(Math.max(0, credits - paid - requested)),
+  };
+}
+
 function uid(prefix = "") {
   return `${prefix}${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
 }
@@ -599,12 +632,20 @@ app.get("/make-server-f5961d0c/creator-portal", async (c) => {
     // Creator stats
     const completedCount = (statsRes.data ?? []).filter((s: any) => s.status === "approved").length;
     const activeClaimsCount = (claimsRes.data ?? []).filter((cl: any) => cl.status === "claimed" || cl.status === "submitted").length;
-    const { data: payouts } = await db().from("creator_payouts_f5961d0c").select("payout_range").eq("creator_token", token);
-    const totalPayout = (payouts ?? []).reduce((sum: number, p: any) => {
-      const match = p.payout_range?.match(/\$(\d+)/);
-      return sum + (match ? parseInt(match[1]) : 0);
-    }, 0);
-    return c.json({ creator: { instagram: creatorData.instagram, city: creatorData.city, email: creatorData.email || "" }, features, claims: claimsMap, stats: { completed: completedCount, activeClaims: activeClaimsCount, totalPayout }, resetAt });
+    // Balance comes from the earnings ledger. The old creator_payouts read that
+    // stood here was never written to, so this stat was always zero.
+    const balance = await creatorBalance(token);
+    return c.json({
+      creator: { instagram: creatorData.instagram, city: creatorData.city, email: creatorData.email || "" },
+      features, claims: claimsMap,
+      stats: {
+        completed: completedCount,
+        activeClaims: activeClaimsCount,
+        totalPayout: balance.totalEarned,
+        ...balance,
+      },
+      resetAt,
+    });
   } catch (e: any) { return c.json({ error: "Failed to load portal", details: e.message }, 500); }
 });
 
@@ -722,7 +763,9 @@ app.get("/make-server-f5961d0c/creator-portal/sync", async (c) => {
         .select("id, business_id, business_name, address, city, category, payout_range, status, approved_at, winner_instagram, business_instagram, admin_notes"),
     ]);
 
+    const balance = await creatorBalance(token);
     return c.json({
+      balance,
       claims: (claimsRes.data ?? []).map((r: any) => ({
         featureId: r.feature_id, status: r.status,
         approvedAt: r.approved_at || null, expiresAt: r.expires_at || null,
@@ -793,15 +836,39 @@ app.post("/make-server-f5961d0c/admin/approve-payout", async (c) => {
     if (!submissionId) return c.json({ error: "submissionId required" }, 400);
     const { data: sub, error: subErr } = await db().from("submissions_f5961d0c").select("*").eq("id", submissionId).single();
     if (subErr || !sub) return c.json({ error: "Submission not found" }, 404);
-    await db().from("submissions_f5961d0c")
-      .update({ payout_amount: payoutAmount || "", admin_payout_approved: true })
-      .eq("id", submissionId);
+
+    const amount = parseAmount(payoutAmount ?? sub.payout_amount);
+    if (amount <= 0) return c.json({ error: "A credit amount greater than zero is required" }, 400);
+
+    // Crediting is the money-moving step, so make it idempotent: a second click
+    // on Approve & Add to Balance must not pay the creator twice.
+    const { data: already } = await db().from("creator_earnings_f5961d0c")
+      .select("id").eq("submission_id", submissionId).eq("source", "submission").limit(1);
+    if (!already?.length) {
+      await must("approve-payout: credit creator", db().from("creator_earnings_f5961d0c").insert({
+        creator_token: sub.token,
+        creator_id: sub.creator_id || null,
+        amount,
+        source: "submission",
+        submission_id: submissionId,
+        feature_id: sub.feature_id,
+        note: `Reel approved for ${sub.creator_instagram || "creator"}`,
+      }));
+    }
+
+    await must("approve-payout: mark submission", db().from("submissions_f5961d0c")
+      .update({ payout_amount: payoutAmount || String(amount), admin_payout_approved: true, cashed_out_at: new Date().toISOString() })
+      .eq("id", submissionId));
     await must("approve-payout: close feature", db().from("features_f5961d0c").update({
       status: "completed",
       winner_instagram: sub.creator_instagram || "",
       completed_at: new Date().toISOString(),
+      total_payout: payoutAmount || String(amount),
+      claimed_by: sub.creator_instagram || "",
     }).eq("id", sub.feature_id));
-    return c.json({ success: true });
+
+    const balance = await creatorBalance(sub.token);
+    return c.json({ success: true, credited: amount, balance });
   } catch (e: any) { return c.json({ error: e.message }, 500); }
 });
 
@@ -823,6 +890,33 @@ app.post("/make-server-f5961d0c/admin/deny-submission", async (c) => {
       }).eq("id", sub.feature_id));
     }
     return c.json({ success: true });
+  } catch (e: any) { return c.json({ error: e.message }, 500); }
+});
+
+// ─── Creator portal: request a cash out ──────────────────────────────────────
+app.post("/make-server-f5961d0c/creator-portal/request-payout", async (c) => {
+  try {
+    const { token, method, handle } = await c.req.json();
+    if (!token || !method || !handle) return c.json({ error: "token, method, and handle required" }, 400);
+    const creatorData = await creatorFromToken(token);
+    if (!creatorData) return c.json({ error: "Invalid or expired link" }, 401);
+    if (!["PayPal", "Venmo", "Zelle"].includes(method)) return c.json({ error: "Unsupported payout method" }, 400);
+
+    // The amount comes from the ledger, never from the client — otherwise a
+    // creator could request more than they have earned.
+    const balance = await creatorBalance(token);
+    if (balance.availableEarnings <= 0) return c.json({ error: "No balance available to cash out" }, 400);
+
+    await must("request-payout: create request", db().from("creator_payout_requests_f5961d0c").insert({
+      creator_token: token,
+      creator_id: creatorData.creatorId || null,
+      creator_instagram: creatorData.instagram || "",
+      amount: balance.availableEarnings,
+      method,
+      handle,
+      status: "requested",
+    }));
+    return c.json({ success: true, amount: balance.availableEarnings, balance: await creatorBalance(token) });
   } catch (e: any) { return c.json({ error: e.message }, 500); }
 });
 

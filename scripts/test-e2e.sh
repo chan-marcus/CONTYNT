@@ -140,6 +140,54 @@ api GET "/creator-portal/sync?t=$CTOK" 200 && {
   [ "$(echo "$BODY" | jget claims '#')" -gt 0 ] && ok "sync returns claims" || bad "sync claims empty"
 } || bad "sync" "$HTTP"
 
+head_ "earnings ledger"
+api POST /admin/approve-payout 200 "{\"submissionId\":\"$SUB\",\"payoutAmount\":\"\$25\"}" \
+  && ok "credit \$25 to balance" || bad "approve-payout" "$HTTP $BODY"
+assert_sql "one credit row written" \
+  "select count(*) from public.creator_earnings_f5961d0c where submission_id='$SUB';" "1"
+assert_sql "credit amount correct" \
+  "select amount from public.creator_earnings_f5961d0c where submission_id='$SUB';" "25.00"
+
+# Money-moving step: a repeated click must not pay twice.
+api POST /admin/approve-payout 200 "{\"submissionId\":\"$SUB\",\"payoutAmount\":\"\$25\"}" >/dev/null
+assert_sql "re-approving does not double-credit" \
+  "select count(*) from public.creator_earnings_f5961d0c where submission_id='$SUB';" "1"
+
+api POST /admin/approve-payout 400 "{\"submissionId\":\"$SUB\",\"payoutAmount\":\"\$0\"}" \
+  && ok "zero-amount credit rejected" || bad "zero-amount credit accepted" "$HTTP"
+
+api GET "/creator-portal?t=$CTOK" 200 && {
+  [ "$(echo "$BODY" | jget stats totalPayout)" = "25" ] \
+    && ok "portal reports \$25 earned" || bad "portal balance" "got $(echo "$BODY" | jget stats totalPayout)"
+} || bad "portal load" "$HTTP"
+
+api GET "/creator-portal/sync?t=$CTOK" 200 && {
+  [ "$(echo "$BODY" | jget balance availableEarnings)" = "25" ] \
+    && ok "sync reports \$25 available" || bad "sync available" "got $(echo "$BODY" | jget balance availableEarnings)"
+} || bad "sync" "$HTTP"
+
+head_ "wallet cash-out"
+api POST /creator-portal/request-payout 401 '{"token":"nope","method":"Venmo","handle":"@x"}' \
+  && ok "bad token rejected" || bad "bad token accepted" "$HTTP"
+api POST /creator-portal/request-payout 400 "{\"token\":\"$CTOK\",\"method\":\"Bitcoin\",\"handle\":\"@x\"}" \
+  && ok "unsupported method rejected" || bad "unsupported method accepted" "$HTTP"
+api POST /creator-portal/request-payout 200 "{\"token\":\"$CTOK\",\"method\":\"Venmo\",\"handle\":\"@${TAG}\"}" \
+  && ok "cash-out requested" || bad "cash-out" "$HTTP $BODY"
+assert_sql "payout request written" \
+  "select count(*) from public.creator_payout_requests_f5961d0c where creator_token='$CTOK' and status='requested';" "1"
+assert_sql "request amount is the ledger balance, not client input" \
+  "select amount from public.creator_payout_requests_f5961d0c where creator_token='$CTOK';" "25.00"
+
+api GET "/creator-portal/sync?t=$CTOK" 200 && {
+  [ "$(echo "$BODY" | jget balance availableEarnings)" = "0" ] \
+    && ok "available drops to \$0 after request" || bad "available after request" "got $(echo "$BODY" | jget balance availableEarnings)"
+  [ "$(echo "$BODY" | jget balance pendingEarnings)" = "25" ] \
+    && ok "pending shows \$25" || bad "pending" "got $(echo "$BODY" | jget balance pendingEarnings)"
+} || bad "sync after request" "$HTTP"
+
+api POST /creator-portal/request-payout 400 "{\"token\":\"$CTOK\",\"method\":\"Venmo\",\"handle\":\"@${TAG}\"}" \
+  && ok "second request blocked (no balance left)" || bad "double cash-out allowed" "$HTTP"
+
 head_ "database state (the assertions that matter)"
 assert_sql "feature is completed"      "select status from public.features_f5961d0c where id='$FEAT';" "completed"
 assert_sql "winner recorded"           "select winner_instagram from public.features_f5961d0c where id='$FEAT';" "${TAG}_creator"
