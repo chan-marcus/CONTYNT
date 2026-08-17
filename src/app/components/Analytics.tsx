@@ -518,13 +518,13 @@ function SubmissionCard({ sub, onApprove, approving, businessName, featurePayout
   };
 
   const adminApproved = sub.status === "approved";
-  const statusColor = isCompleted ? "bg-neutral-500/10 text-neutral-400 border-neutral-500/20"
-    : payoutSaved ? "bg-purple-500/10 text-purple-400 border-purple-500/20"
+  const statusColor = isCompleted || payoutSaved ? "bg-neutral-500/10 text-neutral-400 border-neutral-500/20"
     : businessApproved ? "bg-green-500/10 text-green-400 border-green-500/20"
     : adminApproved ? "bg-blue-500/10 text-blue-400 border-blue-500/20"
     : "bg-yellow-500/10 text-yellow-400 border-yellow-500/20";
-  const statusLabel = isCompleted ? "Completed"
-    : payoutSaved ? "Payout Ready"
+  // Crediting the balance completes the feature outright, so there is no
+  // longer an intermediate "payout ready" state to show.
+  const statusLabel = isCompleted || payoutSaved ? "Completed"
     : businessApproved ? "Business Approved"
     : adminApproved ? "Sent to Business"
     : "Pending";
@@ -607,7 +607,7 @@ function SubmissionCard({ sub, onApprove, approving, businessName, featurePayout
         {businessApproved && !payoutSaved && (
           <div className="space-y-2 border-t border-white/10 pt-3">
             <div className="flex items-center justify-between">
-              <p className="text-xs font-medium text-neutral-300">Set payout to enable creator Cash Out:</p>
+              <p className="text-xs font-medium text-neutral-300">Amount to credit:</p>
               {featurePayout && (
                 <span className="text-xs text-neutral-500">Estimate: <span className="text-neutral-300">{featurePayout}</span></span>
               )}
@@ -617,15 +617,15 @@ function SubmissionCard({ sub, onApprove, approving, businessName, featurePayout
               className="w-full px-3 py-2 text-xs bg-neutral-800 border border-white/15 rounded-lg text-white placeholder:text-neutral-600 focus:outline-none" />
             <button onClick={savePayout} disabled={!payoutInput || savingPayout}
               className="w-full py-2 text-sm bg-purple-600 text-white rounded-lg hover:bg-purple-500 transition-all disabled:opacity-50">
-              {savingPayout ? "Saving…" : "Enable Cash Out for Creator"}
+              {savingPayout ? "Crediting…" : "Approve & Add to Balance"}
             </button>
           </div>
         )}
 
         {payoutSaved && (
-          <div className="bg-purple-500/10 border border-purple-500/20 rounded-lg p-3 space-y-1">
-            <p className="text-xs font-semibold text-purple-300">✓ Cash Out enabled for creator</p>
-            <p className="text-xs text-neutral-400">Payout: <span className="font-bold text-white">{(() => { const v = sub.payout_amount || payoutInput; return v && !v.startsWith("$") ? `$${v}` : v; })()}</span></p>
+          <div className="bg-green-500/10 border border-green-500/20 rounded-lg p-3 space-y-1">
+            <p className="text-xs font-semibold text-green-300">Credited to creator balance</p>
+            <p className="text-xs text-neutral-400">Amount: <span className="font-bold text-white">{(() => { const v = sub.payout_amount || payoutInput; return v && !v.startsWith("$") ? `$${v}` : v; })()}</span></p>
           </div>
         )}
 

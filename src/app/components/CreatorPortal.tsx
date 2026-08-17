@@ -20,7 +20,7 @@ interface Feature {
 
 interface Claim { featureId: string; status: "interested" | "admin_approved" | "claimed" | "submitted" | "approved" | "cashed_out" | "denied"; reelUrl?: string; stripeLink?: string; payoutAmount?: string; deniedNote?: string; approvedAt?: string; expiresAt?: string; acceptanceExpiresAt?: string; }
 interface PayoutInfo { stripeLink: string; payoutAmount: string; submissionId: string; }
-interface PortalStats { completed: number; activeClaims: number; totalPayout: number; }
+interface PortalStats { completed: number; activeClaims: number; totalPayout: number; creatorScore?: number; }
 
 const FAKE_FEATURES = [
   { id: "fake_1", businessName: "Maxfield's House of Caffeine", address: "Upper Haight", city: "San Francisco, CA", category: "Coffee Shop", payoutRange: "$15–$25", status: "completed" as const, claimedBy: "sarahv" },
@@ -145,16 +145,43 @@ function LoadingScreen() {
 }
 
 // ─── Stats bar ────────────────────────────────────────────────────────────────
-function StatsBar({ stats, instagram }: { stats: PortalStats; instagram: string }) {
+const CREATOR_SCORE_HELP =
+  "Your Creator Score is based on completion rate, on-time submissions, approval rate, and overall reel performance.";
+
+// Hover covers desktop; tap covers mobile, where hover never fires.
+function ScoreTooltip() {
+  const [open, setOpen] = useState(false);
+  return (
+    <span className="relative inline-flex">
+      <button
+        type="button"
+        aria-label="What is Creator Score?"
+        onClick={(e) => { e.stopPropagation(); setOpen(v => !v); }}
+        onMouseEnter={() => setOpen(true)}
+        onMouseLeave={() => setOpen(false)}
+        onBlur={() => setOpen(false)}
+        className="w-3.5 h-3.5 rounded-full border border-white/25 text-[9px] leading-none text-neutral-400 hover:text-white hover:border-white/50 transition-colors flex items-center justify-center"
+      >
+        ?
+      </button>
+      {open && (
+        <span
+          role="tooltip"
+          className="absolute z-30 left-1/2 -translate-x-1/2 top-5 w-56 rounded-xl border border-white/15 bg-neutral-900 px-3 py-2 text-[11px] leading-relaxed text-neutral-300 shadow-xl text-left"
+        >
+          {CREATOR_SCORE_HELP}
+        </span>
+      )}
+    </span>
+  );
+}
+
+function StatsBar({ stats, instagram, onOpenWallet, earnedGlow }: {
+  stats: PortalStats; instagram: string;
+  onOpenWallet?: () => void; earnedGlow?: boolean;
+}) {
   return (
     <div className="grid grid-cols-3 gap-3">
-      <div className="bg-white/5 border border-white/10 rounded-2xl p-4 text-center">
-        <div className="flex items-center justify-center gap-1.5 mb-1">
-          <CheckCircle className="w-4 h-4 text-green-400" />
-          <span className="text-xs text-neutral-400">Completed</span>
-        </div>
-        <p className="text-2xl font-bold text-white">{stats.completed}</p>
-      </div>
       <div className="bg-white/5 border border-white/10 rounded-2xl p-4 text-center">
         <div className="flex items-center justify-center gap-1.5 mb-1">
           <Zap className="w-4 h-4 text-blue-400" />
@@ -164,11 +191,28 @@ function StatsBar({ stats, instagram }: { stats: PortalStats; instagram: string 
       </div>
       <div className="bg-white/5 border border-white/10 rounded-2xl p-4 text-center">
         <div className="flex items-center justify-center gap-1.5 mb-1">
-          <DollarSign className="w-4 h-4 text-yellow-400" />
+          <Award className="w-4 h-4 text-purple-300" />
+          <span className="text-xs text-neutral-400">Creator Score</span>
+          <ScoreTooltip />
+        </div>
+        <p className="text-2xl font-bold text-white">{stats.creatorScore ?? 100}</p>
+      </div>
+      {/* Earned doubles as the wallet entry point once a balance exists. */}
+      <button
+        type="button"
+        onClick={onOpenWallet}
+        className={`bg-white/5 border rounded-2xl p-4 text-center transition-all ${
+          earnedGlow
+            ? "border-green-400/60 shadow-[0_0_18px_rgba(74,222,128,0.35)] animate-pulse"
+            : "border-white/10 hover:border-white/25"
+        }`}
+      >
+        <div className="flex items-center justify-center gap-1.5 mb-1">
+          <DollarSign className={`w-4 h-4 ${earnedGlow ? "text-green-400" : "text-yellow-400"}`} />
           <span className="text-xs text-neutral-400">Earned</span>
         </div>
-        <p className="text-2xl font-bold text-white">${stats.totalPayout}</p>
-      </div>
+        <p className={`text-2xl font-bold ${earnedGlow ? "text-green-300" : "text-white"}`}>${stats.totalPayout}</p>
+      </button>
     </div>
   );
 }
@@ -573,10 +617,10 @@ function FeatureCard({ feature, claim, token, onClaim, onUnclaim, onAccept, onSu
             )}
             <div className="bg-white/5 rounded-xl px-4 py-3 text-xs text-neutral-400 space-y-1.5">
               <p className="font-medium text-neutral-300 mb-2">Post requirements</p>
-              <p>• Add <span className="text-white">@{feature.businessName.toLowerCase().replace(/\s+/g, "")}</span> as a collaborator</p>
-              <p>• Tag the business in your post</p>
-              <p>• Add their location to the post</p>
-              <p>• Posts must remain active for at least <span className="text-white">72 hours</span> to be approved.</p>
+              <p>• Add <span className="text-white">@{((feature as any).businessInstagram || feature.businessName).replace(/^@/, "").toLowerCase().replace(/\s+/g, "")}</span> as a collaborator</p>
+              <p>• Tag the business location</p>
+              <p>• Mention <span className="text-white">@contynt.hq</span> in the caption</p>
+              <p>• Posts must remain live for at least <span className="text-white">72 hours</span> to be approved.</p>
             </div>
             {expiresAt && (
               <div className="bg-white/5 border border-white/10 rounded-xl px-4 py-2.5 space-y-1 text-center">
@@ -1059,10 +1103,10 @@ export function CreatorPortal({ token }: { token: string }) {
                       {completedCount}
                     </span>
                   )}
-                  {tab === "activity" && activityCount > 0 && (
-                    <span className={`flex items-center justify-center w-5 h-5 rounded-full text-[10px] font-bold ${actUnread ? "bg-green-400 text-neutral-900 animate-pulse" : "bg-white/15 text-neutral-300"}`}>
-                      {activityCount}
-                    </span>
+                  {/* No count here — Activity shows only an unread dot, which
+                      clears once the tab is opened. */}
+                  {tab === "activity" && actUnread && (
+                    <span aria-label="New activity" className="w-2 h-2 rounded-full bg-green-400 animate-pulse" />
                   )}
                 </button>
               ))}
