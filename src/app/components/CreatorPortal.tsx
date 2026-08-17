@@ -2,6 +2,7 @@ import { useEffect, useState, useRef } from "react";
 import { motion, AnimatePresence } from "motion/react";
 import { MapPin, DollarSign, CheckCircle, Lock, X, ExternalLink, AlertCircle, Users, Zap, TrendingUp, Award } from "lucide-react";
 import { projectId, publicAnonKey } from "/utils/supabase/info";
+import { AmbassadorPanel, AmbassadorUpsell, AmbassadorEmptyState, useAmbassador } from "./Ambassador";
 
 const BASE = `https://${projectId}.supabase.co/functions/v1/make-server-f5961d0c`;
 const AUTH = { Authorization: `Bearer ${publicAnonKey}`, "Content-Type": "application/json" };
@@ -336,11 +337,12 @@ function ViewerCount({ featureId }: { featureId: string }) {
 }
 
 // ─── Feature card ─────────────────────────────────────────────────────────────
-function FeatureCard({ feature, claim, token, onClaim, onUnclaim, onAccept, onSubmit, onPayout, fake, claimedBy, myInstagram, needsAttention, onSeen }: {
+function FeatureCard({ feature, claim, token, onClaim, onUnclaim, onAccept, onSubmit, onPayout, fake, claimedBy, myInstagram, needsAttention, onSeen, showAmbassadorUpsell, onLearnAmbassador }: {
   feature: Feature; claim?: Claim; token: string; myInstagram?: string;
   onClaim: () => void; onUnclaim: () => void; onAccept: () => void;
   onSubmit: (url: string) => void; onPayout: (amount?: string) => void; fake?: boolean; claimedBy?: string;
   needsAttention?: boolean; onSeen?: () => void;
+  showAmbassadorUpsell?: boolean; onLearnAmbassador?: () => void;
 }) {
   const [reelUrl, setReelUrl] = useState(claim?.reelUrl || "");
   const [urlError, setUrlError] = useState("");
@@ -708,6 +710,7 @@ function FeatureCard({ feature, claim, token, onClaim, onUnclaim, onAccept, onSu
               <p>• Mention <span className="text-white">@contynt.hq</span> in the caption</p>
               <p>• Posts must remain live for at least <span className="text-white">72 hours</span> to be approved.</p>
             </div>
+            {showAmbassadorUpsell && <AmbassadorUpsell onLearnMore={onLearnAmbassador!} />}
             {expiresAt && (
               <div className="bg-white/5 border border-white/10 rounded-xl px-4 py-2.5 space-y-1 text-center">
                 <p className="text-[10px] text-neutral-500 uppercase tracking-widest">Time Remaining</p>
@@ -830,7 +833,8 @@ export function CreatorPortal({ token }: { token: string }) {
     (claims[featureId]?.status as any) === "admin_approved" && !seenActions.has(featureId);
   const [walletOpen, setWalletOpen] = useState(false);
   const [error, setError] = useState("");
-  const [portalTab, setPortalTab] = useState<"features" | "completed" | "activity">("features");
+  const [portalTab, setPortalTab] = useState<"features" | "completed" | "activity" | "ambassador">("features");
+  const ambassador = useAmbassador(token);
   const featSeenKey = `contynt_cr_feats_seen_${token}`;
   const compSeenKey = `contynt_cr_comp_seen_${token}`;
   const actSeenKey  = `contynt_cr_act_seen_${token}`;
@@ -1133,6 +1137,12 @@ export function CreatorPortal({ token }: { token: string }) {
               <span className="w-2 h-2 rounded-full bg-green-400 animate-pulse" />
               <span className="text-xs font-medium text-green-400">Active</span>
             </div>
+            {ambassador.state?.enabled && (
+              <div className="flex items-center gap-1.5 bg-purple-500/15 border border-purple-400/30 px-2.5 py-1 rounded-full">
+                <Award className="w-3 h-3 text-purple-300" />
+                <span className="text-xs font-medium text-purple-200">Ambassador</span>
+              </div>
+            )}
           </div>
           {creator?.city && (
             <p className="text-xs text-neutral-500">
@@ -1171,7 +1181,7 @@ export function CreatorPortal({ token }: { token: string }) {
             <p><span className="text-white font-medium">2. Get Selected</span> — If the business picks you, you'll get a notification to start.</p>
             <p><span className="text-white font-medium">3. Film and Post</span> — Shoot at the location, hit the requirements and post your Reel within 5 days.</p>
             <p><span className="text-white font-medium">4. Submit</span> — Drop your Reel URL for review.</p>
-            <p><span className="text-white font-medium">5. Get Paid</span> — Once approved, your Cash Out button unlocks!</p>
+            <p><span className="text-white font-medium">5. Get Paid</span> — Once approved, your earnings are added to your balance. Cash out any time.</p>
           </div>
         </motion.div>
 
@@ -1196,7 +1206,7 @@ export function CreatorPortal({ token }: { token: string }) {
           const compUnread  = pendingCashOut > 0 && portalTab !== "completed";
           const actUnread   = (activityCount > actSeen || creditUnread) && portalTab !== "activity";
 
-          const handleTabClick = (tab: "features" | "completed" | "activity") => {
+          const handleTabClick = (tab: "features" | "completed" | "activity" | "ambassador") => {
             setPortalTab(tab);
             if (tab === "features") {
               setFeatsSeen(availableCount);
@@ -1214,10 +1224,19 @@ export function CreatorPortal({ token }: { token: string }) {
 
           return (
             <div className="flex gap-0 border-b border-white/10">
-              {(["features", "completed", "activity"] as const).map(tab => (
+              {(["features", "completed", "activity", "ambassador"] as const).map(tab => (
                 <button key={tab} onClick={() => handleTabClick(tab)}
-                  className={`relative px-4 py-2.5 text-sm font-medium transition-all border-b-2 -mb-px flex items-center gap-2 ${portalTab === tab ? "border-white text-white" : "border-transparent text-neutral-500 hover:text-neutral-300"}`}>
-                  {tab === "features" ? "Features" : tab === "completed" ? "Completed" : "Activity"}
+                  className={`relative px-4 py-2.5 text-sm font-medium transition-all border-b-2 -mb-px flex items-center gap-2 ${
+                    tab === "ambassador"
+                      ? (portalTab === tab
+                          ? "border-purple-400 text-purple-200"
+                          : "border-transparent text-purple-300/70 hover:text-purple-200")
+                      : (portalTab === tab
+                          ? "border-white text-white"
+                          : "border-transparent text-neutral-500 hover:text-neutral-300")
+                  }`}>
+                  {tab === "ambassador" && <Award className="w-3.5 h-3.5" />}
+                  {tab === "features" ? "Features" : tab === "completed" ? "Completed" : tab === "activity" ? "Activity" : "Ambassador"}
                   {tab === "features" && availableCount > 0 && (
                     <span className={`flex items-center justify-center w-5 h-5 rounded-full text-[10px] font-bold ${featsUnread ? "bg-green-400 text-neutral-900 animate-pulse" : "bg-white/15 text-neutral-300"}`}>
                       {availableCount}
@@ -1278,6 +1297,8 @@ export function CreatorPortal({ token }: { token: string }) {
               return (
                 <motion.div key={fid} className="w-full min-w-0" initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }}>
                   <FeatureCard feature={f} claim={claim} token={token} needsAttention={featureNeedsAttention(f.id)} onSeen={() => markActionSeen(f.id)}
+                    showAmbassadorUpsell={!ambassador.state?.enabled && claim.status === "claimed"}
+                    onLearnAmbassador={() => setPortalTab("ambassador")}
                     onClaim={() => claimFeature(fid)} onUnclaim={() => unclaimFeature(fid)}
                     onAccept={() => acceptFeature(fid)}
                     onSubmit={(url) => submitReel(fid, url)} onPayout={(amt) => requestPayout(fid, amt)}
@@ -1290,13 +1311,18 @@ export function CreatorPortal({ token }: { token: string }) {
               <motion.div key={feature.id} className="w-full min-w-0"
                 initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }}
                 transition={{ duration: 0.35, delay: i * 0.05 }}>
-                <FeatureCard feature={feature} claim={claims[feature.id]} token={token} needsAttention={featureNeedsAttention(feature.id)} onSeen={() => markActionSeen(feature.id)}
+                <FeatureCard feature={feature} claim={claims[feature.id]} token={token} needsAttention={featureNeedsAttention(feature.id)} onSeen={() => markActionSeen(feature.id)} showAmbassadorUpsell={!ambassador.state?.enabled && claims[feature.id]?.status === "claimed"} onLearnAmbassador={() => setPortalTab("ambassador")}
                   onClaim={() => claimFeature(feature.id)} onUnclaim={() => unclaimFeature(feature.id)}
                   onAccept={() => acceptFeature(feature.id)}
                   onSubmit={(url) => submitReel(feature.id, url)} onPayout={(amt) => requestPayout(feature.id, amt)}
                   fake={false} claimedBy={(feature as any).claimedBy} myInstagram={creator?.instagram || ""} />
               </motion.div>
             ))}
+            {!ambassador.state?.enabled
+              && Object.keys(claims).length === 0
+              && features.filter(f => f.status === "available").length === 0 && (
+              <AmbassadorEmptyState onLearnMore={() => setPortalTab("ambassador")} />
+            )}
           </div>
         )}
 
@@ -1335,7 +1361,7 @@ export function CreatorPortal({ token }: { token: string }) {
               {/* Cashed-out completed features */}
               {completedFeatures.map((feature) => (
                 <motion.div key={feature.id} className="w-full min-w-0" initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }}>
-                  <FeatureCard feature={feature} claim={claims[feature.id]} token={token} needsAttention={featureNeedsAttention(feature.id)} onSeen={() => markActionSeen(feature.id)}
+                  <FeatureCard feature={feature} claim={claims[feature.id]} token={token} needsAttention={featureNeedsAttention(feature.id)} onSeen={() => markActionSeen(feature.id)} showAmbassadorUpsell={!ambassador.state?.enabled && claims[feature.id]?.status === "claimed"} onLearnAmbassador={() => setPortalTab("ambassador")}
                     onClaim={() => {}} onUnclaim={() => {}} onAccept={() => {}} onSubmit={() => {}} onPayout={(amt) => requestPayout(feature.id, amt)}
                     fake={false} myInstagram={myInstagram} />
                 </motion.div>
@@ -1358,6 +1384,19 @@ export function CreatorPortal({ token }: { token: string }) {
                   fake={true} claimedBy={(feature as any).claimedBy || (feature as any).winnerInstagram || ""} myInstagram={creator?.instagram || ""} />
               </motion.div>
             ))}
+          </div>
+        )}
+
+        {/* Ambassador tab */}
+        {portalTab === "ambassador" && (
+          <div className="w-full min-w-0">
+            <AmbassadorPanel
+              token={token}
+              instagram={creator?.instagram || ""}
+              state={ambassador.state}
+              loading={ambassador.loading}
+              onRefresh={ambassador.refresh}
+            />
           </div>
         )}
       </main>
