@@ -10,3 +10,8 @@ supabase/.temp/
 .env.*
 
 .DS_Store
+
+# Local business data that lives alongside the app but isn't part of it.
+# Not a blanket *.csv rule — vite.config.ts treats .csv as an importable asset.
+/prospects.csv
+/story_queue_*.csv
