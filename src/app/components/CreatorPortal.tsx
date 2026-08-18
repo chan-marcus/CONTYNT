@@ -2,7 +2,9 @@ import { useEffect, useState, useRef } from "react";
 import { motion, AnimatePresence } from "motion/react";
 import { MapPin, DollarSign, CheckCircle, Lock, X, ExternalLink, AlertCircle, Users, Zap, TrendingUp, Award } from "lucide-react";
 import { projectId, publicAnonKey } from "/utils/supabase/info";
-import { AmbassadorPanel, AmbassadorUpsell, AmbassadorEmptyState, AmbassadorInstructions, useAmbassador } from "./Ambassador";
+import { CreatorLogin, CREATOR_TOKEN_KEY } from "./CreatorLogin";
+import { AmbassadorPanel, AmbassadorUpsell, AmbassadorEmptyState, AmbassadorInstructions, useAmbassador,
+         useCards, AmbassadorCardStep, HandoffQuestion, type AmbassadorCard } from "./Ambassador";
 
 const BASE = `https://${projectId}.supabase.co/functions/v1/make-server-f5961d0c`;
 const AUTH = { Authorization: `Bearer ${publicAnonKey}`, "Content-Type": "application/json" };
@@ -337,12 +339,16 @@ function ViewerCount({ featureId }: { featureId: string }) {
 }
 
 // ─── Feature card ─────────────────────────────────────────────────────────────
-function FeatureCard({ feature, claim, token, onClaim, onUnclaim, onAccept, onSubmit, onPayout, fake, claimedBy, myInstagram, needsAttention, onSeen, showAmbassadorUpsell, onLearnAmbassador, isAmbassador }: {
+function FeatureCard({ feature, claim, token, onClaim, onUnclaim, onAccept, onSubmit, onPayout, fake, claimedBy, myInstagram, needsAttention, onSeen, showAmbassadorUpsell, onLearnAmbassador, isAmbassador, card, cardMeta, onCardPrinted }: {
   feature: Feature; claim?: Claim; token: string; myInstagram?: string;
   onClaim: () => void; onUnclaim: () => void; onAccept: () => void;
-  onSubmit: (url: string) => void; onPayout: (amount?: string) => void; fake?: boolean; claimedBy?: string;
+  onSubmit: (url: string, handedOff: boolean | null, handoffReason: string) => void;
+  onPayout: (amount?: string) => void; fake?: boolean; claimedBy?: string;
   needsAttention?: boolean; onSeen?: () => void;
   showAmbassadorUpsell?: boolean; onLearnAmbassador?: () => void; isAmbassador?: boolean;
+  card?: AmbassadorCard;
+  cardMeta?: { handoffScript: string; attributionRule: string; unprintedCount: number } | null;
+  onCardPrinted?: () => void;
 }) {
   const [reelUrl, setReelUrl] = useState(claim?.reelUrl || "");
   const [urlError, setUrlError] = useState("");
@@ -355,6 +361,8 @@ function FeatureCard({ feature, claim, token, onClaim, onUnclaim, onAccept, onSu
   const [paymentMethod, setPaymentMethod] = useState("");
   const [paymentInfo, setPaymentInfo] = useState("");
   const [claiming, setClaiming] = useState(false);
+  const [handedOff, setHandedOff] = useState<boolean | null>(null);
+  const [handoffReason, setHandoffReason] = useState("");
   const claimStatus = claim?.status;
   const isGloballyClaimed = feature.status === "completed" || fake;
 
@@ -371,11 +379,18 @@ function FeatureCard({ feature, claim, token, onClaim, onUnclaim, onAccept, onSu
       setUrlError("Please enter a valid URL (e.g. https://www.instagram.com/reel/...)");
       return;
     }
+    // The server rejects a submission that omits this when a card exists, so
+    // catch it here rather than letting the creator watch a success animation
+    // and then find out it failed.
+    if (card && handedOff === null) {
+      setUrlError("Let us know whether you handed off the card.");
+      return;
+    }
     setUrlError("");
     setSubmitting(true);
     setShowSuccess(true);
     setTimeout(() => {
-      onSubmit(url);
+      onSubmit(url, handedOff, handoffReason);
       setSubmitting(false);
       setShowSuccess(false);
     }, 1500);
@@ -703,6 +718,11 @@ function FeatureCard({ feature, claim, token, onClaim, onUnclaim, onAccept, onSu
                 <p className="leading-relaxed">{feature.adminNotes}</p>
               </div>
             )}
+            {card && cardMeta && (
+              <AmbassadorCardStep card={card} token={token}
+                script={cardMeta.handoffScript} rule={cardMeta.attributionRule}
+                unprintedCount={cardMeta.unprintedCount} onPrinted={onCardPrinted ?? (() => {})} />
+            )}
             <div className="bg-white/5 rounded-xl px-4 py-3 text-xs text-neutral-400 space-y-1.5">
               <p className="font-medium text-neutral-300 mb-2">Post requirements</p>
               <p>• Add <span className="text-white">@{((feature as any).businessInstagram || feature.businessName).replace(/^@/, "").toLowerCase().replace(/\s+/g, "")}</span> as a collaborator</p>
@@ -718,6 +738,10 @@ function FeatureCard({ feature, claim, token, onClaim, onUnclaim, onAccept, onSu
                 <CountdownTimer expiresAt={expiresAt} />
                 <p className="text-[10px] text-neutral-600">Complete your Reel before this expires.</p>
               </div>
+            )}
+            {card && (
+              <HandoffQuestion value={handedOff} onChange={setHandedOff}
+                reason={handoffReason} onReason={setHandoffReason} />
             )}
             <div className="space-y-2">
               <input value={reelUrl} onChange={(e) => { setReelUrl(e.target.value); setUrlError(""); }}
@@ -806,8 +830,11 @@ function FeatureCard({ feature, claim, token, onClaim, onUnclaim, onAccept, onSu
 }
 
 // ─── Creator Portal ───────────────────────────────────────────────────────────
-export function CreatorPortal({ token }: { token: string }) {
-  const [phase, setPhase] = useState<"loading" | "ready" | "error">("loading");
+export function CreatorPortal({ token, impersonating }: { token: string; impersonating?: boolean }) {
+  const [phase, setPhase] = useState<"loading" | "ready" | "error" | "signedout">("loading");
+  // The server reports this off the session record. Trusted over the URL flag,
+  // which anyone can strip from the address bar.
+  const [serverImpersonated, setServerImpersonated] = useState(false);
   const [creator, setCreator] = useState<{ instagram: string; city: string; email?: string } | null>(null);
   const [features, setFeatures] = useState<Feature[]>([]);
   const [claims, setClaims] = useState<Record<string, Claim>>({});
@@ -836,6 +863,9 @@ export function CreatorPortal({ token }: { token: string }) {
   const [error, setError] = useState("");
   const [portalTab, setPortalTab] = useState<"features" | "completed" | "activity" | "ambassador">("features");
   const ambassador = useAmbassador(token);
+  // Cards only exist for opted-in creators, so the fetch is gated on that
+  // rather than firing for every creator on every portal load.
+  const { cards, meta: cardMeta, refresh: refreshCards } = useCards(token, !!ambassador.state?.enabled);
   const featSeenKey = `contynt_cr_feats_seen_${token}`;
   const compSeenKey = `contynt_cr_comp_seen_${token}`;
   const actSeenKey  = `contynt_cr_act_seen_${token}`;
@@ -866,8 +896,19 @@ export function CreatorPortal({ token }: { token: string }) {
         new Promise((r) => setTimeout(r, 1200)),
       ]);
       const json = await res.json();
-      if (!res.ok) { setError(json.error || "Invalid link."); setPhase("error"); return; }
+      if (!res.ok) {
+        // An expired or revoked session should offer a way back in, not a dead
+        // end. The stored token is cleared so the login screen is not skipped
+        // straight back into this same failure on the next render.
+        if (res.status === 401) {
+          try { localStorage.removeItem(CREATOR_TOKEN_KEY); } catch { /* private mode */ }
+          setPhase("signedout");
+          return;
+        }
+        setError(json.error || "Invalid link."); setPhase("error"); return;
+      }
       setCreator(json.creator);
+      setServerImpersonated(!!json.impersonated);
       // adminNotes now comes back from /creator-portal directly.
       setFeatures(json.features || []);
 
@@ -950,7 +991,7 @@ export function CreatorPortal({ token }: { token: string }) {
     setStats((p) => ({ ...p, activeClaims: Math.max(0, p.activeClaims - 1) }));
     api("/creator-portal/unclaim", { method: "POST", body: JSON.stringify({ token, featureId }) }).catch(() => {});
   };
-  const submitReel = (featureId: string, reelUrl: string) => {
+  const submitReel = (featureId: string, reelUrl: string, handedOff: boolean | null = null, handoffReason = "") => {
     // Update UI immediately — submitted still counts as In Progress, don't decrement
     setClaims((p) => {
       const updated = { ...p, [featureId]: { featureId, status: "submitted" as const, reelUrl } };
@@ -958,8 +999,10 @@ export function CreatorPortal({ token }: { token: string }) {
       return updated;
     });
     const instagram = creator?.instagram || "";
-    const body = JSON.stringify({ token, featureId, reelUrl, instagram });
-    api("/creator-portal/submit", { method: "POST", body }).catch(() => {});
+    const body = JSON.stringify({ token, featureId, reelUrl, instagram, handedOff, handoffReason });
+    api("/creator-portal/submit", { method: "POST", body })
+      .then(() => refreshCards())
+      .catch(() => {});
   };
   // One consolidated poll replaces the four separate PostgREST polls this
   // component used to run. The server scopes claims and submissions to this
@@ -1086,6 +1129,11 @@ export function CreatorPortal({ token }: { token: string }) {
 
   if (phase === "loading") return <LoadingScreen />;
 
+  // URL flag or server record: either is enough to lock the view down.
+  const isImpersonating = impersonating || serverImpersonated;
+
+  if (phase === "signedout") return <CreatorLogin />;
+
   if (phase === "error") {
     return (
       <div className="min-h-screen bg-neutral-950 flex items-center justify-center px-6">
@@ -1116,6 +1164,21 @@ export function CreatorPortal({ token }: { token: string }) {
         <div className="absolute bottom-1/4 right-1/4 w-64 h-64 rounded-full blur-[100px]" style={{ background: "rgba(34,197,94,0.06)" }} />
       </div>
 
+      {/* Impersonation is loud on purpose. An admin must never mistake a
+          creator's portal for their own, and any action taken here lands on the
+          creator's real account. */}
+      {isImpersonating && (
+        <div className="relative z-20 bg-amber-500/15 border-b border-amber-400/40 px-4 py-2">
+          <div className="max-w-2xl mx-auto flex items-center justify-between gap-3">
+            <p className="text-xs text-amber-200">
+              Viewing as <span className="font-semibold">@{(creator?.instagram || "creator").replace(/^@/, "")}</span>. Admin session, expires in an hour.
+            </p>
+            <button onClick={() => window.close()}
+              className="shrink-0 text-xs text-amber-200/70 hover:text-amber-100 whitespace-nowrap">Close</button>
+          </div>
+        </div>
+      )}
+
       {/* Header */}
       <header className="relative z-10 border-b border-white/10 px-6 py-4">
         <div className="max-w-2xl mx-auto flex items-center justify-between">
@@ -1123,7 +1186,18 @@ export function CreatorPortal({ token }: { token: string }) {
             <span className="text-sm font-semibold tracking-[0.2em]">C O N T Y N T</span>
             <span className="text-[10px] font-bold tracking-widest text-yellow-400 border border-yellow-400/40 px-1.5 py-0.5 rounded">BETA</span>
           </div>
-          <span className="text-xs text-neutral-500">Creator Portal</span>
+          <div className="flex items-center gap-3">
+            <span className="text-xs text-neutral-500">Creator Portal</span>
+            {!isImpersonating && (
+              <button onClick={() => {
+                try { localStorage.removeItem(CREATOR_TOKEN_KEY); } catch { /* private mode */ }
+                // Straight to the login screen with no token in the URL, so a
+                // back button press cannot restore the session just cleared.
+                window.location.replace(`${window.location.origin}/app`);
+              }}
+                className="text-xs text-neutral-500 hover:text-neutral-300">Sign out</button>
+            )}
+          </div>
         </div>
       </header>
 
@@ -1303,7 +1377,8 @@ export function CreatorPortal({ token }: { token: string }) {
                     onLearnAmbassador={() => setPortalTab("ambassador")}
                     onClaim={() => claimFeature(fid)} onUnclaim={() => unclaimFeature(fid)}
                     onAccept={() => acceptFeature(fid)}
-                    onSubmit={(url) => submitReel(fid, url)} onPayout={(amt) => requestPayout(fid, amt)}
+                    onSubmit={(url, ho, hr) => submitReel(fid, url, ho, hr)}
+                    card={cards[fid]} cardMeta={cardMeta} onCardPrinted={refreshCards} onPayout={(amt) => requestPayout(fid, amt)}
                     fake={false} myInstagram={creator?.instagram || ""} />
                 </motion.div>
               );
@@ -1316,7 +1391,8 @@ export function CreatorPortal({ token }: { token: string }) {
                 <FeatureCard feature={feature} claim={claims[feature.id]} token={token} needsAttention={featureNeedsAttention(feature.id)} onSeen={() => markActionSeen(feature.id)} showAmbassadorUpsell={!ambassador.state?.enabled && claims[feature.id]?.status === "claimed"} isAmbassador={!!ambassador.state?.enabled && claims[feature.id]?.status === "claimed"} onLearnAmbassador={() => setPortalTab("ambassador")}
                   onClaim={() => claimFeature(feature.id)} onUnclaim={() => unclaimFeature(feature.id)}
                   onAccept={() => acceptFeature(feature.id)}
-                  onSubmit={(url) => submitReel(feature.id, url)} onPayout={(amt) => requestPayout(feature.id, amt)}
+                  onSubmit={(url, ho, hr) => submitReel(feature.id, url, ho, hr)}
+                  card={cards[feature.id]} cardMeta={cardMeta} onCardPrinted={refreshCards} onPayout={(amt) => requestPayout(feature.id, amt)}
                   fake={false} claimedBy={(feature as any).claimedBy} myInstagram={creator?.instagram || ""} />
               </motion.div>
             ))}

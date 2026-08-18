@@ -2,6 +2,9 @@ import { Hono } from "npm:hono@4";
 import { cors } from "npm:hono@4/cors";
 import { logger } from "npm:hono@4/logger";
 import { createClient } from "jsr:@supabase/supabase-js@2.49.8";
+// Same package the creator portal already uses for QR codes, imported here so
+// the printable is generated server-side and the code and its QR cannot disagree.
+import QRCode from "npm:qrcode@1.5.4";
 import * as kv from "./kv_store.tsx";
 
 const app = new Hono();
@@ -109,9 +112,27 @@ async function validAdminToken(token: string): Promise<boolean> {
 // Creator portal links are bearer secrets: possession of the token is the only
 // credential. Every route that reads or writes a creator's rows must check it,
 // otherwise any caller can act as an arbitrary creator.
+// Impersonation is deliberately read only. An admin is looking at the portal to
+// see what the creator sees; letting that view claim a Feature, submit a Reel or
+// request a cash-out on the creator's behalf turns a glance into an action taken
+// under someone else's name.
+function impersonationBlock(creatorData: any): { error: string } | null {
+  return creatorData?.impersonated
+    ? { error: "Read-only admin view. Sign in as the creator to make changes." }
+    : null;
+}
+
 async function creatorFromToken(token: string): Promise<any | null> {
   if (!token) return null;
-  return await kv.get(`ctoken_${token}`).catch(() => null);
+  const data = await kv.get(`ctoken_${token}`).catch(() => null);
+  if (!data) return null;
+  // Only impersonation tokens carry expiresAt. Creator sessions are open ended,
+  // so an absent expiry means "does not expire" rather than "already expired".
+  if (data.expiresAt && new Date(data.expiresAt) <= new Date()) {
+    await kv.del(`ctoken_${token}`).catch(() => {});
+    return null;
+  }
+  return data;
 }
 
 // These two ARE the auth handshake, so they cannot require auth themselves.
@@ -157,12 +178,11 @@ app.post("/make-server-f5961d0c/admin/login", async (c) => {
 const SITE_ORIGIN = Deno.env.get("SITE_ORIGIN") || "https://getcontynt.com";
 const REFERRAL_REWARD = 25;
 
-// JANEDOE123 — handle in caps, stripped to letters and digits, plus a short
-// suffix so two creators with similar handles cannot collide.
-function referralCodeFor(instagram: string): string {
-  const base = (instagram || "creator").replace(/^@+/, "").replace(/[^A-Za-z0-9]/g, "").toUpperCase().slice(0, 12) || "CREATOR";
-  return `${base}${Math.floor(100 + Math.random() * 900)}`;
-}
+// Codes are anonymous. The generator that derived them from the Instagram
+// handle (JANEDOE123) was removed rather than left unused: the whole point of
+// the rotation migration is that no code identifies its creator, and a handy
+// handle-shaped generator sitting here is how that quietly comes back.
+// See anonCode() for the replacement.
 const referralUrlFor = (code: string) => `${SITE_ORIGIN}/?ref=${code}`;
 
 async function ambassadorForToken(token: string) {
@@ -220,33 +240,20 @@ app.post("/make-server-f5961d0c/creator-portal/ambassador/enable", async (c) => 
   try {
     const { token } = await c.req.json();
     if (!token) return c.json({ error: "token required" }, 400);
-    const { creatorData, ambassador } = await ambassadorForToken(token);
-    if (!creatorData) return c.json({ error: "Invalid or expired link" }, 401);
+    const creatorData = await creatorFromToken(token);
+    if (!creatorData?.creatorId) return c.json({ error: "Invalid or expired link" }, 401);
+    const blocked = impersonationBlock(creatorData);
+    if (blocked) return c.json(blocked, 403);
 
-    if (ambassador) {
-      if (!ambassador.enabled_status) {
-        await must("ambassador: re-enable", db().from("ambassadors_f5961d0c")
-          .update({ enabled_status: true }).eq("ambassador_id", ambassador.ambassador_id));
-      }
-      return c.json({ success: true, ambassador: ambassadorPayload({ ...ambassador, enabled_status: true }) });
-    }
+    // Delegates to the single consent writer so this route cannot leave
+    // enabled_status set while ambassador_opted_in stays false.
+    const { data: creator } = await db().from("creator_signups_f5961d0c")
+      .select("*").eq("id", creatorData.creatorId).maybeSingle();
+    if (!creator) return c.json({ error: "Creator not found" }, 404);
 
-    // Retry on the unlikely code collision rather than failing the opt-in.
-    let created: any = null;
-    for (let i = 0; i < 5 && !created; i++) {
-      const code = referralCodeFor(creatorData.instagram);
-      const { data, error } = await db().from("ambassadors_f5961d0c").insert({
-        creator_id: creatorData.creatorId,
-        creator_token: token,
-        creator_instagram: creatorData.instagram || "",
-        referral_code: code,
-        referral_url: referralUrlFor(code),
-        enabled_status: true,
-      }).select("*").single();
-      if (!error) created = data;
-      else if (!String(error.message || "").includes("duplicate")) throw error;
-    }
-    if (!created) return c.json({ error: "Could not allocate a referral code" }, 500);
+    const wasOptedIn = !!creator.ambassador_opted_in;
+    const created = await setAmbassadorOptIn(creator, true);
+    if (!wasOptedIn) await logCreatorEvent(creator.id, "ambassador_opted_in", { source: "enable" });
     return c.json({ success: true, ambassador: ambassadorPayload(created) });
   } catch (e: any) { return c.json({ error: e.message }, 500); }
 });
@@ -330,6 +337,1441 @@ app.post("/make-server-f5961d0c/referral/:code/business", async (c) => {
 
     return c.json({ success: true, businessId: biz.id, businessCreated: createdBusiness, portalToken: token });
   } catch (e: any) { return c.json({ error: "Could not complete signup", details: e.message }, 500); }
+});
+
+// ─── Crypto helpers ───────────────────────────────────────────────────────────
+// token32() above is 8 characters of Math.random. That is the weakest link in
+// creator auth, but the tokens it minted are live in the wild and KV looks them
+// up by key, so nothing about their format is load bearing. New tokens are
+// minted here instead; old ones keep working untouched.
+function secureToken(bytes = 32): string {
+  const b = new Uint8Array(bytes);
+  crypto.getRandomValues(b);
+  return btoa(String.fromCharCode(...b)).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+
+// The card and referral alphabet. 30 characters: I, L, O and U are omitted so a
+// handwritten or verbally relayed code cannot be misread. Kept identical to the
+// CHECK constraint in the migration, which is the real enforcement point.
+const CODE_ALPHABET = "ABCDEFGHJKMNPQRSTVWXYZ23456789";
+
+function anonCode(len = 6): string {
+  // 256 is not a multiple of 30, so a bare byte % 30 would make the first six
+  // letters ~20% more likely than the rest. Reject bytes at or above 240.
+  const n = CODE_ALPHABET.length;
+  const bound = 256 - (256 % n);
+  const buf = new Uint8Array(1);
+  let out = "";
+  while (out.length < len) {
+    crypto.getRandomValues(buf);
+    if (buf[0] < bound) out += CODE_ALPHABET[buf[0] % n];
+  }
+  return out;
+}
+
+// The verify token carries 256 bits, so a timing attack on the lookup is not a
+// practical threat. This makes the *comparison* constant time regardless; the
+// indexed lookup that precedes it cannot be, and pretending otherwise would be
+// worse than saying so.
+function timingSafeEqual(a: string, b: string): boolean {
+  const enc = new TextEncoder();
+  const ab = enc.encode(a), bb = enc.encode(b);
+  let diff = ab.length ^ bb.length;
+  for (let i = 0; i < Math.max(ab.length, bb.length); i++) diff |= (ab[i] ?? 0) ^ (bb[i] ?? 0);
+  return diff === 0;
+}
+
+// ─── Feature gating ───────────────────────────────────────────────────────────
+// A Feature can carry early_access_until. Confirmed creators see it straight
+// away; everyone else only once that timestamp passes. Features without the
+// column set are visible to everyone, so this is inert until an admin uses it.
+const EARLY_ACCESS_HOURS = 24;
+
+function visibleToCreator(feature: any, confirmed: boolean): boolean {
+  if (!feature?.early_access_until) return true;
+  if (confirmed) return true;
+  return new Date(feature.early_access_until) <= new Date();
+}
+
+async function creatorIsConfirmed(creatorId: string | undefined): Promise<boolean> {
+  if (!creatorId) return false;
+  const { data } = await db().from("creator_signups_f5961d0c")
+    .select("verification_status").eq("id", creatorId).maybeSingle();
+  return data?.verification_status === "confirmed";
+}
+
+// ─── Creator verification ─────────────────────────────────────────────────────
+const VERIFY_DAYS = 90;
+// Where the tokenized link points. Defaults to this function, which is what
+// works with no extra infrastructure. Set it to a custom domain or a rewrite
+// once one exists and every generated link follows, with no code change.
+const VERIFY_ORIGIN = Deno.env.get("VERIFY_LINK_ORIGIN") || `${Deno.env.get("SUPABASE_URL") || ""}/functions/v1/make-server-f5961d0c`;
+const verifyLinkFor = (t: string) => `${VERIFY_ORIGIN}/portal/verify?t=${encodeURIComponent(t)}`;
+
+// Served to the client from /creator-portal/confirm-data rather than duplicated
+// in the frontend bundle: the server validates against this list, so the form
+// and the validator can never drift apart.
+const SF_NEIGHBORHOODS = [
+  "Bernal Heights", "Castro", "Chinatown", "Cole Valley", "Dogpatch", "Excelsior",
+  "Fillmore", "Financial District", "Glen Park", "Haight", "Hayes Valley",
+  "Inner Richmond", "Inner Sunset", "Marina", "Mission", "Mission Bay",
+  "Nob Hill", "Noe Valley", "North Beach", "Outer Richmond", "Outer Sunset",
+  "Pacific Heights", "Potrero Hill", "Presidio", "Russian Hill", "SoMa",
+  "Tenderloin", "West Portal",
+];
+
+// Accepts "@jane", "jane", "instagram.com/jane/", "https://www.instagram.com/jane?hl=en".
+// Returns null when what is left is not a legal handle, so the caller can reject
+// rather than silently storing garbage.
+function normalizeHandle(raw: string): string | null {
+  let h = String(raw ?? "").trim();
+  h = h.replace(/^https?:\/\//i, "").replace(/^www\./i, "").replace(/^instagram\.com\//i, "");
+  h = h.replace(/[?#].*$/, "").replace(/\/+$/, "").replace(/^@+/, "").trim();
+  return /^[A-Za-z0-9._]{1,30}$/.test(h) ? h : null;
+}
+
+// Events are an audit trail, not part of the transaction. A creator confirming
+// their profile must not fail because the log write did.
+async function logCreatorEvent(creatorId: string, type: string, payload: any = {}) {
+  if (!creatorId) return;
+  try {
+    await db().from("creator_events_f5961d0c").insert({ creator_id: creatorId, type, payload });
+  } catch (e: any) { console.error(`[events] ${type} failed:`, e?.message ?? e); }
+}
+
+// Reuses the creator's live portal token when there is one, so a verify link
+// opened twice does not invalidate the link they already have.
+async function ensureCreatorPortalToken(creator: any): Promise<string> {
+  const ref = await kv.get(`ctokenref_${creator.id}`).catch(() => null);
+  if (ref?.token && await kv.get(`ctoken_${ref.token}`).catch(() => null)) return ref.token;
+  const token = secureToken(24);
+  await kv.set(`ctoken_${token}`, {
+    creatorId: creator.id, instagram: creator.instagram, email: creator.email,
+    city: creator.city, createdAt: new Date().toISOString(),
+  });
+  await kv.set(`ctokenref_${creator.id}`, { token, creatorId: creator.id, createdAt: new Date().toISOString() });
+  return token;
+}
+
+// Minimal server-rendered shell. The SPA cannot serve these: they need real
+// status codes, real redirects and a real noindex header.
+function htmlPage(opts: { title: string; body: string; noindex?: boolean; status?: number; extraHead?: string }) {
+  const html = `<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>${opts.title}</title>${opts.noindex ? '<meta name="robots" content="noindex,nofollow">' : ""}${opts.extraHead ?? ""}
+<style>
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{font-family:Inter,-apple-system,BlinkMacSystemFont,"Segoe UI",Helvetica,Arial,sans-serif;
+       background:#0a0a0a;color:#fff;min-height:100vh;display:flex;flex-direction:column;
+       align-items:center;justify-content:center;padding:24px;-webkit-font-smoothing:antialiased}
+  .wrap{width:100%;max-width:420px;text-align:center}
+  .brand{font-size:12px;font-weight:600;letter-spacing:.2em;color:#a3a3a3;margin-bottom:28px}
+  h1{font-size:22px;font-weight:700;line-height:1.3;margin-bottom:10px}
+  p{font-size:14px;line-height:1.6;color:#a3a3a3;margin-bottom:20px}
+  form{display:flex;flex-direction:column;gap:10px;margin-top:22px}
+  input{width:100%;padding:12px 14px;background:rgba(255,255,255,.08);border:1px solid rgba(255,255,255,.2);
+        border-radius:12px;color:#fff;font-size:15px}
+  input::placeholder{color:#737373}
+  button{width:100%;padding:13px;background:#fff;color:#0a0a0a;border:0;border-radius:12px;
+         font-size:14px;font-weight:600;cursor:pointer}
+  .note{font-size:12px;color:#525252;margin-top:18px}
+</style></head><body><div class="wrap"><div class="brand">C O N T Y N T</div>${opts.body}</div></body></html>`;
+  return new Response(html, {
+    status: opts.status ?? 200,
+    headers: {
+      "Content-Type": "text/html; charset=utf-8",
+      ...(opts.noindex ? { "X-Robots-Tag": "noindex, nofollow" } : {}),
+      "Cache-Control": "no-store",
+      "Referrer-Policy": "no-referrer",
+    },
+  });
+}
+
+const resendFormPage = (title: string, message: string) => htmlPage({
+  title, noindex: true, status: 400,
+  body: `<h1>${title}</h1><p>${message}</p>
+    <form method="POST" action="/make-server-f5961d0c/portal/verify/resend">
+      <input type="email" name="email" placeholder="you@email.com" required autocomplete="email">
+      <button type="submit">Send me a new link</button>
+    </form>
+    <p class="note">We will send a fresh link to the address you signed up with.</p>`,
+});
+
+// Magic link. This handler must never confirm anything: email security scanners
+// and link previewers fetch GET URLs before a human ever sees them, so a GET
+// that confirmed would mark creators confirmed who never opened the mail.
+// Confirmation happens only on POST /portal/confirm.
+app.get("/make-server-f5961d0c/portal/verify", async (c) => {
+  try {
+    const supplied = c.req.query("t") || "";
+    if (!supplied) return resendFormPage("This link is incomplete", "The link was missing its token. Ask for a new one below.");
+
+    const { data: row } = await db().from("creator_signups_f5961d0c")
+      .select("id, instagram, email, city, verify_token, verify_token_expires_at, verify_open_count, verification_status")
+      .eq("verify_token", supplied).maybeSingle();
+
+    if (!row || !timingSafeEqual(String(row.verify_token ?? ""), supplied)) {
+      return resendFormPage("This link is not valid", "It may have been replaced by a newer one. Enter your email and we will send a fresh link.");
+    }
+
+    const expired = row.verify_token_expires_at && new Date(row.verify_token_expires_at) <= new Date();
+    if (expired) {
+      if (row.verification_status !== "confirmed") {
+        await db().from("creator_signups_f5961d0c").update({ verification_status: "expired" }).eq("id", row.id);
+      }
+      return resendFormPage("This link has expired", "Links are good for 90 days. Enter your email and we will send a fresh one.");
+    }
+
+    const now = new Date().toISOString();
+    const patch: any = {
+      verify_link_opened_at: now,
+      verify_open_count: (row.verify_open_count ?? 0) + 1,
+    };
+    // Never walk a confirmed creator backwards to opened.
+    if (row.verification_status === "pending") patch.verification_status = "opened";
+    await must("verify: record open", db().from("creator_signups_f5961d0c").update(patch).eq("id", row.id));
+
+    // The user agent is logged because open counts include scanner prefetches,
+    // so a raw count cannot be read as human intent without it.
+    await logCreatorEvent(row.id, "verify_link_opened", {
+      openCount: patch.verify_open_count,
+      userAgent: c.req.header("user-agent") || "",
+    });
+
+    // Land them signed in on the confirm screen, no password.
+    const portalToken = await ensureCreatorPortalToken(row);
+    const dest = `${SITE_ORIGIN}/app?creator=${encodeURIComponent(portalToken)}&view=confirm`;
+    return c.redirect(dest, 302);
+  } catch (e: any) {
+    console.error("[verify]", e?.message ?? e);
+    return resendFormPage("Something went wrong", "We could not open that link. Enter your email and we will send a fresh one.");
+  }
+});
+
+// Deliberately identical response whether or not the address is on file, so
+// this cannot be used to enumerate who is a Contynt creator.
+app.post("/make-server-f5961d0c/portal/verify/resend", async (c) => {
+  const done = () => htmlPage({
+    title: "Check your email", noindex: true,
+    body: `<h1>Check your email</h1><p>If that address is on file, a new link is on its way. It is good for 90 days.</p>`,
+  });
+  try {
+    const body = await c.req.parseBody().catch(() => ({} as any));
+    const email = String((body as any).email ?? "").trim().toLowerCase();
+    if (!email) return done();
+
+    const { data: row } = await db().from("creator_signups_f5961d0c")
+      .select("id, email, email_bounced_at, email_complained_at").ilike("email", email).maybeSingle();
+
+    // Requests from a creator we stopped emailing are accepted and dropped.
+    if (row && !row.email_bounced_at && !row.email_complained_at) {
+      const token = secureToken(32);
+      await must("verify: reissue token", db().from("creator_signups_f5961d0c").update({
+        verify_token: token,
+        verify_token_expires_at: new Date(Date.now() + VERIFY_DAYS * 864e5).toISOString(),
+      }).eq("id", row.id));
+      await logCreatorEvent(row.id, "verify_link_requested", { link: verifyLinkFor(token) });
+      // TODO(send): no queue or mail transport exists yet. Phase 4 wires this to
+      // Postmark; until then the reissued link is recoverable from creator_events.
+    }
+    return done();
+  } catch { return done(); }
+});
+
+function normalizeUrl(raw: any): string | null {
+  const v = String(raw ?? "").trim();
+  if (!v) return null;
+  try {
+    const u = new URL(/^https?:\/\//i.test(v) ? v : `https://${v}`);
+    return u.protocol === "https:" || u.protocol === "http:" ? u.toString() : null;
+  } catch { return null; }
+}
+
+// Single writer for ambassador consent. creator_signups carries the consent and
+// its timestamps; ambassadors_f5961d0c carries the code and referral URL. Both
+// are written here so enabled_status and ambassador_opted_in cannot disagree,
+// which they would if each caller updated whichever one it happened to know about.
+async function setAmbassadorOptIn(creator: any, optIn: boolean) {
+  const now = new Date().toISOString();
+  await must("ambassador: consent", db().from("creator_signups_f5961d0c").update(
+    optIn
+      ? { ambassador_opted_in: true, ambassador_opted_in_at: creator.ambassador_opted_in_at || now }
+      // opted_in_at is deliberately left intact: it records that consent was
+      // once given, which the opt-out timestamp alone would not tell you.
+      : { ambassador_opted_in: false, ambassador_opt_out_at: now }
+  ).eq("id", creator.id));
+
+  const { data: existing } = await db().from("ambassadors_f5961d0c")
+    .select("*").eq("creator_id", creator.id).maybeSingle();
+
+  if (!optIn) {
+    if (existing) {
+      await must("ambassador: disable", db().from("ambassadors_f5961d0c")
+        .update({ enabled_status: false }).eq("ambassador_id", existing.ambassador_id));
+    }
+    return null;
+  }
+
+  // Re-enabling keeps the existing code, so any card already handed out stays live.
+  if (existing) {
+    if (!existing.enabled_status) {
+      await must("ambassador: enable", db().from("ambassadors_f5961d0c")
+        .update({ enabled_status: true }).eq("ambassador_id", existing.ambassador_id));
+    }
+    return { ...existing, enabled_status: true };
+  }
+
+  const portalToken = await ensureCreatorPortalToken(creator);
+  for (let i = 0; i < 5; i++) {
+    const code = anonCode();
+    const { data, error } = await db().from("ambassadors_f5961d0c").insert({
+      creator_id: creator.id,
+      creator_token: portalToken,
+      creator_instagram: creator.instagram || "",
+      referral_code: code,
+      referral_url: referralUrlFor(code),
+      enabled_status: true,
+    }).select("*").single();
+    if (!error) return data;
+    if (!String(error.message || "").includes("duplicate")) throw error;
+  }
+  throw new Error("Could not allocate a referral code");
+}
+
+// Bootstrap for the confirm screen. Returns the creator's current values plus
+// the neighborhood list the server will validate against.
+app.get("/make-server-f5961d0c/creator-portal/confirm-data", async (c) => {
+  try {
+    const token = c.req.query("t");
+    if (!token) return c.json({ error: "Token required" }, 400);
+    const creatorData = await creatorFromToken(token);
+    if (!creatorData?.creatorId) return c.json({ error: "Invalid or expired link" }, 401);
+
+    const { data: row } = await db().from("creator_signups_f5961d0c")
+      .select("*").eq("id", creatorData.creatorId).maybeSingle();
+    if (!row) return c.json({ error: "Creator not found" }, 404);
+
+    return c.json({
+      neighborhoods: SF_NEIGHBORHOODS,
+      verificationStatus: row.verification_status || "pending",
+      confirmedAt: row.verify_confirmed_at || null,
+      profile: {
+        instagramHandle: row.instagram_handle || normalizeHandle(row.instagram || "") || "",
+        serviceAreas: row.service_areas || [],
+        maxFeaturesPerWeek: row.max_features_per_week ?? null,
+        notifyEmail: row.notify_email ?? true,
+        notifySms: row.notify_sms ?? false,
+        phone: row.phone || "",
+        portfolioUrl: row.portfolio_url || "",
+        dietaryNotes: row.dietary_notes || "",
+        email: row.email || "",
+      },
+      ambassador: {
+        optedIn: !!row.ambassador_opted_in,
+        optedInAt: row.ambassador_opted_in_at || null,
+      },
+    });
+  } catch (e: any) { return c.json({ error: "Failed to load", details: e.message }, 500); }
+});
+
+// Confirmation. Re-submitting is a normal update, not an error: a creator who
+// changes their neighborhoods three months in should land here again and simply
+// refresh the snapshot.
+app.post("/make-server-f5961d0c/creator-portal/confirm", async (c) => {
+  try {
+    const body = await c.req.json();
+    const { token } = body;
+    if (!token) return c.json({ error: "token required" }, 400);
+    const creatorData = await creatorFromToken(token);
+    if (!creatorData?.creatorId) return c.json({ error: "Invalid or expired link" }, 401);
+    const blocked = impersonationBlock(creatorData);
+    if (blocked) return c.json(blocked, 403);
+
+    const { data: creator } = await db().from("creator_signups_f5961d0c")
+      .select("*").eq("id", creatorData.creatorId).maybeSingle();
+    if (!creator) return c.json({ error: "Creator not found" }, 404);
+
+    const handle = normalizeHandle(body.instagramHandle);
+    if (!handle) return c.json({ error: "Enter a valid Instagram handle, letters, numbers, periods and underscores only." }, 400);
+
+    const areas = Array.isArray(body.serviceAreas) ? body.serviceAreas.filter((a: any) => SF_NEIGHBORHOODS.includes(a)) : [];
+    if (!areas.length) return c.json({ error: "Pick at least one neighborhood." }, 400);
+
+    const capacity = Number(body.maxFeaturesPerWeek);
+    if (!Number.isInteger(capacity) || capacity < 1 || capacity > 4) {
+      return c.json({ error: "Choose how many Features you can take per week." }, 400);
+    }
+
+    const notifyEmail = body.notifyEmail !== false;
+    const notifySms = !!body.notifySms;
+    const phone = String(body.phone ?? "").trim();
+    if (notifySms && phone.replace(/\D/g, "").length < 10) {
+      return c.json({ error: "Add a phone number to get text alerts." }, 400);
+    }
+
+    const portfolioRaw = String(body.portfolioUrl ?? "").trim();
+    const portfolioUrl = portfolioRaw ? normalizeUrl(portfolioRaw) : null;
+    if (portfolioRaw && !portfolioUrl) return c.json({ error: "That portfolio link does not look like a URL." }, 400);
+
+    const now = new Date().toISOString();
+    await must("confirm: save profile", db().from("creator_signups_f5961d0c").update({
+      // Both handle columns move together. The portal, claims and submissions
+      // all read `instagram`, so correcting only instagram_handle would leave
+      // the creator looking at the typo they just fixed.
+      instagram: handle,
+      instagram_handle: handle,
+      service_areas: areas,
+      max_features_per_week: capacity,
+      notify_email: notifyEmail,
+      notify_sms: notifySms,
+      phone: phone || null,
+      portfolio_url: portfolioUrl,
+      dietary_notes: String(body.dietaryNotes ?? "").trim() || null,
+      verify_confirmed_at: now,
+      verification_status: "confirmed",
+    }).eq("id", creator.id));
+
+    // The KV session caches the handle for the portal header, so refresh it or
+    // the corrected handle will not appear until the token is regenerated.
+    if (creatorData.instagram !== handle) {
+      await kv.set(`ctoken_${token}`, { ...creatorData, instagram: handle });
+    }
+
+    const snapshot = {
+      instagramHandle: handle, serviceAreas: areas, maxFeaturesPerWeek: capacity,
+      notifyEmail, notifySms, hasPhone: !!phone,
+      hasPortfolio: !!portfolioUrl, hasDietaryNotes: !!String(body.dietaryNotes ?? "").trim(),
+    };
+    await logCreatorEvent(creator.id, "profile_confirmed", snapshot);
+
+    // Only a change is an event. Re-confirming with the toggle untouched should
+    // not litter the log with opt-in rows that record nothing happening.
+    const wants = !!body.ambassadorOptIn;
+    const had = !!creator.ambassador_opted_in;
+    let ambassador = null;
+    if (wants !== had) {
+      ambassador = await setAmbassadorOptIn(creator, wants);
+      await logCreatorEvent(creator.id, wants ? "ambassador_opted_in" : "ambassador_opted_out", {});
+    }
+
+    return c.json({
+      success: true, confirmedAt: now,
+      ambassador: { optedIn: wants, referralCode: ambassador?.referral_code ?? null },
+    });
+  } catch (e: any) { return c.json({ error: "Could not save your profile", details: e.message }, 500); }
+});
+
+// Standalone toggle for the success card and the settings screen. Separate from
+// confirm so it can be flipped with one POST without resubmitting the form.
+app.post("/make-server-f5961d0c/creator-portal/ambassador/toggle", async (c) => {
+  try {
+    const { token, optIn } = await c.req.json();
+    if (!token || typeof optIn !== "boolean") return c.json({ error: "token and optIn required" }, 400);
+    const creatorData = await creatorFromToken(token);
+    if (!creatorData?.creatorId) return c.json({ error: "Invalid or expired link" }, 401);
+    const blocked = impersonationBlock(creatorData);
+    if (blocked) return c.json(blocked, 403);
+
+    const { data: creator } = await db().from("creator_signups_f5961d0c")
+      .select("*").eq("id", creatorData.creatorId).maybeSingle();
+    if (!creator) return c.json({ error: "Creator not found" }, 404);
+
+    if (!!creator.ambassador_opted_in === optIn) {
+      return c.json({ success: true, optedIn: optIn, unchanged: true });
+    }
+    const ambassador = await setAmbassadorOptIn(creator, optIn);
+    await logCreatorEvent(creator.id, optIn ? "ambassador_opted_in" : "ambassador_opted_out", {});
+    return c.json({ success: true, optedIn: optIn, referralCode: ambassador?.referral_code ?? null });
+  } catch (e: any) { return c.json({ error: e.message }, 500); }
+});
+
+// ─── Postmark webhook ─────────────────────────────────────────────────────────
+// Postmark's own convention is basic auth embedded in the webhook URL, but a
+// custom header is easier to rotate, so both are accepted.
+const POSTMARK_WEBHOOK_SECRET = Deno.env.get("POSTMARK_WEBHOOK_SECRET") || "";
+
+function postmarkAuthorized(c: any): boolean {
+  if (!POSTMARK_WEBHOOK_SECRET) return false;
+  const header = c.req.header("x-postmark-secret") || "";
+  if (header && timingSafeEqual(header, POSTMARK_WEBHOOK_SECRET)) return true;
+  const auth = c.req.header("authorization") || "";
+  if (auth.toLowerCase().startsWith("basic ")) {
+    try {
+      const decoded = atob(auth.slice(6));
+      // Postmark sends user:password; only the password half is the secret.
+      const password = decoded.slice(decoded.indexOf(":") + 1);
+      return timingSafeEqual(password, POSTMARK_WEBHOOK_SECRET);
+    } catch { return false; }
+  }
+  return false;
+}
+
+const POSTMARK_TYPES = new Set(["Delivery", "Bounce", "SpamComplaint", "Open", "Click"]);
+
+async function recordEmailEvent(ev: any) {
+  const type = String(ev?.RecordType ?? "");
+  if (!POSTMARK_TYPES.has(type)) return { skipped: type || "unknown" };
+
+  // Field naming varies by event type: Delivery/Open/Click carry Recipient,
+  // Bounce and SpamComplaint carry Email.
+  const email = String(ev.Recipient ?? ev.Email ?? "").trim().toLowerCase();
+  const occurredAt = ev.DeliveredAt ?? ev.BouncedAt ?? ev.ReceivedAt ?? new Date().toISOString();
+
+  let creatorId: string | null = null;
+  if (email) {
+    const { data } = await db().from("creator_signups_f5961d0c")
+      .select("id").ilike("email", email).maybeSingle();
+    creatorId = data?.id ?? null;
+  }
+
+  // creator_id stays nullable on purpose: a bounce for an address no longer
+  // matched to a creator is still worth keeping, and dropping it would lose the
+  // only signal that the address is dead.
+  await db().from("email_events_f5961d0c").insert({
+    creator_id: creatorId,
+    message_id: ev.MessageID ?? ev.MessageId ?? null,
+    type,
+    payload: ev,
+    occurred_at: occurredAt,
+  });
+
+  if (!creatorId) return { recorded: type, matched: false };
+
+  if (type === "SpamComplaint") {
+    await db().from("creator_signups_f5961d0c")
+      .update({ email_complained_at: occurredAt }).eq("id", creatorId);
+    await logCreatorEvent(creatorId, "email_complained", { messageId: ev.MessageID ?? null });
+  } else if (type === "Bounce") {
+    // A soft bounce is a full mailbox or a temporary outage. Suppressing on that
+    // would permanently stop mailing a creator over one bad afternoon, so only
+    // hard bounces and addresses Postmark itself deactivated count.
+    const hard = ev.Inactive === true || /hard|bademail|blocked|manuallydeactivated/i.test(String(ev.Type ?? ""));
+    if (hard) {
+      await db().from("creator_signups_f5961d0c")
+        .update({ email_bounced_at: occurredAt }).eq("id", creatorId);
+      await logCreatorEvent(creatorId, "email_bounced", { bounceType: ev.Type ?? null, messageId: ev.MessageID ?? null });
+    }
+  }
+  // Delivery, Open and Click are logged and nothing more. Apple Mail Privacy
+  // Protection prefetches images, so an Open means a mail client touched the
+  // message, not that a human read it. Letting it advance verification_status
+  // would mark creators confirmed who never saw the mail.
+  return { recorded: type, matched: true };
+}
+
+app.post("/make-server-f5961d0c/webhooks/postmark", async (c) => {
+  try {
+    if (!POSTMARK_WEBHOOK_SECRET) return c.json({ error: "Server is missing POSTMARK_WEBHOOK_SECRET" }, 500);
+    if (!postmarkAuthorized(c)) return c.json({ error: "Unauthorized" }, 401);
+
+    const body = await c.req.json();
+    const events = Array.isArray(body) ? body : [body];
+    const results = [];
+    for (const ev of events) results.push(await recordEmailEvent(ev));
+
+    // Always 200 on a payload we accepted. A non-2xx makes Postmark retry, and
+    // retrying an event we simply do not care about achieves nothing.
+    return c.json({ success: true, results });
+  } catch (e: any) {
+    console.error("[postmark]", e?.message ?? e);
+    return c.json({ error: "Failed to record event" }, 500);
+  }
+});
+
+// ─── Anonymous ambassador cards ───────────────────────────────────────────────
+//
+// CORE RULE: the creator's identity appears nowhere in the card, the code, the
+// URL, the scan page before the Reel is live, the title, or any meta tag. Only
+// state B reveals it, and by then the Reel is public and tagged, so the
+// creator is identifiable regardless.
+//
+// The practical consequence for anyone editing below: in state A, render from
+// `businessName` only. Never widen that select to creator columns "just for
+// logging". test-e2e.sh asserts the state A body and headers are clean.
+
+const CARD_LIFETIME_DAYS = 60;
+
+// Codes are matched case-insensitively and tolerate the ways a person retypes
+// something read off a card: lowercase, stray hyphens, spaces.
+const canonicalCode = (raw: string) => String(raw ?? "").replace(/[\s-]/g, "").toUpperCase();
+
+async function hashIp(ip: string): Promise<string> {
+  // Salted so scan rows cannot be reversed into visitor IPs by rainbow table.
+  const salt = Deno.env.get("SCAN_IP_SALT") || ADMIN_SECRET || "contynt";
+  const buf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(`${salt}:${ip}`));
+  return [...new Uint8Array(buf)].map(b => b.toString(16).padStart(2, "0")).join("").slice(0, 32);
+}
+
+// Cards exist only for approved (creator, feature) pairs, and only for creators
+// who opted in. Called from claim approval, not from claiming: a card handed out
+// for a shoot that was never approved would point at a Reel that never comes.
+async function ensureCardForApprovedClaim(featureId: string, creatorToken: string) {
+  try {
+    const creatorData = await creatorFromToken(creatorToken);
+    if (!creatorData?.creatorId) return null;
+
+    const { data: creator } = await db().from("creator_signups_f5961d0c")
+      .select("id, ambassador_opted_in").eq("id", creatorData.creatorId).maybeSingle();
+    if (!creator?.ambassador_opted_in) return null;
+
+    const { data: existing } = await db().from("ambassador_cards_f5961d0c")
+      .select("*").eq("creator_id", creator.id).eq("feature_id", featureId).maybeSingle();
+    if (existing) return existing;
+
+    const { data: feature } = await db().from("features_f5961d0c")
+      .select("id, business_id").eq("id", featureId).maybeSingle();
+
+    for (let i = 0; i < 5; i++) {
+      const code = anonCode();
+      const { data, error } = await db().from("ambassador_cards_f5961d0c").insert({
+        creator_id: creator.id, feature_id: featureId,
+        business_id: feature?.business_id ?? null, code,
+      }).select("*").single();
+      if (!error) {
+        await logCreatorEvent(creator.id, "ambassador_card_generated", { featureId, code });
+        return data;
+      }
+      if (!String(error.message || "").includes("duplicate")) throw error;
+    }
+    return null;
+  } catch (e: any) {
+    // A failed card must not block the claim approval itself.
+    console.error("[cards] generate failed:", e?.message ?? e);
+    return null;
+  }
+}
+
+// Resolves which of the three states a card is in, and returns ONLY the fields
+// that state is allowed to render.
+async function cardState(card: any) {
+  const { data: feature } = await db().from("features_f5961d0c")
+    .select("id, business_id, business_name, business_instagram").eq("id", card.feature_id).maybeSingle();
+
+  const { data: subs } = await db().from("submissions_f5961d0c")
+    .select("status, reel_url, creator_instagram, metrics, approved_at")
+    .eq("feature_id", card.feature_id).order("submitted_at", { ascending: false });
+  const sub = (subs ?? [])[0] ?? null;
+
+  const businessName = feature?.business_name || "this spot";
+  const ageDays = (Date.now() - new Date(card.generated_at).getTime()) / 864e5;
+
+  if (sub?.status === "approved" && sub.reel_url) {
+    return {
+      state: "B" as const, businessName,
+      reelUrl: sub.reel_url,
+      creatorInstagram: (sub.creator_instagram || "").replace(/^@+/, ""),
+      metrics: sub.metrics || {},
+      businessInstagram: feature?.business_instagram || "",
+    };
+  }
+  if (sub?.status === "denied" || sub?.status === "reported" || ageDays > CARD_LIFETIME_DAYS) {
+    return { state: "C" as const, businessName };
+  }
+  return { state: "A" as const, businessName };
+}
+
+const esc = (s: any) => String(s ?? "").replace(/[&<>"']/g, m =>
+  ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[m] as string));
+
+// Public scan route. Mobile in practice: a phone held behind a counter.
+app.get("/make-server-f5961d0c/a/:code", async (c) => {
+  try {
+    const raw = c.req.param("code");
+    const code = canonicalCode(raw);
+
+    // Canonicalise before anything else so scans are logged against one code.
+    if (raw !== code) return c.redirect(`/make-server-f5961d0c/a/${encodeURIComponent(code)}`, 301);
+
+    const { data: card } = await db().from("ambassador_cards_f5961d0c")
+      .select("*").eq("code", code).maybeSingle();
+
+    if (!card) {
+      return htmlPage({
+        title: "Contynt", noindex: true, status: 404,
+        body: `<h1>This card is not active</h1><p>Double check the code, or visit contynt.com to get started.</p>`,
+      });
+    }
+
+    // A creator previewing their own card must not consume the first scan. There
+    // are no cookies in this stack, so the portal passes its own bearer token on
+    // the preview link; anything else is treated as a genuine outside scan.
+    const selfToken = c.req.query("t") || "";
+    let isSelfScan = false;
+    if (selfToken) {
+      const cd = await creatorFromToken(selfToken);
+      isSelfScan = !!cd?.creatorId && String(cd.creatorId) === String(card.creator_id);
+    }
+
+    const ip = c.req.header("cf-connecting-ip") || c.req.header("x-forwarded-for")?.split(",")[0]?.trim() || "";
+    await db().from("ambassador_card_scans_f5961d0c").insert({
+      card_code: code,
+      ip_hash: ip ? await hashIp(ip) : null,
+      user_agent: c.req.header("user-agent") || "",
+      is_self_scan: isSelfScan,
+    });
+
+    if (!isSelfScan) {
+      const now = new Date();
+      if (!card.handed_off_at) {
+        await db().from("ambassador_cards_f5961d0c").update({
+          handed_off_at: now.toISOString(),
+          handoff_status: card.handoff_status === "pending" ? "handed_off" : card.handoff_status,
+        }).eq("id", card.id);
+      }
+      // First scan wins. The unique partial index on (business_id) where
+      // is_attributed is what actually decides a tie between two simultaneous
+      // scans; this update simply loses the race and moves on.
+      if (!card.is_attributed && card.business_id) {
+        const { error } = await db().from("ambassador_cards_f5961d0c").update({
+          is_attributed: true,
+          attribution_locked_until: new Date(now.getTime() + CARD_LIFETIME_DAYS * 864e5).toISOString(),
+        }).eq("id", card.id);
+        if (error && !String(error.message || "").includes("duplicate")) {
+          console.error("[cards] attribution failed:", error.message);
+        }
+      }
+    }
+
+    const s = await cardState(card);
+    const foot = `<p class="note">Contynt connects local creators with local businesses.</p>`;
+
+    if (s.state === "B") {
+      return htmlPage({
+        title: "Contynt", noindex: true,
+        body: `<h1>The Reel is live</h1>
+          <p>Filmed at ${esc(s.businessName)} by @${esc(s.creatorInstagram)}.</p>
+          <p><a href="${esc(s.reelUrl)}" target="_blank" rel="noopener noreferrer"
+                style="color:#c4b5fd">Watch it on Instagram</a></p>
+          ${s.metrics?.thumbnail ? `<img src="${esc(s.metrics.thumbnail)}" alt="" style="width:100%;border-radius:16px;margin:18px 0">` : ""}
+          <form method="GET" action="${esc(SITE_ORIGIN)}/">
+            <input type="hidden" name="ref" value="${esc(code)}">
+            <button type="submit">Create a business account</button>
+          </form>${foot}`,
+      });
+    }
+
+    if (s.state === "C") {
+      return htmlPage({
+        title: "Contynt", noindex: true,
+        body: `<h1>Contynt</h1>
+          <p>Local creators film short Reels at local businesses and post them to their own audience.</p>
+          <form method="GET" action="${esc(SITE_ORIGIN)}/">
+            <button type="submit">See how it works</button>
+          </form>${foot}`,
+      });
+    }
+
+    // ── State A ──────────────────────────────────────────────────────────────
+    // Names the business, never the creator. One email field, one button. No
+    // signup form, no pricing, no plan CTA.
+    return htmlPage({
+      title: "Contynt", noindex: true,
+      body: `<h1>A creator filmed here recently</h1>
+        <p>It will be posted this week. Drop your email and we will send you the Reel when it goes live.</p>
+        <form method="POST" action="/make-server-f5961d0c/a/${esc(code)}/lead">
+          <input type="email" name="email" placeholder="you@${esc((s.businessName || "yourbusiness").toLowerCase().replace(/[^a-z0-9]/g, "").slice(0, 14) || "yourbusiness")}.com" required autocomplete="email">
+          <button type="submit">Send me the Reel</button>
+        </form>${foot}`,
+    });
+  } catch (e: any) {
+    console.error("[scan]", e?.message ?? e);
+    return htmlPage({
+      title: "Contynt", noindex: true, status: 500,
+      body: `<h1>Something went wrong</h1><p>Try again in a moment.</p>`,
+    });
+  }
+});
+
+// State A email capture. Stores a lead and nothing more.
+app.post("/make-server-f5961d0c/a/:code/lead", async (c) => {
+  const thanks = () => htmlPage({
+    title: "Contynt", noindex: true,
+    body: `<h1>Thanks</h1><p>We will email you as soon as the Reel is live.</p>`,
+  });
+  try {
+    const code = canonicalCode(c.req.param("code"));
+    const body = await c.req.parseBody().catch(() => ({} as any));
+    const email = String((body as any).email ?? "").trim().toLowerCase();
+    if (!email || !email.includes("@")) return thanks();
+
+    const { data: card } = await db().from("ambassador_cards_f5961d0c")
+      .select("id, code, business_id").eq("code", code).maybeSingle();
+    if (!card) return thanks();
+
+    // Unique on (business_id, email), so a second submission is a no-op rather
+    // than an error the person standing at the counter has to understand.
+    const { error } = await db().from("ambassador_leads_f5961d0c").insert({
+      card_code: code, business_id: card.business_id ?? null, email,
+    });
+    if (error && !String(error.message || "").includes("duplicate")) throw error;
+    return thanks();
+  } catch (e: any) {
+    console.error("[lead]", e?.message ?? e);
+    return thanks();
+  }
+});
+
+// ─── Reel goes live ───────────────────────────────────────────────────────────
+// Admin approval and business approval both put a Reel live and were carrying
+// identical copies of this block. One of them would eventually gain a step the
+// other lacked, so both now call through here.
+async function markReelLive(sub: any) {
+  const now = new Date().toISOString();
+  await db().from("submissions_f5961d0c").update({ status: "approved", approved_at: now }).eq("id", sub.id);
+  await must("approve-reel: complete feature", db().from("features_f5961d0c").update({
+    status: "completed", completed_at: now, winner_instagram: sub.creator_instagram || "",
+  }).eq("id", sub.feature_id));
+  await db().from("creator_claims_f5961d0c").update({ status: "approved" })
+    .eq("feature_id", sub.feature_id).eq("creator_token", sub.token);
+  const kvKey = `creator_claim_${sub.token}_${sub.feature_id}`;
+  const existing = await kv.get(kvKey);
+  if (existing) await kv.set(kvKey, { ...existing, status: "approved" });
+
+  await notifyLeadsForFeature(sub.feature_id);
+}
+
+// TRIGGER POINT for the lead notification in section 8 of the brief.
+//
+// Every lead captured in state A against a card for this feature should now get
+// an email from Contynt with the live Reel, and have notified_at stamped.
+// There is no queue, job runner or mail transport in this stack yet, so the
+// send itself is deliberately left unwired rather than faked: the rows are
+// selected and logged so the backlog is visible and nothing is lost, and the
+// moment Postmark sending exists this is the one function that changes.
+async function notifyLeadsForFeature(featureId: string) {
+  try {
+    const { data: cards } = await db().from("ambassador_cards_f5961d0c")
+      .select("code").eq("feature_id", featureId);
+    const codes = (cards ?? []).map((r: any) => r.code);
+    if (!codes.length) return;
+
+    const { data: leads } = await db().from("ambassador_leads_f5961d0c")
+      .select("id, email, card_code").in("card_code", codes).is("notified_at", null);
+    if (!leads?.length) return;
+
+    // TODO(send): dispatch via Postmark, then stamp notified_at per row. Stamping
+    // before a send exists would silently drop every one of these leads.
+    console.log(`[leads] ${leads.length} lead(s) awaiting the live-Reel email for feature ${featureId}`);
+  } catch (e: any) {
+    console.error("[leads] notify failed:", e?.message ?? e);
+  }
+}
+
+// ─── Card printables ──────────────────────────────────────────────────────────
+const CARD_ORIGIN = Deno.env.get("CARD_LINK_ORIGIN") || VERIFY_ORIGIN;
+const cardUrlFor = (code: string) => `${CARD_ORIGIN}/a/${code}`;
+
+// Shown on the print sheet and the card screen. Plain language on purpose: the
+// creator is going to be asked "what is this?" while holding it.
+const ATTRIBUTION_RULE = "First scan at a spot wins. One payout per business, ever.";
+// TODO(copy): placeholder handoff script. Replace with the wording you want
+// creators to actually say before this ships.
+const HANDOFF_SCRIPT =
+  "Hey, I just filmed a Reel here for Contynt. This card has a code on it. " +
+  "If you scan it you can see the Reel when it goes live, and get set up if you want more.";
+
+async function cardForCreator(cardId: string, token: string) {
+  const creatorData = await creatorFromToken(token);
+  if (!creatorData?.creatorId) return { error: "Invalid or expired link", status: 401 as const };
+  const { data: card } = await db().from("ambassador_cards_f5961d0c")
+    .select("*").eq("id", cardId).maybeSingle();
+  if (!card) return { error: "Card not found", status: 404 as const };
+  // A card id is a uuid, but never trust it as a capability on its own.
+  if (String(card.creator_id) !== String(creatorData.creatorId)) {
+    return { error: "Card not found", status: 404 as const };
+  }
+  return { card, creatorId: creatorData.creatorId };
+}
+
+// A6 (105x148mm) centred on a letter sheet with crop marks. This is HTML rather
+// than a generated PDF: adding a PDF toolchain to a Deno edge function to draw
+// two rectangles and a QR would cost far more than it returns, and every browser
+// prints this to PDF natively at the right trim size.
+function buildCardSheet(cards: { code: string; qr: string; businessName: string }[]): string {
+  const one = (c: typeof cards[0]) => `
+    <div class="card">
+      <span class="cm tl"></span><span class="cm tr"></span><span class="cm bl"></span><span class="cm br"></span>
+      <div class="inner">
+        <div class="brand">C O N T Y N T</div>
+        <div class="lead">A creator filmed here.</div>
+        <img class="qr" src="${c.qr}" alt="">
+        <div class="code">${esc(c.code)}</div>
+        <div class="sub">Scan the code, or go to<br>${esc(cardUrlFor(c.code))}</div>
+      </div>
+    </div>`;
+  return `<!doctype html><html><head><meta charset="utf-8"><title>Contynt card</title>
+<meta name="robots" content="noindex,nofollow">
+<style>
+  @page { size: letter; margin: 8mm; }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Helvetica,Arial,sans-serif;background:#fff;color:#0a0a0a}
+  .sheet{display:flex;flex-wrap:wrap}
+  .card{position:relative;width:105mm;height:148mm;page-break-inside:avoid}
+  .inner{position:absolute;inset:6mm;border:1.5pt solid #111;border-radius:6mm;
+         display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;padding:8mm}
+  .brand{font-size:8pt;font-weight:700;letter-spacing:.4em;margin-bottom:8mm}
+  .lead{font-size:15pt;font-weight:800;line-height:1.25;margin-bottom:7mm}
+  .qr{width:44mm;height:44mm;margin-bottom:5mm}
+  /* The code is set large because it is the fallback when a camera will not
+     focus behind a counter, and it is what someone reads aloud over a phone. */
+  .code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:26pt;font-weight:700;letter-spacing:.16em;margin-bottom:4mm}
+  .sub{font-size:7.5pt;line-height:1.5;color:#555}
+  .cm{position:absolute;width:4mm;height:4mm}
+  .cm.tl{top:0;left:0;border-top:.4pt solid #999;border-left:.4pt solid #999}
+  .cm.tr{top:0;right:0;border-top:.4pt solid #999;border-right:.4pt solid #999}
+  .cm.bl{bottom:0;left:0;border-bottom:.4pt solid #999;border-left:.4pt solid #999}
+  .cm.br{bottom:0;right:0;border-bottom:.4pt solid #999;border-right:.4pt solid #999}
+</style></head><body><div class="sheet">${cards.map(one).join("")}</div>
+<script>window.addEventListener("load",function(){setTimeout(function(){window.print()},300)})</script>
+</body></html>`;
+}
+
+// Batched sheet when the creator has several unprinted cards, so three approved
+// Features do not mean three trips to the printer. Each keeps its own code.
+app.get("/make-server-f5961d0c/portal/cards/:id/print", async (c) => {
+  try {
+    const token = c.req.query("t") || "";
+    const res = await cardForCreator(c.req.param("id"), token);
+    if ("error" in res) return c.json({ error: res.error }, res.status);
+
+    let rows = [res.card];
+    if (c.req.query("batch") === "1") {
+      const { data: unprinted } = await db().from("ambassador_cards_f5961d0c")
+        .select("*").eq("creator_id", res.creatorId).is("printed_at", null).order("generated_at");
+      const merged = [res.card, ...(unprinted ?? []).filter((r: any) => r.id !== res.card.id)];
+      rows = merged;
+    }
+
+    const featureIds = [...new Set(rows.map((r: any) => r.feature_id))];
+    const { data: feats } = await db().from("features_f5961d0c")
+      .select("id, business_name").in("id", featureIds);
+    const nameFor: Record<string, string> = {};
+    for (const f of (feats ?? [])) nameFor[f.id] = f.business_name || "";
+
+    const cards = [];
+    for (const r of rows) {
+      const qr = await QRCode.toDataURL(cardUrlFor(r.code), { width: 640, margin: 1 });
+      cards.push({ code: r.code, qr, businessName: nameFor[r.feature_id] || "" });
+    }
+
+    // First download only, so a reprint does not reset the record of when the
+    // creator actually got the card.
+    const unprintedIds = rows.filter((r: any) => !r.printed_at).map((r: any) => r.id);
+    if (unprintedIds.length) {
+      await db().from("ambassador_cards_f5961d0c")
+        .update({ printed_at: new Date().toISOString() }).in("id", unprintedIds);
+    }
+
+    return new Response(buildCardSheet(cards), {
+      headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store", "X-Robots-Tag": "noindex, nofollow" },
+    });
+  } catch (e: any) {
+    console.error("[card print]", e?.message ?? e);
+    return c.json({ error: "Could not build the card" }, 500);
+  }
+});
+
+// Fallback for when there is no printer: a full-bleed QR sized to be scanned
+// off this screen by another phone's camera.
+app.get("/make-server-f5961d0c/portal/cards/:id/screen", async (c) => {
+  try {
+    const token = c.req.query("t") || "";
+    const res = await cardForCreator(c.req.param("id"), token);
+    if ("error" in res) return c.json({ error: res.error }, res.status);
+
+    const qr = await QRCode.toDataURL(cardUrlFor(res.card.code), { width: 900, margin: 1 });
+    return htmlPage({
+      title: "Your card", noindex: true,
+      body: `<h1>Show this to staff</h1>
+        <img src="${qr}" alt="" style="width:100%;max-width:320px;background:#fff;padding:12px;border-radius:20px;margin:6px auto 14px">
+        <div style="font-family:ui-monospace,Menlo,monospace;font-size:32px;font-weight:700;letter-spacing:.16em;margin-bottom:14px">${esc(res.card.code)}</div>
+        <p style="text-align:left">${esc(HANDOFF_SCRIPT)}</p>
+        <p class="note">${esc(ATTRIBUTION_RULE)}</p>`,
+    });
+  } catch (e: any) {
+    console.error("[card screen]", e?.message ?? e);
+    return c.json({ error: "Could not build the card" }, 500);
+  }
+});
+
+// Cards for the portal's "Print your card" step.
+app.get("/make-server-f5961d0c/portal/cards", async (c) => {
+  try {
+    const token = c.req.query("t") || "";
+    const creatorData = await creatorFromToken(token);
+    if (!creatorData?.creatorId) return c.json({ error: "Invalid or expired link" }, 401);
+
+    const { data: rows } = await db().from("ambassador_cards_f5961d0c")
+      .select("*").eq("creator_id", creatorData.creatorId).order("generated_at", { ascending: false });
+
+    return c.json({
+      handoffScript: HANDOFF_SCRIPT,
+      attributionRule: ATTRIBUTION_RULE,
+      unprintedCount: (rows ?? []).filter((r: any) => !r.printed_at).length,
+      cards: (rows ?? []).map((r: any) => ({
+        id: r.id, featureId: r.feature_id, code: r.code,
+        printedAt: r.printed_at, handedOffAt: r.handed_off_at,
+        handoffStatus: r.handoff_status, isAttributed: r.is_attributed,
+      })),
+    });
+  } catch (e: any) { return c.json({ error: e.message }, 500); }
+});
+
+// ─── Creator readiness (admin) ────────────────────────────────────────────────
+// Tiers are computed, never stored: they are a view over verification, contact
+// preferences and ambassador consent, all of which move independently. A stored
+// tier would be wrong the moment any one of them changed.
+function readinessTier(r: any): "Ready+" | "Ready" | "Warm" | "Cold" {
+  const confirmed = r.verification_status === "confirmed";
+  const notifications = !!r.notify_email || !!r.notify_sms;
+  if (confirmed && notifications && r.ambassador_opted_in) return "Ready+";
+  if (confirmed && notifications) return "Ready";
+  if (r.verify_link_opened_at) return "Warm";
+  return "Cold";
+}
+
+app.get("/make-server-f5961d0c/admin/creator-readiness", async (c) => {
+  try {
+    const supabase = db();
+    const [creRes, delivRes, payRes] = await Promise.all([
+      supabase.from("creator_signups_f5961d0c").select("*").order("created_at", { ascending: false }),
+      // Delivery is only knowable from Postmark, so it comes from the event log
+      // rather than a column we would have to keep in sync.
+      supabase.from("email_events_f5961d0c").select("creator_id, type").in("type", ["Delivery", "Bounce", "SpamComplaint"]),
+      supabase.from("creator_payout_requests_f5961d0c").select("creator_token, payment_method"),
+    ]);
+
+    const delivered = new Set<string>(), bouncedEv = new Set<string>();
+    for (const e of (delivRes.data ?? [])) {
+      if (!e.creator_id) continue;
+      if (e.type === "Delivery") delivered.add(e.creator_id);
+      else bouncedEv.add(e.creator_id);
+    }
+
+    // "Payouts connected" means the creator has actually told us how to pay
+    // them, which in this schema only ever appears on a payout request.
+    const tokenRefs = await kv.getByPrefix("ctokenref_");
+    const tokenFor: Record<string, string> = {};
+    for (const ref of tokenRefs) if (ref?.creatorId && ref?.token) tokenFor[ref.creatorId] = ref.token;
+    const payoutTokens = new Set((payRes.data ?? []).filter((r: any) => (r.payment_method || "").trim()).map((r: any) => r.creator_token));
+
+    const rows = (creRes.data ?? []).map((r: any) => {
+      const tier = readinessTier(r);
+      return {
+        id: r.id,
+        handle: r.instagram_handle || (r.instagram || "").replace(/^@+/, ""),
+        email: r.email || "",
+        tier,
+        status: r.verification_status || "pending",
+        sentAt: r.verify_email_sent_at || null,
+        openedAt: r.verify_link_opened_at || null,
+        openCount: r.verify_open_count ?? 0,
+        confirmedAt: r.verify_confirmed_at || null,
+        neighborhoods: r.service_areas || [],
+        capacity: r.max_features_per_week ?? null,
+        notifyEmail: !!r.notify_email, notifySms: !!r.notify_sms,
+        ambassadorOptedIn: !!r.ambassador_opted_in,
+        payoutsConnected: payoutTokens.has(tokenFor[r.id]),
+        delivered: delivered.has(r.id),
+        bounced: !!r.email_bounced_at || !!r.email_complained_at || bouncedEv.has(r.id),
+      };
+    });
+
+    return c.json({
+      funnel: {
+        sent: rows.filter(r => r.sentAt).length,
+        delivered: rows.filter(r => r.delivered).length,
+        linkOpened: rows.filter(r => r.openedAt).length,
+        confirmed: rows.filter(r => r.status === "confirmed").length,
+        ambassadorOptedIn: rows.filter(r => r.ambassadorOptedIn).length,
+        bounced: rows.filter(r => r.bounced).length,
+      },
+      neighborhoods: SF_NEIGHBORHOODS,
+      creators: rows,
+    });
+  } catch (e: any) { return c.json({ error: "Failed to load readiness", details: e.message }, 500); }
+});
+
+// ─── Verification send ────────────────────────────────────────────────────────
+const POSTMARK_SERVER_TOKEN = Deno.env.get("POSTMARK_SERVER_TOKEN") || "";
+const POSTMARK_FROM = Deno.env.get("POSTMARK_FROM") || "team@getcontynt.com";
+const POSTMARK_STREAM = Deno.env.get("POSTMARK_MESSAGE_STREAM") || "broadcast";
+const SEND_COOLDOWN_HOURS = 24;
+
+// There is no name column on creator_signups, so the handle is the only thing
+// resembling a first name we have. Better than an empty greeting, and the
+// template degrades to "there" when even that is missing.
+const firstNameFor = (r: any) =>
+  (r.instagram_handle || (r.instagram || "").replace(/^@+/, "").split(/[._]/)[0] || "there");
+
+function renderVerificationEmail(row: any, link: string) {
+  const first = firstNameFor(row);
+  const text =
+`Hi ${first},
+
+Contynt is opening up in San Francisco and you are on the list for the first drop.
+
+Confirm your profile so we can match you to Features in your neighborhoods:
+${link}
+
+This link is good for 90 days and is just for you. Please do not forward it.
+
+Contynt`;
+  const html =
+`<div style="font-family:-apple-system,Segoe UI,Helvetica,Arial,sans-serif;font-size:15px;line-height:1.6;color:#111">
+<p>Hi ${esc(first)},</p>
+<p>Contynt is opening up in San Francisco and you are on the list for the first drop.</p>
+<p><a href="${esc(link)}" style="display:inline-block;background:#0a0a0a;color:#fff;padding:12px 20px;border-radius:10px;text-decoration:none;font-weight:600">Confirm your profile</a></p>
+<p style="color:#666;font-size:13px">This link is good for 90 days and is just for you. Please do not forward it.</p>
+<p style="color:#666;font-size:13px">Contynt</p></div>`;
+  return { text, html, subject: "Confirm your Contynt profile" };
+}
+
+// Postmark separates broadcast and transactional streams, and sending on the
+// wrong one is not cosmetic: broadcast messages carry unsubscribe headers and
+// are rate shaped for bulk. A login code is transactional and must not go out
+// on the same stream as the announcement email.
+const POSTMARK_TRANSACTIONAL_STREAM = Deno.env.get("POSTMARK_TRANSACTIONAL_STREAM") || "outbound";
+
+async function postmarkSend(opts: { to: string; subject: string; html: string; text: string; stream: string }) {
+  if (!POSTMARK_SERVER_TOKEN) return { ok: false, error: "POSTMARK_SERVER_TOKEN not set", payload: {} as any };
+  try {
+    const res = await fetch("https://api.postmarkapp.com/email", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json", "Accept": "application/json",
+        "X-Postmark-Server-Token": POSTMARK_SERVER_TOKEN,
+      },
+      body: JSON.stringify({
+        From: POSTMARK_FROM, To: opts.to, Subject: opts.subject,
+        HtmlBody: opts.html, TextBody: opts.text, MessageStream: opts.stream,
+      }),
+    });
+    const payload = await res.json().catch(() => ({}));
+    if (!res.ok) return { ok: false, error: payload?.Message || `Postmark ${res.status}`, payload };
+    return { ok: true, error: "", payload };
+  } catch (e: any) {
+    return { ok: false, error: e?.message ?? String(e), payload: {} as any };
+  }
+}
+
+// Shared by the admin bulk actions and scripts/send-verification.sh, so a fix to
+// the idempotency guard cannot land in one path and miss the other.
+async function sendVerificationBatch(opts: {
+  creatorIds?: string[]; reminderOnly?: boolean; dryRun?: boolean; limit?: number;
+}) {
+  const supabase = db();
+  let q = supabase.from("creator_signups_f5961d0c").select("*");
+  if (opts.creatorIds?.length) q = q.in("id", opts.creatorIds);
+  // A reminder is for people who opened nothing or stalled, never for the
+  // already-confirmed.
+  if (opts.reminderOnly) q = q.neq("verification_status", "confirmed");
+  const { data: rows, error } = await q;
+  if (error) throw error;
+
+  const results: any[] = [];
+  const cutoff = Date.now() - SEND_COOLDOWN_HOURS * 3600e3;
+
+  for (const r of (rows ?? []).slice(0, opts.limit ?? 500)) {
+    const email = (r.email || "").trim();
+    if (!email) { results.push({ id: r.id, skipped: "no email" }); continue; }
+    if (r.email_bounced_at || r.email_complained_at) { results.push({ id: r.id, email, skipped: "suppressed" }); continue; }
+    // Never twice within 24 hours. This is the guard that makes re-running the
+    // script after a partial failure safe.
+    if (r.verify_email_sent_at && new Date(r.verify_email_sent_at).getTime() > cutoff) {
+      results.push({ id: r.id, email, skipped: "sent within 24h" });
+      continue;
+    }
+
+    // A fresh token invalidates the previous one: one live link per creator.
+    const token = secureToken(32);
+    const link = verifyLinkFor(token);
+    const rendered = renderVerificationEmail(r, link);
+
+    if (opts.dryRun) {
+      results.push({ id: r.id, email, link, subject: rendered.subject, dryRun: true });
+      continue;
+    }
+
+    await must("send: issue token", supabase.from("creator_signups_f5961d0c").update({
+      verify_token: token,
+      verify_token_expires_at: new Date(Date.now() + VERIFY_DAYS * 864e5).toISOString(),
+    }).eq("id", r.id));
+
+    if (!POSTMARK_SERVER_TOKEN) {
+      results.push({ id: r.id, email, link, skipped: "POSTMARK_SERVER_TOKEN not set" });
+      continue;
+    }
+
+    try {
+      const sent = await postmarkSend({ to: email, ...rendered, stream: POSTMARK_STREAM });
+      const payload = sent.payload;
+      if (!sent.ok) { results.push({ id: r.id, email, error: sent.error }); continue; }
+
+      // Stamped only after Postmark accepted it, so a failed send does not burn
+      // the 24 hour cooldown.
+      await supabase.from("creator_signups_f5961d0c")
+        .update({ verify_email_sent_at: new Date().toISOString() }).eq("id", r.id);
+      await logCreatorEvent(r.id, "verify_email_sent", { messageId: payload?.MessageID ?? null, reminder: !!opts.reminderOnly });
+      results.push({ id: r.id, email, sent: true, messageId: payload?.MessageID ?? null });
+    } catch (e: any) {
+      results.push({ id: r.id, email, error: e?.message ?? String(e) });
+    }
+  }
+
+  return {
+    dryRun: !!opts.dryRun,
+    considered: rows?.length ?? 0,
+    sent: results.filter(r => r.sent).length,
+    skipped: results.filter(r => r.skipped).length,
+    failed: results.filter(r => r.error).length,
+    results,
+  };
+}
+
+app.post("/make-server-f5961d0c/admin/verification/send", async (c) => {
+  try {
+    const body = await c.req.json().catch(() => ({}));
+    const out = await sendVerificationBatch({
+      creatorIds: Array.isArray(body.creatorIds) ? body.creatorIds : undefined,
+      reminderOnly: !!body.reminderOnly,
+      dryRun: !!body.dryRun,
+      limit: Number(body.limit) || undefined,
+    });
+    return c.json({ success: true, ...out });
+  } catch (e: any) { return c.json({ error: "Send failed", details: e.message }, 500); }
+});
+
+// ─── Ambassador payout hook ───────────────────────────────────────────────────
+const CARD_REWARD_DEFAULT = REFERRAL_REWARD;
+
+// Deliberately NOT automatic. A scan attributes a card, but only an admin
+// confirming a real business signup releases money, and only once per business
+// for all time. business_signup_id on the attributed card is the ledger marker:
+// it is set in the same call that writes the credit, so a double click cannot
+// pay twice.
+app.post("/make-server-f5961d0c/admin/cards/credit-attribution", async (c) => {
+  try {
+    const { businessId, amount } = await c.req.json();
+    if (!businessId) return c.json({ error: "businessId required" }, 400);
+
+    const { data: card } = await db().from("ambassador_cards_f5961d0c")
+      .select("*").eq("business_id", businessId).eq("is_attributed", true).maybeSingle();
+    if (!card) return c.json({ error: "No attributed card for this business" }, 404);
+    if (card.business_signup_id) {
+      return c.json({ error: "This business has already paid out once. One payout per business, ever." }, 409);
+    }
+
+    const ref = await kv.get(`ctokenref_${card.creator_id}`).catch(() => null);
+    if (!ref?.token) return c.json({ error: "Creator has no portal token to credit" }, 404);
+
+    const value = Number(amount) > 0 ? Number(amount) : CARD_REWARD_DEFAULT;
+    await must("card payout: credit", db().from("creator_earnings_f5961d0c").insert({
+      creator_token: ref.token, amount: value, source: "ambassador_card",
+      note: `Ambassador card ${card.code}`,
+    }));
+    await must("card payout: mark", db().from("ambassador_cards_f5961d0c")
+      .update({ business_signup_id: businessId }).eq("id", card.id));
+    await logCreatorEvent(card.creator_id, "ambassador_card_credited", { code: card.code, amount: value, businessId });
+
+    return c.json({ success: true, amount: value, code: card.code });
+  } catch (e: any) { return c.json({ error: e.message }, 500); }
+});
+
+// Attribution can be wrong: two creators visit the same spot, the wrong card
+// gets scanned first. Admin can move it, but not after it has paid.
+app.post("/make-server-f5961d0c/admin/cards/reassign-attribution", async (c) => {
+  try {
+    const { businessId, cardId } = await c.req.json();
+    if (!businessId || !cardId) return c.json({ error: "businessId and cardId required" }, 400);
+
+    const { data: current } = await db().from("ambassador_cards_f5961d0c")
+      .select("*").eq("business_id", businessId).eq("is_attributed", true).maybeSingle();
+    if (current?.business_signup_id) {
+      return c.json({ error: "This business already paid out. Reassigning would not move the money." }, 409);
+    }
+    // Cleared first: the unique partial index allows only one attributed card
+    // per business, so the new one cannot be set while the old one holds it.
+    if (current) {
+      await must("reassign: clear", db().from("ambassador_cards_f5961d0c")
+        .update({ is_attributed: false, attribution_locked_until: null }).eq("id", current.id));
+    }
+    await must("reassign: set", db().from("ambassador_cards_f5961d0c").update({
+      is_attributed: true,
+      attribution_locked_until: new Date(Date.now() + CARD_LIFETIME_DAYS * 864e5).toISOString(),
+    }).eq("id", cardId).eq("business_id", businessId));
+
+    return c.json({ success: true });
+  } catch (e: any) { return c.json({ error: e.message }, 500); }
+});
+
+// ─── Creator login (email code) ────────────────────────────────────────────────
+// Replaces the unique-link model. A creator enters their email, gets a 6 digit
+// code, and the verified session is what the portal runs on from then on. No
+// password, and no long lived secret sitting in an email thread forever.
+const LOGIN_CODE_TTL_MIN = 10;
+const LOGIN_CODE_MAX_ATTEMPTS = 5;
+const LOGIN_MAX_REQUESTS_PER_HOUR = 5;
+
+function sixDigitCode(): string {
+  // 2^32 is not a multiple of 1e6, so a bare modulo would bias the low codes.
+  // 4294000000 is the largest multiple of 1e6 below 2^32.
+  const buf = new Uint32Array(1);
+  let n = 0;
+  do { crypto.getRandomValues(buf); n = buf[0]; } while (n >= 4294000000);
+  return String(n % 1000000).padStart(6, "0");
+}
+
+// Codes are stored hashed. A KV dump should not hand someone a live login code.
+async function hashLoginCode(email: string, code: string): Promise<string> {
+  const salt = Deno.env.get("LOGIN_CODE_SALT") || ADMIN_SECRET || "contynt";
+  const buf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(`${salt}:${email}:${code}`));
+  return [...new Uint8Array(buf)].map(b => b.toString(16).padStart(2, "0")).join("");
+}
+
+function loginCodeEmail(code: string) {
+  return {
+    subject: `Your Contynt code: ${code}`,
+    text: `Your Contynt login code is ${code}\n\nIt expires in ${LOGIN_CODE_TTL_MIN} minutes. If you did not ask for this, you can ignore it.\n\nContynt`,
+    html: `<div style="font-family:-apple-system,Segoe UI,Helvetica,Arial,sans-serif;font-size:15px;line-height:1.6;color:#111">
+<p>Your Contynt login code is</p>
+<p style="font-size:34px;font-weight:700;letter-spacing:.18em;margin:14px 0">${esc(code)}</p>
+<p style="color:#666;font-size:13px">It expires in ${LOGIN_CODE_TTL_MIN} minutes. If you did not ask for this, you can ignore it.</p>
+<p style="color:#666;font-size:13px">Contynt</p></div>`,
+  };
+}
+
+app.post("/make-server-f5961d0c/creator-login/request", async (c) => {
+  // One response shape whatever happens. Anything that varied with whether the
+  // address is on file would turn this into a creator-list oracle.
+  const done = () => c.json({ success: true, message: "If that email is on file, a code is on its way." });
+  try {
+    const { email } = await c.req.json();
+    const addr = String(email ?? "").trim().toLowerCase();
+    if (!addr || !addr.includes("@")) return done();
+
+    const { data: creator } = await db().from("creator_signups_f5961d0c")
+      .select("id, email, email_bounced_at, email_complained_at").ilike("email", addr).maybeSingle();
+    if (!creator) return done();
+    if (creator.email_bounced_at || creator.email_complained_at) return done();
+
+    const key = `logincode_${addr}`;
+    const prev = await kv.get(key).catch(() => null);
+
+    // Rate limit per address, so this cannot be used to mail-bomb a creator.
+    const windowStart = prev?.windowStart && (Date.now() - new Date(prev.windowStart).getTime() < 3600e3)
+      ? prev.windowStart : new Date().toISOString();
+    const sentInWindow = windowStart === prev?.windowStart ? (prev?.sentInWindow ?? 0) : 0;
+    if (sentInWindow >= LOGIN_MAX_REQUESTS_PER_HOUR) {
+      await logCreatorEvent(creator.id, "login_code_throttled", {});
+      return done();
+    }
+
+    const code = sixDigitCode();
+    await kv.set(key, {
+      creatorId: creator.id,
+      codeHash: await hashLoginCode(addr, code),
+      expiresAt: new Date(Date.now() + LOGIN_CODE_TTL_MIN * 60e3).toISOString(),
+      attempts: 0,
+      windowStart, sentInWindow: sentInWindow + 1,
+    });
+
+    const mail = loginCodeEmail(code);
+    const sent = await postmarkSend({ to: creator.email, ...mail, stream: POSTMARK_TRANSACTIONAL_STREAM });
+    // Logged without the code itself. The event trail should not be a way to
+    // read someone's live login code.
+    await logCreatorEvent(creator.id, "login_code_sent", { delivered: sent.ok, error: sent.error || null });
+    if (!sent.ok) console.error("[login] send failed:", sent.error);
+    return done();
+  } catch (e: any) {
+    console.error("[login request]", e?.message ?? e);
+    return done();
+  }
+});
+
+app.post("/make-server-f5961d0c/creator-login/verify", async (c) => {
+  try {
+    const { email, code } = await c.req.json();
+    const addr = String(email ?? "").trim().toLowerCase();
+    const supplied = String(code ?? "").replace(/\D/g, "");
+    if (!addr || !supplied) return c.json({ error: "Enter the code we emailed you." }, 400);
+
+    const key = `logincode_${addr}`;
+    const rec = await kv.get(key).catch(() => null);
+    if (!rec) return c.json({ error: "That code has expired. Ask for a new one." }, 400);
+
+    if (new Date(rec.expiresAt) <= new Date()) {
+      await kv.del(key).catch(() => {});
+      return c.json({ error: "That code has expired. Ask for a new one." }, 400);
+    }
+    // Burn the code after a handful of tries so a 6 digit space cannot be walked.
+    if ((rec.attempts ?? 0) >= LOGIN_CODE_MAX_ATTEMPTS) {
+      await kv.del(key).catch(() => {});
+      return c.json({ error: "Too many attempts. Ask for a new code." }, 429);
+    }
+
+    const ok = timingSafeEqual(await hashLoginCode(addr, supplied), String(rec.codeHash ?? ""));
+    if (!ok) {
+      await kv.set(key, { ...rec, attempts: (rec.attempts ?? 0) + 1 });
+      return c.json({ error: "That code is not right." }, 400);
+    }
+
+    // Single use.
+    await kv.del(key).catch(() => {});
+
+    const { data: creator } = await db().from("creator_signups_f5961d0c")
+      .select("*").eq("id", rec.creatorId).maybeSingle();
+    if (!creator) return c.json({ error: "Account not found." }, 404);
+
+    // Reuses the creator's existing token when there is one. Claims and earnings
+    // are keyed by creator_token, so minting a fresh token on every login would
+    // orphan a creator's own history.
+    const token = await ensureCreatorPortalToken(creator);
+    await logCreatorEvent(creator.id, "login_succeeded", {});
+
+    return c.json({
+      success: true, token,
+      needsConfirm: creator.verification_status !== "confirmed",
+    });
+  } catch (e: any) { return c.json({ error: "Could not sign you in", details: e.message }, 500); }
+});
+
+// ─── Admin: impersonate a creator ─────────────────────────────────────────────
+// Deliberately NOT the same thing as /creator-links. That route rotates the
+// creator's own token, which would sign them out of their session the moment an
+// admin looked at their portal. This mints a separate, short lived token and
+// leaves the creator's session completely alone.
+const IMPERSONATE_MINUTES = 60;
+
+app.post("/make-server-f5961d0c/admin/impersonate-creator", async (c) => {
+  try {
+    const { creatorId } = await c.req.json();
+    if (!creatorId) return c.json({ error: "creatorId required" }, 400);
+
+    const { data: creator } = await db().from("creator_signups_f5961d0c")
+      .select("id, instagram, email, city").eq("id", creatorId).maybeSingle();
+    if (!creator) return c.json({ error: "Creator not found" }, 404);
+
+    // Every claim, submission and earning row is keyed by the creator's token
+    // STRING, not their id. So a standalone impersonation token would render a
+    // completely empty portal. The impersonation token therefore carries the
+    // creator's real token and reads follow that alias.
+    const realToken = await ensureCreatorPortalToken(creator);
+
+    const token = secureToken(24);
+    const expiresAt = new Date(Date.now() + IMPERSONATE_MINUTES * 60e3).toISOString();
+    await kv.set(`ctoken_${token}`, {
+      creatorId: creator.id, instagram: creator.instagram, email: creator.email, city: creator.city,
+      createdAt: new Date().toISOString(),
+      // Read by creatorFromToken to expire it, and by the portal to show a banner.
+      impersonated: true, expiresAt, realToken,
+    });
+    // Not written to ctokenref_ on purpose: that key is how the creator's real
+    // session is found, and an impersonation token must never become it.
+    await logCreatorEvent(creator.id, "admin_impersonated", { expiresAt });
+
+    return c.json({ success: true, token, expiresAt, minutes: IMPERSONATE_MINUTES });
+  } catch (e: any) { return c.json({ error: e.message }, 500); }
 });
 
 // ─── Health ───────────────────────────────────────────────────────────────────
@@ -592,12 +2034,19 @@ app.post("/make-server-f5961d0c/admin/update-feature", async (c) => {
 // ─── Admin: publish an existing feature (make it claimable) ──────────────────
 app.post("/make-server-f5961d0c/admin/publish-feature", async (c) => {
   try {
-    const { featureId, category, payoutRange, adminNotes } = await c.req.json();
+    const { featureId, category, payoutRange, adminNotes, earlyAccess, earlyAccessHours } = await c.req.json();
     if (!featureId) return c.json({ error: "featureId required" }, 400);
     const patch: Record<string, any> = { status: "available", approved_at: new Date().toISOString() };
     if (category) patch.category = category;
     if (payoutRange) patch.payout_range = payoutRange;
     if (adminNotes) patch.admin_notes = adminNotes;
+    // Opt in per Feature. Confirmed creators see it now, everyone else after the
+    // window. Omitting earlyAccess leaves the Feature visible to all, so this
+    // stays off unless an admin asks for it.
+    if (earlyAccess) {
+      const hours = Number(earlyAccessHours) > 0 ? Number(earlyAccessHours) : EARLY_ACCESS_HOURS;
+      patch.early_access_until = new Date(Date.now() + hours * 3600e3).toISOString();
+    }
     const { error } = await db().from("features_f5961d0c").update(patch).eq("id", featureId);
     if (error) throw error;
     return c.json({ success: true });
@@ -687,13 +2136,7 @@ app.post("/make-server-f5961d0c/admin/approve-reel", async (c) => {
     const { submissionId } = await c.req.json();
     const { data: sub, error: subErr } = await db().from("submissions_f5961d0c").select("*").eq("id", submissionId).single();
     if (subErr || !sub) return c.json({ error: "Submission not found" }, 404);
-    await db().from("submissions_f5961d0c").update({ status: "approved", approved_at: new Date().toISOString() }).eq("id", submissionId);
-    await must("approve-reel: complete feature", db().from("features_f5961d0c").update({ status: "completed", completed_at: new Date().toISOString(), winner_instagram: sub.creator_instagram || "" }).eq("id", sub.feature_id));
-    await db().from("creator_claims_f5961d0c").update({ status: "approved" }).eq("feature_id", sub.feature_id).eq("creator_token", sub.token);
-    // Also update KV so admin Feature Activity reflects approved state
-    const kvKey = `creator_claim_${sub.token}_${sub.feature_id}`;
-    const existing = await kv.get(kvKey);
-    if (existing) await kv.set(kvKey, { ...existing, status: "approved" });
+    await markReelLive(sub);
     return c.json({ success: true });
   } catch (e: any) { return c.json({ error: "Failed to approve reel", details: e.message }, 500); }
 });
@@ -826,11 +2269,17 @@ app.post("/make-server-f5961d0c/feature-complete", async (c) => {
 // ─── Creator portal ───────────────────────────────────────────────────────────
 app.get("/make-server-f5961d0c/creator-portal", async (c) => {
   try {
-    const token = c.req.query("t");
-    if (!token) return c.json({ error: "Token required" }, 400);
-    const creatorData = await kv.get(`ctoken_${token}`);
+    const rawToken = c.req.query("t");
+    if (!rawToken) return c.json({ error: "Token required" }, 400);
+    const creatorData = await creatorFromToken(rawToken);
     if (!creatorData) return c.json({ error: "Invalid or expired link" }, 401);
-    await kv.set(`ctoken_${token}`, { ...creatorData, lastActive: new Date().toISOString() });
+    // Liveness is recorded against the session actually in use. Spreading this
+    // record onto the creator's own key would copy the impersonation expiry
+    // across with it and expire the creator's real session inside the hour.
+    await kv.set(`ctoken_${rawToken}`, { ...creatorData, lastActive: new Date().toISOString() });
+    // Past this line, token means "the token that owns the data". For a normal
+    // session that is the same string; for impersonation it is the alias target.
+    const token = creatorData.realToken ?? rawToken;
     const resetRecord = await kv.get(`reset_${token}`);
     const resetAt = resetRecord?.resetAt || null;
     // Get all real features
@@ -839,7 +2288,13 @@ app.get("/make-server-f5961d0c/creator-portal", async (c) => {
       db().from("creator_claims_f5961d0c").select("*").eq("creator_token", token).neq("status", "unclaimed"),
       db().from("submissions_f5961d0c").select("id, feature_id, status").eq("token", token),
     ]);
-    const features = (featRes.data ?? []).map((r: any) => ({ id: r.id, businessId: r.business_id, businessName: r.business_name, address: r.address, city: r.city, category: r.category, payoutRange: r.payout_range, status: r.status, approvedAt: r.approved_at, winnerInstagram: r.winner_instagram || "", businessInstagram: r.business_instagram || "", adminNotes: r.admin_notes || "" }));
+    // Early-access gating. A creator who already claimed a Feature keeps seeing
+    // it regardless, otherwise a gated Feature would vanish from under them.
+    const confirmed = await creatorIsConfirmed(creatorData.creatorId);
+    const claimedIds = new Set((claimsRes.data ?? []).map((cl: any) => cl.feature_id));
+    const features = (featRes.data ?? [])
+      .filter((r: any) => visibleToCreator(r, confirmed) || claimedIds.has(r.id))
+      .map((r: any) => ({ id: r.id, businessId: r.business_id, businessName: r.business_name, address: r.address, city: r.city, category: r.category, payoutRange: r.payout_range, status: r.status, approvedAt: r.approved_at, winnerInstagram: r.winner_instagram || "", businessInstagram: r.business_instagram || "", adminNotes: r.admin_notes || "", earlyAccessUntil: r.early_access_until || null }));
     // SQL only — no KV merge needed
     const claimsMap: Record<string, any> = {};
     for (const cl of (claimsRes.data ?? [])) {
@@ -862,6 +2317,9 @@ app.get("/make-server-f5961d0c/creator-portal", async (c) => {
         ...balance,
       },
       resetAt,
+      // Comes from the session itself rather than a URL flag, so the read-only
+      // banner cannot be dismissed by editing the address bar.
+      impersonated: !!creatorData.impersonated,
     });
   } catch (e: any) { return c.json({ error: "Failed to load portal", details: e.message }, 500); }
 });
@@ -873,6 +2331,8 @@ app.post("/make-server-f5961d0c/creator-portal/claim", async (c) => {
     if (!token || !featureId) return c.json({ error: "Token and featureId required" }, 400);
     const creatorData = await creatorFromToken(token);
     if (!creatorData) return c.json({ error: "Invalid or expired link" }, 401);
+    const blocked = impersonationBlock(creatorData);
+    if (blocked) return c.json(blocked, 403);
     const instagram = creatorData.instagram || "";
     const now = new Date().toISOString();
     await db().from("creator_claims_f5961d0c").upsert({ feature_id: featureId, creator_token: token, creator_instagram: instagram, status: "interested", claimed_at: now, interested_at: now }, { onConflict: "feature_id,creator_token" });
@@ -890,7 +2350,10 @@ app.post("/make-server-f5961d0c/admin/approve-creator-claim", async (c) => {
     const acceptanceExpiresAt = new Date(now.getTime() + 24 * 60 * 60 * 1000).toISOString();
     const { error } = await db().from("creator_claims_f5961d0c").update({ status: "approved", approved_at: approvedAt, acceptance_expires_at: acceptanceExpiresAt }).eq("feature_id", featureId).eq("creator_token", creatorToken);
     if (error) throw error;
-    return c.json({ success: true, approvedAt, acceptanceExpiresAt });
+    // Approval, not claiming, is what mints the card. A card handed out for a
+    // shoot that never got approved would point at a Reel that never arrives.
+    const card = await ensureCardForApprovedClaim(featureId, creatorToken);
+    return c.json({ success: true, approvedAt, acceptanceExpiresAt, cardCode: card?.code ?? null });
   } catch (e: any) { return c.json({ error: e.message }, 500); }
 });
 
@@ -899,7 +2362,10 @@ app.post("/make-server-f5961d0c/creator-portal/accept-feature", async (c) => {
   try {
     const { token, featureId } = await c.req.json();
     if (!token || !featureId) return c.json({ error: "token and featureId required" }, 400);
-    if (!(await creatorFromToken(token))) return c.json({ error: "Invalid or expired link" }, 401);
+    const creatorData = await creatorFromToken(token);
+    if (!creatorData) return c.json({ error: "Invalid or expired link" }, 401);
+    const blocked = impersonationBlock(creatorData);
+    if (blocked) return c.json(blocked, 403);
     const now = new Date();
     const expiresAt = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000).toISOString();
     await db().from("creator_claims_f5961d0c").update({ status: "claimed", expires_at: expiresAt, claimed_at: now.toISOString() }).eq("creator_token", token).eq("feature_id", featureId);
@@ -920,7 +2386,10 @@ app.post("/make-server-f5961d0c/creator-portal/unclaim", async (c) => {
   try {
     const { token, featureId } = await c.req.json();
     if (!token || !featureId) return c.json({ error: "Token and featureId required" }, 400);
-    if (!(await creatorFromToken(token))) return c.json({ error: "Invalid or expired link" }, 401);
+    const creatorData = await creatorFromToken(token);
+    if (!creatorData) return c.json({ error: "Invalid or expired link" }, 401);
+    const blocked = impersonationBlock(creatorData);
+    if (blocked) return c.json(blocked, 403);
     await db().from("creator_claims_f5961d0c").update({ status: "unclaimed", unclaimed_at: new Date().toISOString() }).eq("creator_token", token).eq("feature_id", featureId);
     return c.json({ success: true });
   } catch (e: any) { return c.json({ error: "Failed to unclaim", details: e.message }, 500); }
@@ -928,12 +2397,35 @@ app.post("/make-server-f5961d0c/creator-portal/unclaim", async (c) => {
 
 app.post("/make-server-f5961d0c/creator-portal/submit", async (c) => {
   try {
-    const { token, featureId, reelUrl, instagram } = await c.req.json();
+    const { token, featureId, reelUrl, instagram, handedOff, handoffReason } = await c.req.json();
     if (!token || !featureId || !reelUrl) return c.json({ error: "token, featureId, and reelUrl required" }, 400);
     const creatorData = await creatorFromToken(token);
     if (!creatorData) return c.json({ error: "Invalid or expired link" }, 401);
+    const blocked = impersonationBlock(creatorData);
+    if (blocked) return c.json(blocked, 403);
     const creatorInstagram = creatorData.instagram || instagram || "";
     const creatorId = creatorData.creatorId || "";
+
+    // The handoff question is required only when a card actually exists for this
+    // pair. Creators who never opted in have no card and must not be asked
+    // whether they handed one off.
+    const { data: card } = creatorId
+      ? await db().from("ambassador_cards_f5961d0c").select("id, handoff_status, handed_off_at")
+          .eq("creator_id", creatorId).eq("feature_id", featureId).maybeSingle()
+      : { data: null };
+    if (card) {
+      if (typeof handedOff !== "boolean") {
+        return c.json({ error: "Tell us whether you handed off the card." }, 400);
+      }
+      await must("submit: record handoff", db().from("ambassador_cards_f5961d0c").update({
+        handoff_status: handedOff ? "handed_off" : "not_handed_off",
+        handoff_failure_reason: handedOff ? null : (String(handoffReason ?? "").trim() || null),
+        // A creator saying they handed it off is weaker evidence than a scan,
+        // so it only fills the timestamp in when no scan has already set it.
+        handed_off_at: handedOff ? (card.handed_off_at ?? new Date().toISOString()) : null,
+      }).eq("id", card.id));
+    }
+
     const submissionId = uid();
     // SQL only
     await db().from("submissions_f5961d0c").insert({ id: submissionId, feature_id: featureId, token, creator_id: creatorId, creator_instagram: creatorInstagram, reel_url: reelUrl, status: "pending" });
@@ -949,6 +2441,8 @@ app.post("/make-server-f5961d0c/creator-portal/view-feature", async (c) => {
     if (!token || !featureId) return c.json({ ok: true });
     const creatorData = await creatorFromToken(token);
     if (!creatorData) return c.json({ error: "Invalid or expired link" }, 401);
+    const blocked = impersonationBlock(creatorData);
+    if (blocked) return c.json(blocked, 403);
     // Try updating last_viewed if row exists, otherwise insert a viewing record
     const { error } = await db().from("creator_claims_f5961d0c").update({ last_viewed: new Date().toISOString() }).eq("creator_token", token).eq("feature_id", featureId);
     if (error) {
@@ -964,10 +2458,13 @@ app.post("/make-server-f5961d0c/creator-portal/view-feature", async (c) => {
 // see their own claims and submissions — no other creator's token is exposed.
 app.get("/make-server-f5961d0c/creator-portal/sync", async (c) => {
   try {
-    const token = c.req.query("t");
-    if (!token) return c.json({ error: "Token required" }, 400);
-    const creatorData = await kv.get(`ctoken_${token}`).catch(() => null);
+    const rawToken = c.req.query("t");
+    if (!rawToken) return c.json({ error: "Token required" }, 400);
+    const creatorData = await creatorFromToken(rawToken);
     if (!creatorData) return c.json({ error: "Invalid or expired link" }, 401);
+    // Same alias resolution as /creator-portal, or the poll would blank out a
+    // portal that had just rendered correctly.
+    const token = creatorData.realToken ?? rawToken;
 
     const [claimsRes, subsRes, featRes] = await Promise.all([
       db().from("creator_claims_f5961d0c")
@@ -977,10 +2474,14 @@ app.get("/make-server-f5961d0c/creator-portal/sync", async (c) => {
         .select("id, feature_id, reel_url, admin_payout_approved, stripe_link, payout_amount, denied, admin_report_note, cashed_out_at")
         .eq("token", token),
       db().from("features_f5961d0c")
-        .select("id, business_id, business_name, address, city, category, payout_range, status, approved_at, winner_instagram, business_instagram, admin_notes"),
+        .select("id, business_id, business_name, address, city, category, payout_range, status, approved_at, winner_instagram, business_instagram, admin_notes, early_access_until"),
     ]);
 
     const balance = await creatorBalance(token);
+    // Same gate as /creator-portal. Without it the poll would re-add a Feature
+    // the initial load correctly hid.
+    const syncConfirmed = await creatorIsConfirmed(creatorData.creatorId);
+    const syncClaimed = new Set((claimsRes.data ?? []).map((cl: any) => cl.feature_id));
     return c.json({
       balance,
       claims: (claimsRes.data ?? []).map((r: any) => ({
@@ -994,13 +2495,15 @@ app.get("/make-server-f5961d0c/creator-portal/sync", async (c) => {
         payoutAmount: r.payout_amount || "", denied: !!r.denied,
         adminReportNote: r.admin_report_note || "", cashedOutAt: r.cashed_out_at || null,
       })),
-      features: (featRes.data ?? []).map((r: any) => ({
-        id: r.id, businessId: r.business_id, businessName: r.business_name,
-        address: r.address, city: r.city, category: r.category,
-        payoutRange: r.payout_range, status: r.status, approvedAt: r.approved_at,
-        winnerInstagram: r.winner_instagram || "", businessInstagram: r.business_instagram || "",
-        adminNotes: r.admin_notes || "",
-      })),
+      features: (featRes.data ?? [])
+        .filter((r: any) => visibleToCreator(r, syncConfirmed) || syncClaimed.has(r.id))
+        .map((r: any) => ({
+          id: r.id, businessId: r.business_id, businessName: r.business_name,
+          address: r.address, city: r.city, category: r.category,
+          payoutRange: r.payout_range, status: r.status, approvedAt: r.approved_at,
+          winnerInstagram: r.winner_instagram || "", businessInstagram: r.business_instagram || "",
+          adminNotes: r.admin_notes || "", earlyAccessUntil: r.early_access_until || null,
+        })),
     });
   } catch (e: any) { return c.json({ error: "Failed to sync", details: e.message }, 500); }
 });
@@ -1012,8 +2515,10 @@ app.post("/make-server-f5961d0c/creator-portal/cash-out", async (c) => {
     if (!token || !featureId || !paymentMethod || !paymentInfo) {
       return c.json({ error: "token, featureId, paymentMethod, and paymentInfo required" }, 400);
     }
-    const creatorData = await kv.get(`ctoken_${token}`).catch(() => null);
+    const creatorData = await creatorFromToken(token);
     if (!creatorData) return c.json({ error: "Invalid token" }, 401);
+    const blocked = impersonationBlock(creatorData);
+    if (blocked) return c.json(blocked, 403);
     // Scoped by token so a creator can only cash out their own submission.
     const { error } = await db().from("submissions_f5961d0c")
       .update({ payment_method: paymentMethod, payment_info: paymentInfo, cashed_out_at: new Date().toISOString() })
@@ -1028,8 +2533,10 @@ app.post("/make-server-f5961d0c/creator-portal/complete-payout", async (c) => {
   try {
     const { token, featureId, payoutAmount, instagram } = await c.req.json();
     if (!token || !featureId) return c.json({ error: "token and featureId required" }, 400);
-    const creatorData = await kv.get(`ctoken_${token}`).catch(() => null);
+    const creatorData = await creatorFromToken(token);
     if (!creatorData) return c.json({ error: "Invalid token" }, 401);
+    const blocked = impersonationBlock(creatorData);
+    if (blocked) return c.json(blocked, 403);
     const ig = creatorData.instagram || instagram || "";
     const now = new Date().toISOString();
     await db().from("submissions_f5961d0c")
@@ -1204,7 +2711,7 @@ app.post("/make-server-f5961d0c/admin/mark-paid", async (c) => {
 
     // Anything credited but never requested still needs a record to net off.
     if (before.availableEarnings > 0) {
-      const creatorData = await kv.get(`ctoken_${token}`).catch(() => null);
+      const creatorData = await creatorFromToken(token);
       await must("mark-paid: record direct payout", db().from("creator_payout_requests_f5961d0c").insert({
         creator_token: token,
         creator_id: creatorData?.creatorId || null,
@@ -1311,6 +2818,8 @@ app.post("/make-server-f5961d0c/creator-portal/request-payout", async (c) => {
     if (!token || !method || !handle) return c.json({ error: "token, method, and handle required" }, 400);
     const creatorData = await creatorFromToken(token);
     if (!creatorData) return c.json({ error: "Invalid or expired link" }, 401);
+    const blocked = impersonationBlock(creatorData);
+    if (blocked) return c.json(blocked, 403);
     if (!["PayPal", "Venmo", "Zelle"].includes(method)) return c.json({ error: "Unsupported payout method" }, 400);
 
     // The amount comes from the ledger, never from the client — otherwise a
@@ -1336,8 +2845,10 @@ app.post("/make-server-f5961d0c/creator-portal/update-email", async (c) => {
   try {
     const { token, email } = await c.req.json();
     if (!token || !email) return c.json({ error: "token and email required" }, 400);
-    const creatorData = await kv.get(`ctoken_${token}`);
+    const creatorData = await creatorFromToken(token);
     if (!creatorData) return c.json({ error: "Invalid token" }, 401);
+    const blocked = impersonationBlock(creatorData);
+    if (blocked) return c.json(blocked, 403);
     await db().from("creator_signups_f5961d0c").update({ email }).eq("id", creatorData.creatorId);
     await kv.set(`ctoken_${token}`, { ...creatorData, email });
     return c.json({ success: true });
@@ -1349,7 +2860,10 @@ app.post("/make-server-f5961d0c/creator-portal/payout", async (c) => {
   try {
     const { token, submissionId, featureId, payoutRange } = await c.req.json();
     if (!token || !submissionId) return c.json({ error: "token and submissionId required" }, 400);
-    if (!(await creatorFromToken(token))) return c.json({ error: "Invalid or expired link" }, 401);
+    const creatorData = await creatorFromToken(token);
+    if (!creatorData) return c.json({ error: "Invalid or expired link" }, 401);
+    const blocked = impersonationBlock(creatorData);
+    if (blocked) return c.json(blocked, 403);
     const { error } = await db().from("creator_payouts_f5961d0c").insert({ creator_token: token, submission_id: submissionId, feature_id: featureId, payout_range: payoutRange || "" });
     if (error) throw error;
     return c.json({ success: true });
@@ -1469,14 +2983,7 @@ app.post("/make-server-f5961d0c/business-portal/feedback", async (c) => {
     // 👍 Approve triggers the full approval flow — updates creator portal too
     if (reaction === "approve") {
       const { data: sub } = await db().from("submissions_f5961d0c").select("*").eq("id", submissionId).single();
-      if (sub && sub.status !== "approved") {
-        await db().from("submissions_f5961d0c").update({ status: "approved", approved_at: new Date().toISOString() }).eq("id", submissionId);
-        await must("approve-reel: complete feature", db().from("features_f5961d0c").update({ status: "completed", completed_at: new Date().toISOString(), winner_instagram: sub.creator_instagram || "" }).eq("id", sub.feature_id));
-        await db().from("creator_claims_f5961d0c").update({ status: "approved" }).eq("feature_id", sub.feature_id).eq("creator_token", sub.token);
-        const kvKey = `creator_claim_${sub.token}_${sub.feature_id}`;
-        const existing = await kv.get(kvKey);
-        if (existing) await kv.set(kvKey, { ...existing, status: "approved" });
-      }
+      if (sub && sub.status !== "approved") await markReelLive(sub);
     }
 
     return c.json({ success: true });

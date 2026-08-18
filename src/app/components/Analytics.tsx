@@ -1,7 +1,8 @@
 import { useState, useEffect, useCallback } from "react";
-import { CheckCircle, Copy, RefreshCw, ExternalLink, ThumbsUp, ThumbsDown, Link, ChevronDown, Award } from "lucide-react";
+import { CheckCircle, Copy, RefreshCw, ExternalLink, ThumbsUp, ThumbsDown, Link, ChevronDown, Award, Eye } from "lucide-react";
 import { projectId, publicAnonKey } from "/utils/supabase/info";
 import { AmbassadorAdmin, type AmbassadorAdminData } from "./AmbassadorAdmin";
+import { CreatorReadiness, type ReadinessData } from "./CreatorReadiness";
 
 const BASE = `https://${projectId}.supabase.co/functions/v1/make-server-f5961d0c`;
 const AUTH = { Authorization: `Bearer ${publicAnonKey}` };
@@ -14,7 +15,7 @@ const apiFetch = (path: string, opts?: RequestInit) =>
     headers: { ...AUTH, "Content-Type": "application/json", "x-admin-token": adminSession(), ...(opts?.headers ?? {}) },
   });
 
-type Tab = "creators" | "businesses" | "reels" | "pageviews" | "ambassadors";
+type Tab = "creators" | "businesses" | "reels" | "pageviews" | "ambassadors" | "readiness";
 
 interface Signup { id: string; instagram: string; email: string; city: string; createdAt: string; totalEarned?: number; pendingEarnings?: number; availableEarnings?: number; }
 interface BusinessSignup { id: string; businessName: string; instagram: string; email: string; city: string; address: string; preferredContact: string; createdAt: string; }
@@ -29,15 +30,15 @@ function igHandle(raw: string) {
   return raw ? `@${raw.replace(/^@+/, "")}` : "—";
 }
 
-function CreatorRow({ signup, token, onGenerate, onCopy, generating, copied, claims, features, onMarkPaid, markingPaid }: {
-  signup: Signup; token?: string; onGenerate: () => void; onCopy: () => void; generating: boolean; copied: boolean; claims: Claim[]; features: Feature[];
+function CreatorRow({ signup, token, onImpersonate, impersonating, claims, features, onMarkPaid, markingPaid }: {
+  signup: Signup; token?: string; onImpersonate: () => void; impersonating: boolean;
+  claims: Claim[]; features: Feature[];
   onMarkPaid: () => void; markingPaid: boolean;
 }) {
   const money = (n?: number) => `$${(n ?? 0).toFixed(2).replace(/\.00$/, "")}`;
   const totalEarned = signup.totalEarned ?? 0;
   const owesMoney = totalEarned > 0;
   const [expanded, setExpanded] = useState(false);
-  const portalUrl = token ? `${window.location.origin}?creator=${token}` : null;
   const activeClaims = claims.filter(c => c.status === "claimed");
   const submittedClaims = claims.filter(c => c.status === "submitted");
   const approvedClaims = claims.filter(c => c.status === "approved");
@@ -73,27 +74,15 @@ function CreatorRow({ signup, token, onGenerate, onCopy, generating, copied, cla
           <p className="text-xs text-neutral-500 shrink-0">{new Date(signup.createdAt).toLocaleDateString()}</p>
         </div>
         <div className="flex items-center gap-2 shrink-0">
-          {!token ? (
-            <button onClick={onGenerate} disabled={generating}
-              className="px-3 py-1.5 bg-white text-neutral-900 text-xs rounded-lg hover:bg-neutral-100 transition-all disabled:opacity-50 whitespace-nowrap">
-              {generating ? "Generating…" : "Generate Link"}
-            </button>
-          ) : (
-            <>
-              <a href={portalUrl!} target="_blank" rel="noopener noreferrer"
-                className="flex items-center gap-1 text-xs text-blue-400 hover:text-blue-300 font-mono">
-                <ExternalLink className="w-3 h-3" />{`…${token.slice(0, 8)}`}
-              </a>
-              <button onClick={onCopy}
-                className="px-2 py-1.5 text-xs bg-white/10 text-neutral-300 rounded-lg hover:bg-white/15 transition-all whitespace-nowrap">
-                {copied ? "Copied!" : "Copy"}
-              </button>
-              <button onClick={onGenerate} disabled={generating}
-                className="px-2 py-1.5 text-xs bg-white/10 text-neutral-300 rounded-lg hover:bg-white/15 transition-all disabled:opacity-50 whitespace-nowrap">
-                <RefreshCw className="w-3 h-3" />
-              </button>
-            </>
+          {/* token presence is now just a signal that this creator has signed in
+              at least once. Impersonation works either way. */}
+          {token && (
+            <span className="text-[10px] text-neutral-600 whitespace-nowrap" title="Has signed in">signed in</span>
           )}
+          <button onClick={onImpersonate} disabled={impersonating}
+            className="flex items-center gap-1.5 px-3 py-1.5 bg-white/10 border border-white/15 text-neutral-200 text-xs rounded-lg hover:bg-white/15 hover:border-white/30 transition-all disabled:opacity-50 whitespace-nowrap">
+            <Eye className="w-3 h-3" />{impersonating ? "Opening…" : "View as creator"}
+          </button>
         </div>
       </div>
 
@@ -690,8 +679,7 @@ export function Analytics({ adminToken }: { adminToken?: string } = {}) {
   const [claims, setClaims] = useState<Claim[]>([]);
   const [payoutRanges, setPayoutRanges] = useState<Record<string, string>>({});
   const [categories, setCategories] = useState<Record<string, string>>({});
-  const [generatingCreatorLink, setGeneratingCreatorLink] = useState<string | null>(null);
-  const [copiedCreator, setCopiedCreator] = useState<string | null>(null);
+  const [impersonatingId, setImpersonatingId] = useState<string | null>(null);
   const [approvingBiz, setApprovingBiz] = useState<string | null>(null);
   const [generatingBizLink, setGeneratingBizLink] = useState<string | null>(null);
   const [copiedBiz, setCopiedBiz] = useState<string | null>(null);
@@ -703,6 +691,9 @@ export function Analytics({ adminToken }: { adminToken?: string } = {}) {
   const [planClicksMap, setPlanClicksMap] = useState<Record<string, number>>({});
   const [markingPaid, setMarkingPaid] = useState<string | null>(null);
   const [ambData, setAmbData] = useState<AmbassadorAdminData | null>(null);
+  const [readyData, setReadyData] = useState<ReadinessData | null>(null);
+  const [sendBusy, setSendBusy] = useState(false);
+  const [sendResult, setSendResult] = useState("");
   const [payoutRequests, setPayoutRequests] = useState<any[]>([]);
   const [settling, setSettling] = useState<string | null>(null);
   const [ambBusy, setAmbBusy] = useState<string | null>(null);
@@ -711,6 +702,29 @@ export function Analytics({ adminToken }: { adminToken?: string } = {}) {
     const res = await apiFetch("/admin/ambassadors").catch(() => null);
     if (res?.ok) setAmbData(await res.json());
   }, []);
+
+  const loadReadiness = useCallback(async () => {
+    const res = await apiFetch("/admin/creator-readiness").catch(() => null);
+    if (res?.ok) setReadyData(await res.json());
+  }, []);
+
+  // Dry run reports back without sending, so the result is shown rather than
+  // silently discarded: seeing the rendered links is the whole point of it.
+  const sendVerification = useCallback(async (creatorIds: string[], reminderOnly: boolean, dryRun: boolean) => {
+    setSendBusy(true);
+    try {
+      const res = await apiFetch("/admin/verification/send", {
+        method: "POST", body: JSON.stringify({ creatorIds, reminderOnly, dryRun }),
+      });
+      const d = await res.json().catch(() => null);
+      if (!res.ok || !d?.success) { setSendResult(d?.error || "Send failed."); return; }
+      setSendResult(dryRun
+        ? `Dry run: ${d.considered} considered, ${d.results.filter((r: any) => r.dryRun).length} would send, ${d.skipped} skipped.`
+        : `Sent ${d.sent}, skipped ${d.skipped}, failed ${d.failed}.`);
+      if (!dryRun) await loadReadiness();
+    } catch { setSendResult("Could not reach the server."); }
+    finally { setSendBusy(false); }
+  }, [loadReadiness]);
   const ambAction = async (id: string, path: string, body: object) => {
     setAmbBusy(id);
     await apiFetch(path, { method: "POST", body: JSON.stringify(body) }).catch(() => {});
@@ -858,6 +872,7 @@ export function Analytics({ adminToken }: { adminToken?: string } = {}) {
 
   useEffect(() => { if (isAuthenticated) fetchAll(); }, [isAuthenticated, fetchAll]);
   useEffect(() => { if (isAuthenticated && tab === "ambassadors" && !ambData) loadAmbassadors(); }, [isAuthenticated, tab, ambData, loadAmbassadors]);
+  useEffect(() => { if (isAuthenticated && tab === "readiness" && !readyData) loadReadiness(); }, [isAuthenticated, tab, readyData, loadReadiness]);
 
 
   const settlePayoutRequest = async (req: any) => {
@@ -882,21 +897,30 @@ export function Analytics({ adminToken }: { adminToken?: string } = {}) {
     await fetchAll();
   };
 
-  const generateCreatorLink = async (id: string) => {
-    setGeneratingCreatorLink(id);
-    const res = await apiFetch(`/creator-links/${id}`, { method: "POST" });
-    const d = await res.json();
-    if (res.ok) setCreatorLinks((p) => ({ ...p, [id]: d.token }));
-    setGeneratingCreatorLink(null);
+  // Opens the creator's portal in a new tab on a short lived admin token.
+  // Deliberately not /creator-links: that route rotates the creator's own token,
+  // so using it here would sign the creator out just to take a look.
+  const impersonateCreator = async (id: string) => {
+    setImpersonatingId(id);
+    try {
+      const res = await apiFetch("/admin/impersonate-creator", {
+        method: "POST", body: JSON.stringify({ creatorId: id }),
+      });
+      const d = await res.json().catch(() => null);
+      if (res.ok && d?.token) {
+        // imp=1 keeps the portal from persisting this as a real session.
+        // "_blank" rather than a named target, so each creator opens in its own tab
+        // and a second impersonation does not replace the first.
+        window.open(`${window.location.origin}/app?creator=${encodeURIComponent(d.token)}&imp=1`, "_blank", "noopener");
+      }
+    } catch { /* button returns to idle below */ }
+    setImpersonatingId(null);
   };
   const resetCreator = async (creatorId: string) => {
     await apiFetch("/admin/reset-creator", { method: "POST", body: JSON.stringify({ creatorId }) });
     await fetchAll();
   };
-  const copyCreatorLink = (token: string, id: string) => {
-    navigator.clipboard.writeText(`${window.location.origin}?creator=${token}`);
-    setCopiedCreator(id); setTimeout(() => setCopiedCreator(null), 2000);
-  };
+
   const approveBusiness = async (id: string, overrideCategory?: string, overridePayout?: string, existingFeatureId?: string, adminNotes?: string) => {
     setApprovingBiz(id);
     if (existingFeatureId) {
@@ -995,6 +1019,7 @@ export function Analytics({ adminToken }: { adminToken?: string } = {}) {
     { key: "reels", label: "Submitted Reels", count: submissions.length },
     { key: "pageviews", label: "Page Views" },
     { key: "ambassadors", label: "Ambassadors", count: ambData?.overview.totalAmbassadors },
+    { key: "readiness", label: "Creator Readiness", count: readyData?.funnel.confirmed },
   ];
 
   return (
@@ -1109,10 +1134,8 @@ export function Analytics({ adminToken }: { adminToken?: string } = {}) {
                         return (
                           <CreatorRow key={s.id} signup={s}
                             token={token}
-                            onGenerate={() => generateCreatorLink(s.id)}
-                            onCopy={() => copyCreatorLink(token, s.id)}
-                            generating={generatingCreatorLink === s.id}
-                            copied={copiedCreator === s.id}
+                            onImpersonate={() => impersonateCreator(s.id)}
+                            impersonating={impersonatingId === s.id}
                             claims={creatorClaims}
                             features={features}
                             onMarkPaid={() => markCreatorPaid(s.id, token, igHandle(s.instagram))}
@@ -1218,6 +1241,21 @@ export function Analytics({ adminToken }: { adminToken?: string } = {}) {
                 onToggle={(id, enabled) => ambAction(id, "/admin/ambassadors/toggle", { ambassadorId: id, enabled })}
               />
             : <p className="text-neutral-400 text-sm">Loading ambassadors…</p>
+        )}
+
+        {!loading && tab === "readiness" && (
+          readyData
+            ? <div className="space-y-3">
+                {sendResult && (
+                  <div className="bg-white/5 border border-white/10 rounded-xl px-4 py-2.5 flex items-center justify-between gap-3">
+                    <p className="text-xs text-neutral-300">{sendResult}</p>
+                    <button onClick={() => setSendResult("")}
+                      className="text-xs text-neutral-500 hover:text-neutral-300">Dismiss</button>
+                  </div>
+                )}
+                <CreatorReadiness data={readyData} onSend={sendVerification} busy={sendBusy} />
+              </div>
+            : <p className="text-neutral-400 text-sm">Loading readiness…</p>
         )}
       </div>
     </div>

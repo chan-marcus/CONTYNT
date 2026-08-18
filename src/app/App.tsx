@@ -13,6 +13,8 @@ import { Header } from "./components/Header";
 import { Analytics } from "./components/Analytics";
 import { Info } from "./components/Info";
 import { CreatorPortal } from "./components/CreatorPortal";
+import { ConfirmProfile } from "./components/ConfirmProfile";
+import { CreatorLogin, CREATOR_TOKEN_KEY } from "./components/CreatorLogin";
 import { ReferralLanding } from "./components/ReferralLanding";
 import { CreatorSubmissionPending } from "./components/CreatorSubmissionPending";
 import { BusinessPortal } from "./components/BusinessPortal";
@@ -40,9 +42,43 @@ export default function App() {
   const adminToken = params.get("admin");
   const view = params.get("view");
   const referralCode = params.get("ref");
+  // Admin impersonation. Never persisted as a session, so an admin looking at a
+  // creator's portal does not end up stuck in it on their next visit.
+  const impersonating = params.get("imp") === "1";
+
+  // A verified login is remembered, so creators do not sign in every visit and
+  // never need a unique link. Tokens arriving in the URL are persisted too, but
+  // an impersonation token never is.
+  if (creatorToken && !impersonating) {
+    try { localStorage.setItem(CREATOR_TOKEN_KEY, creatorToken); } catch { /* private mode */ }
+  }
+  let storedCreator: string | null = null;
+  try { storedCreator = localStorage.getItem(CREATOR_TOKEN_KEY); } catch { /* private mode */ }
+  const activeCreator = creatorToken || storedCreator;
+
+  // /app is the creator entrance. Trailing slashes are stripped so /app/ is not
+  // treated as a different route.
+  const path = window.location.pathname.replace(/\/+$/, "") || "/";
+  const isAppPath = path === "/app";
+
   if (referralCode) return <ReferralLanding code={referralCode} />;
   if (adminToken) return <Analytics adminToken={adminToken} />;
-  if (creatorToken) return <CreatorPortal token={creatorToken} />;
+
+  // Links minted before /app existed still arrive at the root. Forward them once,
+  // query string intact. No loop is possible: the target sets isAppPath.
+  if (!isAppPath && (creatorToken || view === "login" || view === "confirm")) {
+    window.location.replace(`/app${window.location.search}`);
+    return null;
+  }
+
+  if (isAppPath) {
+    // Checked before the portal so ?view=confirm opens the confirmation screen
+    // rather than dropping straight into the portal.
+    if (activeCreator && view === "confirm") return <ConfirmProfile token={activeCreator} />;
+    if (activeCreator) return <CreatorPortal token={activeCreator} impersonating={impersonating} />;
+    return <CreatorLogin />;
+  }
+
   if (bizToken) return <BusinessPortal token={bizToken} />;
   if (view === "submission") return <CreatorSubmissionPending />;
 

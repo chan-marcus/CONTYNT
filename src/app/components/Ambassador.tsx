@@ -137,7 +137,7 @@ function Onboarding({ token, onEnabled }: { token: string; onEnabled: () => void
       icon: DollarSign, title: "Earn Referral Rewards",
       body: `Earn $${REFERRAL_REWARD} for every successful business referral.`,
       rules: [
-        "Business must complete their first successful payment.",
+        "Business must be fully onboarded.",
         "Business must remain active for 30 days.",
         `After requirements are completed, you earn $${REFERRAL_REWARD}.`,
       ],
@@ -185,6 +185,130 @@ function Onboarding({ token, onEnabled }: { token: string; onEnabled: () => void
         className="w-full py-3.5 text-sm font-bold rounded-xl bg-purple-500 text-white hover:bg-purple-400 transition-all disabled:opacity-50 shadow-lg shadow-purple-500/20">
         {busy ? "Enabling…" : "Enable Ambassador Mode"}
       </button>
+    </div>
+  );
+}
+
+// ─── Ambassador cards (per approved Feature) ─────────────────────────────────
+export interface AmbassadorCard {
+  id: string; featureId: string; code: string;
+  printedAt: string | null; handedOffAt: string | null;
+  handoffStatus: string; isAttributed: boolean;
+}
+
+export function useCards(token: string, enabled: boolean) {
+  const [cards, setCards] = useState<Record<string, AmbassadorCard>>({});
+  const [meta, setMeta] = useState<{ handoffScript: string; attributionRule: string; unprintedCount: number } | null>(null);
+
+  const refresh = useCallback(async () => {
+    if (!enabled) return;
+    try {
+      const res = await api(`/portal/cards?t=${encodeURIComponent(token)}`);
+      if (!res.ok) return;
+      const d = await res.json();
+      const byFeature: Record<string, AmbassadorCard> = {};
+      for (const c of (d.cards ?? [])) byFeature[c.featureId] = c;
+      setCards(byFeature);
+      setMeta({ handoffScript: d.handoffScript, attributionRule: d.attributionRule, unprintedCount: d.unprintedCount ?? 0 });
+    } catch { /* leave previous state */ }
+  }, [token, enabled]);
+
+  useEffect(() => { refresh(); }, [refresh]);
+  return { cards, meta, refresh };
+}
+
+// Shown before the shoot checklist, because the card has to be in the creator's
+// hand before they go, not remembered on the way out.
+export function AmbassadorCardStep({ card, token, script, rule, unprintedCount, onPrinted }: {
+  card: AmbassadorCard; token: string; script: string; rule: string;
+  unprintedCount: number; onPrinted: () => void;
+}) {
+  const [copied, setCopied] = useState(false);
+  const q = `?t=${encodeURIComponent(token)}`;
+  const open = (path: string) => {
+    window.open(`${BASE}${path}`, "_blank", "noopener");
+    // printed_at is stamped server-side on first download; refresh so the step
+    // stops nagging once they have actually printed it.
+    setTimeout(onPrinted, 1200);
+  };
+
+  return (
+    <div className={`${PURPLE_CARD} px-4 py-3.5 space-y-3`}>
+      <div className="flex items-center justify-between gap-2">
+        <div className="flex items-center gap-2">
+          <Printer className="w-4 h-4 text-purple-300" />
+          <p className="text-xs font-semibold text-white uppercase tracking-widest">Print your card</p>
+        </div>
+        {card.printedAt && (
+          <span className="text-[10px] text-green-400 flex items-center gap-1">
+            <Check className="w-3 h-3" />Printed
+          </span>
+        )}
+      </div>
+
+      <div className="flex items-center gap-2">
+        <code className="flex-1 text-center text-lg font-bold tracking-[0.2em] bg-black/30 border border-white/10 rounded-lg py-2 text-purple-200">
+          {card.code}
+        </code>
+        <button onClick={() => { navigator.clipboard.writeText(card.code); setCopied(true); setTimeout(() => setCopied(false), 2000); }}
+          className="shrink-0 px-3 py-2 rounded-lg bg-white/10 text-neutral-200 hover:bg-white/15 transition-all">
+          {copied ? <Check className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
+        </button>
+      </div>
+
+      <div className="grid grid-cols-2 gap-2">
+        <button onClick={() => open(`/portal/cards/${card.id}/print${q}`)}
+          className="flex items-center justify-center gap-2 py-2.5 text-xs rounded-xl bg-white/5 border border-white/10 text-neutral-200 hover:border-purple-400/40 transition-all">
+          <Printer className="w-3.5 h-3.5" />Print card
+        </button>
+        <button onClick={() => open(`/portal/cards/${card.id}/screen${q}`)}
+          className="flex items-center justify-center gap-2 py-2.5 text-xs rounded-xl bg-white/5 border border-white/10 text-neutral-200 hover:border-purple-400/40 transition-all">
+          <QrCode className="w-3.5 h-3.5" />Show on screen
+        </button>
+      </div>
+
+      {unprintedCount > 1 && (
+        <button onClick={() => open(`/portal/cards/${card.id}/print${q}&batch=1`)}
+          className="w-full py-2 text-[11px] text-purple-300 hover:text-purple-200">
+          Print all {unprintedCount} unprinted cards on one sheet
+        </button>
+      )}
+
+      <div className="bg-black/20 border border-white/10 rounded-xl px-3 py-2.5">
+        <p className="text-[10px] uppercase tracking-widest text-neutral-500 mb-1.5">Say this</p>
+        <p className="text-xs text-neutral-300 leading-relaxed italic">"{script}"</p>
+      </div>
+
+      <p className="text-[11px] text-neutral-500 leading-relaxed">{rule}</p>
+    </div>
+  );
+}
+
+// Required on submission when a card exists for this Feature.
+export function HandoffQuestion({ value, onChange, reason, onReason }: {
+  value: boolean | null; onChange: (v: boolean) => void;
+  reason: string; onReason: (v: string) => void;
+}) {
+  return (
+    <div className={`${PURPLE_CARD} px-4 py-3.5 space-y-2.5`}>
+      <p className="text-xs font-semibold text-white">Did you hand off the card?</p>
+      <div className="grid grid-cols-2 gap-2">
+        <button type="button" onClick={() => onChange(true)}
+          className={`py-2.5 text-xs rounded-xl border transition-all ${
+            value === true ? "bg-white text-neutral-900 border-white font-semibold"
+                           : "bg-white/5 text-neutral-300 border-white/15 hover:border-white/30"
+          }`}>Yes</button>
+        <button type="button" onClick={() => onChange(false)}
+          className={`py-2.5 text-xs rounded-xl border transition-all ${
+            value === false ? "bg-white text-neutral-900 border-white font-semibold"
+                            : "bg-white/5 text-neutral-300 border-white/15 hover:border-white/30"
+          }`}>No, couldn't</button>
+      </div>
+      {value === false && (
+        <input value={reason} onChange={e => onReason(e.target.value)}
+          placeholder="What got in the way?"
+          className="w-full px-3 py-2.5 bg-white/10 border border-white/20 rounded-xl text-white text-sm placeholder:text-neutral-500 focus:outline-none focus:ring-2 focus:ring-white/20" />
+      )}
     </div>
   );
 }
