@@ -126,6 +126,13 @@
 
   body {
     @apply bg-background text-foreground;
+    /* Stops a single trailing word dropping to a line of its own. In short UI
+       copy the orphan is usually something like "yet." or "it.", which reads as
+       a mistake rather than a line break. Set on body because text-wrap is
+       inherited, so this covers every string in the app instead of the handful
+       anyone remembers to annotate by hand. Browsers without support ignore it
+       and wrap exactly as they do today. */
+    text-wrap: pretty;
   }
 
   /**
