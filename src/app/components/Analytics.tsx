@@ -703,6 +703,8 @@ export function Analytics({ adminToken }: { adminToken?: string } = {}) {
   const [planClicksMap, setPlanClicksMap] = useState<Record<string, number>>({});
   const [markingPaid, setMarkingPaid] = useState<string | null>(null);
   const [ambData, setAmbData] = useState<AmbassadorAdminData | null>(null);
+  const [payoutRequests, setPayoutRequests] = useState<any[]>([]);
+  const [settling, setSettling] = useState<string | null>(null);
   const [ambBusy, setAmbBusy] = useState<string | null>(null);
 
   const loadAmbassadors = useCallback(async () => {
@@ -766,7 +768,7 @@ export function Analytics({ adminToken }: { adminToken?: string } = {}) {
   const fetchAll = useCallback(async () => {
     setLoading(true);
     try {
-      const [statsRes, signupsRes, bizRes, subsRes, linksRes, bizLinksRes, featuresRows, claimsRes] = await Promise.all([
+      const [statsRes, signupsRes, bizRes, subsRes, linksRes, bizLinksRes, featuresRows, claimsRes, payoutRes] = await Promise.all([
         apiFetch("/analytics/stats"),
         apiFetch("/signups"),
         apiFetch("/business-signups"),
@@ -775,6 +777,7 @@ export function Analytics({ adminToken }: { adminToken?: string } = {}) {
         apiFetch("/business-links"),
         apiFetch("/admin/features"),
         apiFetch("/admin/claims"),
+        apiFetch("/admin/payout-requests"),
       ]);
       if (statsRes.ok) { const d = await statsRes.json(); setStats(d); setPageViews(d.recentPageviews || []); }
       if (signupsRes.ok) { const d = await signupsRes.json(); setSignups(d.signups || []); }
@@ -849,12 +852,24 @@ export function Analytics({ adminToken }: { adminToken?: string } = {}) {
         setApprovedBusinesses(approvedIds);
       }
       if (claimsRes.ok) { const d = await claimsRes.json(); setClaims(d.claims || []); }
+      if (payoutRes.ok) { const d = await payoutRes.json(); setPayoutRequests(d.requests || []); }
     } finally { setLoading(false); }
   }, []);
 
   useEffect(() => { if (isAuthenticated) fetchAll(); }, [isAuthenticated, fetchAll]);
   useEffect(() => { if (isAuthenticated && tab === "ambassadors" && !ambData) loadAmbassadors(); }, [isAuthenticated, tab, ambData, loadAmbassadors]);
 
+
+  const settlePayoutRequest = async (req: any) => {
+    if (!window.confirm(`Mark $${req.amount} to ${req.method} (${req.handle}) as sent?`)) return;
+    setSettling(req.id);
+    await apiFetch("/admin/mark-paid", {
+      method: "POST",
+      body: JSON.stringify({ creatorToken: req.creatorToken }),
+    }).catch(() => {});
+    setSettling(null);
+    await fetchAll();
+  };
 
   const markCreatorPaid = async (id: string, token?: string, label?: string) => {
     if (!window.confirm(`Mark ${label || "this creator"} as paid? This settles their balance to $0 and records the payout.`)) return;
@@ -1049,6 +1064,32 @@ export function Analytics({ adminToken }: { adminToken?: string } = {}) {
         {!loading && tab === "creators" && (
           <div>
             <h2 className="text-lg font-semibold text-white mb-4">Creators</h2>
+
+            {payoutRequests.filter(r => r.status === "requested").length > 0 && (
+              <div className="mb-6 space-y-2">
+                <p className="text-xs font-semibold text-yellow-400 uppercase tracking-wider">
+                  Cash-out requests · {payoutRequests.filter(r => r.status === "requested").length}
+                </p>
+                {payoutRequests.filter(r => r.status === "requested").map(r => (
+                  <div key={r.id} className="bg-yellow-500/5 border border-yellow-500/25 rounded-xl px-4 py-3 flex flex-col sm:flex-row sm:items-center gap-3">
+                    <div className="flex-1 min-w-0">
+                      <p className="font-semibold text-white">
+                        @{(r.creatorInstagram || "creator").replace(/^@+/, "")}
+                        <span className="ml-2 text-green-400">${r.amount}</span>
+                      </p>
+                      <p className="text-xs text-neutral-400 mt-0.5">
+                        {r.method} · <span className="font-mono text-neutral-300">{r.handle}</span>
+                        <span className="text-neutral-600"> · {new Date(r.requestedAt).toLocaleDateString()}</span>
+                      </p>
+                    </div>
+                    <button onClick={() => settlePayoutRequest(r)} disabled={settling === r.id}
+                      className="shrink-0 px-3 py-1.5 text-xs bg-green-600 text-white rounded-lg hover:bg-green-500 transition-all disabled:opacity-50 whitespace-nowrap">
+                      {settling === r.id ? "Settling…" : "Mark as Sent"}
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
             {signups.length === 0 ? <p className="text-neutral-400 text-sm">No creator sign-ups yet.</p> : (
               <div className="space-y-6">
                 {Object.entries(
