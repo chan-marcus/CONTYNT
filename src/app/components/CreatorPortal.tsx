@@ -192,7 +192,7 @@ function WalletModal({ available, token, onClose, onRequested }: {
             <p className="text-xs text-neutral-400">We'll send ${available} to your {method} ({handle}). You'll get a confirmation once it's sent.</p>
           </div>
         ) : available <= 0 ? (
-          <p className="text-sm text-neutral-400">You don't have any earnings available to cash out yet.</p>
+          <p className="text-sm text-neutral-400 text-balance">Nothing to cash out yet.</p>
         ) : (
           <>
             <div className="space-y-1.5">
@@ -230,13 +230,13 @@ function WalletModal({ available, token, onClose, onRequested }: {
 
 // ─── Stats bar ────────────────────────────────────────────────────────────────
 const CREATOR_SCORE_HELP =
-  "Your Creator Score is based on completion rate, on-time submissions, approval rate, and overall reel performance.";
+  "Based on completion rate, on-time submissions, approval rate, and Reel performance.";
 
 // Hover covers desktop; tap covers mobile, where hover never fires.
 const IN_PROGRESS_HELP =
-  "Features you've requested or are filming. One stays here until your Reel is submitted and approved.";
+  "Features you've requested or are filming, until the Reel is approved.";
 const EARNED_HELP =
-  "Your balance from approved Reels. Tap to cash out once there's money in it.";
+  "Your balance from approved Reels. Tap to cash out.";
 
 // Hover for pointers, tap for touch, and Escape/blur to dismiss — the portal is
 // mobile first, so a hover-only tooltip would be invisible to most creators.
@@ -272,7 +272,11 @@ function HelpTip({ label, text, align = "center" }: {
       {open && (
         <span
           role="tooltip"
-          className={`absolute z-30 top-5 ${pos} w-56 max-w-[calc(100vw-1.5rem)] rounded-xl border border-white/15 bg-neutral-900 px-3 py-2 text-[11px] leading-relaxed text-neutral-300 shadow-xl text-left font-normal`}
+          // balance rather than the inherited pretty: pretty only rescues a
+          // lone trailing word, which still leaves a stubby last line. balance
+          // evens every line out, and these blocks are the few-line strings it
+          // is designed for.
+          className={`absolute z-30 top-5 ${pos} w-56 max-w-[calc(100vw-1.5rem)] rounded-xl border border-white/15 bg-neutral-900 px-3 py-2 text-[11px] leading-relaxed text-neutral-300 shadow-xl text-left font-normal text-balance`}
         >
           {text}
         </span>
@@ -904,7 +908,10 @@ export function CreatorPortal({ token, impersonating }: { token: string; imperso
     (claims[featureId]?.status as any) === "admin_approved" && !seenActions.has(featureId);
   const [walletOpen, setWalletOpen] = useState(false);
   const [error, setError] = useState("");
-  const [portalTab, setPortalTab] = useState<"features" | "completed" | "activity" | "ambassador">("features");
+  // "home" is the landing view: the portal opens on the welcome, stats and
+  // explainer, and no tab content until a tab is actually chosen. Features used
+  // to be selected on arrival, which buried the explainer under a feature list.
+  const [portalTab, setPortalTab] = useState<"home" | "features" | "completed" | "activity" | "ambassador">("home");
   const ambassador = useAmbassador(token);
   // Cards only exist for opted-in creators, so the fetch is gated on that
   // rather than firing for every creator on every portal load.
@@ -1298,23 +1305,8 @@ export function CreatorPortal({ token, impersonating }: { token: string; imperso
           />
         </motion.div>
 
-        {/* How it works */}
-        <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.4, delay: 0.12 }}
-          className="bg-white/5 border border-white/10 rounded-2xl p-5 space-y-3">
-          <div className="flex items-center justify-center gap-2">
-            <Award className="w-4 h-4 text-yellow-400" />
-            <p className="text-sm font-medium text-white">How it Works</p>
-          </div>
-          <div className="space-y-2 text-xs text-neutral-400">
-            <p><span className="text-white font-medium">1. Request</span> — Pick a Feature near you. Only request it if you're ready to film it.</p>
-            <p><span className="text-white font-medium">2. Get Selected</span> — If the business picks you, you'll get a notification to start.</p>
-            <p><span className="text-white font-medium">3. Film and Post</span> — Shoot at the location, hit the requirements and post your Reel within 5 days.</p>
-            <p><span className="text-white font-medium">4. Submit</span> — Drop your Reel URL for review.</p>
-            <p><span className="text-white font-medium">5. Get Paid</span> — Once approved, your earnings are added to your balance. Cash out any time.</p>
-          </div>
-        </motion.div>
-
-        {/* Tabs */}
+        {/* Tabs sit directly under the stats. Everything below is the body of
+            whichever tab is selected, including the home view. */}
         {(() => {
           const selectedCount = Object.values(claims).filter(c => (c.status as any) === "admin_approved").length;
           const pendingCashOut = Object.values(claims).filter(c => c.status === "approved").length;
@@ -1389,6 +1381,36 @@ export function CreatorPortal({ token, impersonating }: { token: string; imperso
           />
         )}
 
+
+        {/* Home only. Clicking into a tab replaces the explainer and the
+            ambassador pitch with that tab's content, rather than leaving a
+            first-run introduction stuck above every screen. */}
+        {portalTab === "home" && (
+          <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.4, delay: 0.12 }}
+            className="bg-white/5 border border-white/10 rounded-2xl p-5 space-y-3">
+            <div className="flex items-center justify-center gap-2">
+              <Award className="w-4 h-4 text-yellow-400" />
+              <p className="text-sm font-medium text-white">How it Works</p>
+            </div>
+            <div className="space-y-2 text-xs text-neutral-400">
+              <p><span className="text-white font-medium">1. Request</span> — Pick a Feature near you. Only request it if you're ready to film it.</p>
+              <p><span className="text-white font-medium">2. Get Selected</span> — If the business picks you, you'll get a notification to start.</p>
+              <p><span className="text-white font-medium">3. Film and Post</span> — Shoot at the location, hit the requirements and post your Reel within 5 days.</p>
+              <p><span className="text-white font-medium">4. Submit</span> — Drop your Reel URL for review.</p>
+              <p><span className="text-white font-medium">5. Get Paid</span> — Once approved, your earnings are added to your balance. Cash out any time.</p>
+            </div>
+          </motion.div>
+
+        )}
+
+        {/* Sits directly beneath How it Works so the two read as one stacked
+            pair, and leaves with it when a tab is selected. */}
+        {portalTab === "home" && !ambassador.state?.enabled && (
+          <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.4, delay: 0.16 }}>
+            <AmbassadorEmptyState onLearnMore={() => setPortalTab("ambassador")} />
+          </motion.div>
+        )}
+
         {portalTab === "features" && (
           <div className="w-full flex flex-col gap-4">
             {(() => {
@@ -1442,11 +1464,6 @@ export function CreatorPortal({ token, impersonating }: { token: string; imperso
                   fake={false} claimedBy={(feature as any).claimedBy} myInstagram={creator?.instagram || ""} />
               </motion.div>
             ))}
-            {!ambassador.state?.enabled
-              && Object.keys(claims).length === 0
-              && features.filter(f => f.status === "available").length === 0 && (
-              <AmbassadorEmptyState onLearnMore={() => setPortalTab("ambassador")} />
-            )}
           </div>
         )}
 
