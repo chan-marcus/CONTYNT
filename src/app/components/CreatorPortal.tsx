@@ -1,4 +1,4 @@
-import { useEffect, useState, useRef } from "react";
+import { useEffect, useState, useRef, useLayoutEffect } from "react";
 import { motion, AnimatePresence } from "motion/react";
 import { MapPin, DollarSign, CheckCircle, Lock, X, ExternalLink, AlertCircle, Users, Zap, TrendingUp, Award } from "lucide-react";
 import { projectId, publicAnonKey } from "/utils/supabase/info";
@@ -233,17 +233,38 @@ const CREATOR_SCORE_HELP =
   "Your Creator Score is based on completion rate, on-time submissions, approval rate, and overall reel performance.";
 
 // Hover covers desktop; tap covers mobile, where hover never fires.
-function ScoreTooltip() {
+const IN_PROGRESS_HELP =
+  "Features you've requested or are filming. One stays here until your Reel is submitted and approved.";
+const EARNED_HELP =
+  "Your balance from approved Reels. Tap to cash out once there's money in it.";
+
+// Hover for pointers, tap for touch, and Escape/blur to dismiss — the portal is
+// mobile first, so a hover-only tooltip would be invisible to most creators.
+function HelpTip({ label, text, align = "center" }: {
+  label: string; text: string; align?: "left" | "center" | "right";
+}) {
   const [open, setOpen] = useState(false);
+
+  // Fixed alignment rather than measuring at open time. A measured clamp reads
+  // getBoundingClientRect, which is viewport relative, so the moment anything
+  // else on the page causes a sideways scroll the correction is computed from a
+  // shifted origin and lands short. The grid here is a fixed three columns, so
+  // which edge each tip should hang off is known up front.
+  const pos = align === "right" ? "right-0"
+            : align === "left"  ? "left-0"
+            : "left-1/2 -translate-x-1/2";
+
   return (
     <span className="relative inline-flex">
       <button
         type="button"
-        aria-label="What is Creator Score?"
+        aria-label={label}
+        // Stops the click reaching a clickable tile behind it.
         onClick={(e) => { e.stopPropagation(); setOpen(v => !v); }}
         onMouseEnter={() => setOpen(true)}
         onMouseLeave={() => setOpen(false)}
         onBlur={() => setOpen(false)}
+        onKeyDown={(e) => { if (e.key === "Escape") setOpen(false); }}
         className="w-3.5 h-3.5 rounded-full border border-white/25 text-[9px] leading-none text-neutral-400 hover:text-white hover:border-white/50 transition-colors flex items-center justify-center"
       >
         ?
@@ -251,9 +272,9 @@ function ScoreTooltip() {
       {open && (
         <span
           role="tooltip"
-          className="absolute z-30 left-1/2 -translate-x-1/2 top-5 w-56 rounded-xl border border-white/15 bg-neutral-900 px-3 py-2 text-[11px] leading-relaxed text-neutral-300 shadow-xl text-left"
+          className={`absolute z-30 top-5 ${pos} w-56 max-w-[calc(100vw-1.5rem)] rounded-xl border border-white/15 bg-neutral-900 px-3 py-2 text-[11px] leading-relaxed text-neutral-300 shadow-xl text-left font-normal`}
         >
-          {CREATOR_SCORE_HELP}
+          {text}
         </span>
       )}
     </span>
@@ -264,39 +285,61 @@ function StatsBar({ stats, instagram, onOpenWallet, earnedGlow }: {
   stats: PortalStats; instagram: string;
   onOpenWallet?: () => void; earnedGlow?: boolean;
 }) {
+  // Two different signals share this tile. hasMoney is the steady state — there
+  // is a balance sitting there — while earnedGlow is the transient pulse set
+  // when the balance rises, and it clears once the wallet is opened.
+  const hasMoney = (stats.totalPayout ?? 0) > 0;
+
   return (
     <div className="grid grid-cols-3 gap-3">
       <div className="bg-white/5 border border-white/10 rounded-2xl p-4 text-center">
         <div className="flex items-center justify-center gap-1.5 mb-1">
           <Zap className="w-4 h-4 text-blue-400" />
           <span className="text-xs text-neutral-400">In Progress</span>
+          <HelpTip label="What counts as In Progress?" text={IN_PROGRESS_HELP} align="left" />
         </div>
         <p className="text-2xl font-bold text-white">{stats.activeClaims}</p>
       </div>
+
       <div className="bg-white/5 border border-white/10 rounded-2xl p-4 text-center">
         <div className="flex items-center justify-center gap-1.5 mb-1">
           <Award className="w-4 h-4 text-purple-300" />
           <span className="text-xs text-neutral-400">Creator Score</span>
-          <ScoreTooltip />
+          <HelpTip label="What is Creator Score?" text={CREATOR_SCORE_HELP} />
         </div>
         <p className="text-2xl font-bold text-white">{stats.creatorScore ?? 100}</p>
       </div>
-      {/* Earned doubles as the wallet entry point once a balance exists. */}
-      <button
-        type="button"
+
+      {/* Earned doubles as the wallet entry point once a balance exists. A div
+          rather than a button because it contains the help button, and a button
+          inside a button is invalid and would fire both on tap. */}
+      <div
+        role="button"
+        tabIndex={0}
+        aria-label="Open wallet"
         onClick={onOpenWallet}
-        className={`bg-white/5 border rounded-2xl p-4 text-center transition-all ${
+        onKeyDown={(e) => {
+          if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onOpenWallet?.(); }
+        }}
+        className={`bg-white/5 border rounded-2xl p-4 text-center transition-all cursor-pointer focus:outline-none focus-visible:ring-2 focus-visible:ring-white/40 ${
           earnedGlow
             ? "border-green-400/60 shadow-[0_0_18px_rgba(74,222,128,0.35)] animate-pulse"
-            : "border-white/10 hover:border-white/25"
+            : hasMoney
+              ? "border-green-400/35 shadow-[0_0_12px_rgba(74,222,128,0.18)] hover:border-green-400/60"
+              : "border-white/10 hover:border-white/25"
         }`}
       >
         <div className="flex items-center justify-center gap-1.5 mb-1">
-          <DollarSign className={`w-4 h-4 ${earnedGlow ? "text-green-400" : "text-yellow-400"}`} />
+          <DollarSign className={`w-4 h-4 ${hasMoney || earnedGlow ? "text-green-400" : "text-neutral-500"}`} />
           <span className="text-xs text-neutral-400">Earned</span>
+          <HelpTip label="What is Earned?" text={EARNED_HELP} align="right" />
         </div>
-        <p className={`text-2xl font-bold ${earnedGlow ? "text-green-300" : "text-white"}`}>${stats.totalPayout}</p>
-      </button>
+        {/* Dimmed at zero so an empty balance reads as neutral rather than as
+            something the creator has failed at. */}
+        <p className={`text-2xl font-bold ${
+          earnedGlow ? "text-green-300" : hasMoney ? "text-green-400" : "text-neutral-500"
+        }`}>${stats.totalPayout}</p>
+      </div>
     </div>
   );
 }
@@ -1244,8 +1287,19 @@ export function CreatorPortal({ token, impersonating }: { token: string; imperso
           </div>
         </motion.div>
 
+        {/* Stats — above How it Works: the numbers are what a returning creator
+            comes back to check, and the explainer is for the first visit. */}
+        <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.4, delay: 0.06 }}>
+          <StatsBar
+            stats={stats}
+            instagram={creator?.instagram || ""}
+            earnedGlow={earnedGlow}
+            onOpenWallet={() => { setEarnedGlow(false); setWalletOpen(true); }}
+          />
+        </motion.div>
+
         {/* How it works */}
-        <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.4, delay: 0.08 }}
+        <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.4, delay: 0.12 }}
           className="bg-white/5 border border-white/10 rounded-2xl p-5 space-y-3">
           <div className="flex items-center justify-center gap-2">
             <Award className="w-4 h-4 text-yellow-400" />
@@ -1259,14 +1313,6 @@ export function CreatorPortal({ token, impersonating }: { token: string; imperso
             <p><span className="text-white font-medium">5. Get Paid</span> — Once approved, your earnings are added to your balance. Cash out any time.</p>
           </div>
         </motion.div>
-
-        {/* Stats */}
-        <StatsBar
-          stats={stats}
-          instagram={creator?.instagram || ""}
-          earnedGlow={earnedGlow}
-          onOpenWallet={() => { setEarnedGlow(false); setWalletOpen(true); }}
-        />
 
         {/* Tabs */}
         {(() => {
