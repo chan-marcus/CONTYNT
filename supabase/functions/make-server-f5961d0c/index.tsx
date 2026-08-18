@@ -1043,6 +1043,145 @@ app.post("/make-server-f5961d0c/creator-portal/complete-payout", async (c) => {
   } catch (e: any) { return c.json({ error: e.message }, 500); }
 });
 
+// ─── Admin: ambassador management ────────────────────────────────────────────
+app.get("/make-server-f5961d0c/admin/ambassadors", async (c) => {
+  try {
+    const [ambRes, refRes, creatorRes] = await Promise.all([
+      db().from("ambassadors_f5961d0c").select("*").order("created_at", { ascending: false }),
+      db().from("ambassador_referrals_f5961d0c").select("*").order("created_at", { ascending: false }),
+      db().from("creator_signups_f5961d0c").select("id, instagram, email, city"),
+    ]);
+    const ambassadors = ambRes.data ?? [];
+    const referrals = refRes.data ?? [];
+    const creators: Record<string, any> = {};
+    for (const r of (creatorRes.data ?? [])) creators[r.id] = r;
+
+    const byAmbassador: Record<string, any[]> = {};
+    for (const r of referrals) (byAmbassador[r.ambassador_id] ??= []).push(r);
+
+    const rows = ambassadors.map((a: any) => {
+      const mine = byAmbassador[a.ambassador_id] ?? [];
+      const converted = mine.filter((r: any) => !!r.first_payment_at).length;
+      return {
+        ambassadorId: a.ambassador_id, creatorId: a.creator_id,
+        creatorInstagram: a.creator_instagram || creators[a.creator_id]?.instagram || "",
+        creatorEmail: creators[a.creator_id]?.email || "",
+        referralCode: a.referral_code, referralUrl: a.referral_url,
+        enabled: !!a.enabled_status, createdAt: a.created_at,
+        businessesReferred: mine.length,
+        conversionRate: mine.length ? Math.round((converted / mine.length) * 100) : 0,
+        rewardsEarned: mine.filter((r: any) => r.reward_status === "paid").reduce((s: number, r: any) => s + parseAmount(r.reward_amount), 0),
+      };
+    });
+
+    return c.json({
+      overview: {
+        totalAmbassadors: ambassadors.length,
+        activeAmbassadors: ambassadors.filter((a: any) => a.enabled_status).length,
+        totalReferrals: referrals.length,
+        businessesCreated: referrals.filter((r: any) => !!r.business_created_at).length,
+        businessesActivated: referrals.filter((r: any) => !!r.subscription_active_at).length,
+        totalRewardsPaid: referrals.filter((r: any) => r.reward_status === "paid").reduce((s: number, r: any) => s + parseAmount(r.reward_amount), 0),
+      },
+      ambassadors: rows,
+      referrals: referrals.map((r: any) => ({
+        id: r.id, ambassadorId: r.ambassador_id,
+        businessId: r.business_id, businessName: r.business_name, businessEmail: r.business_email,
+        creatorInstagram: r.creator_instagram, referralCode: r.referral_code,
+        status: r.status, rewardStatus: r.reward_status, rewardAmount: parseAmount(r.reward_amount),
+        createdAt: r.created_at,
+        subscriptionActiveAt: r.subscription_active_at, firstPaymentAt: r.first_payment_at,
+        retained30dAt: r.retained_30d_at, rewardEarnedAt: r.reward_earned_at, rewardPaidAt: r.reward_paid_at,
+      })),
+    });
+  } catch (e: any) { return c.json({ error: e.message }, 500); }
+});
+
+app.post("/make-server-f5961d0c/admin/ambassadors/toggle", async (c) => {
+  try {
+    const { ambassadorId, enabled } = await c.req.json();
+    if (!ambassadorId) return c.json({ error: "ambassadorId required" }, 400);
+    await must("ambassador: toggle", db().from("ambassadors_f5961d0c")
+      .update({ enabled_status: !!enabled }).eq("ambassador_id", ambassadorId));
+    return c.json({ success: true });
+  } catch (e: any) { return c.json({ error: e.message }, 500); }
+});
+
+// Advance a referral through the reward pipeline.
+//
+// These are billing facts (a subscription starting, a payment clearing, 30 days
+// elapsing) and there is no payment integration wired up yet, so an admin
+// records them. Each stage stamps its own timestamp, which keeps the pipeline
+// reconstructible and lets a real billing webhook drive the same endpoint later.
+const REFERRAL_STAGES: Record<string, string> = {
+  onboarding_started: "onboarding_started_at",
+  profile_completed: "profile_completed_at",
+  subscription_activated: "subscription_active_at",
+  first_payment: "first_payment_at",
+  retained_30d: "retained_30d_at",
+};
+
+app.post("/make-server-f5961d0c/admin/referrals/advance", async (c) => {
+  try {
+    const { referralId, stage } = await c.req.json();
+    if (!referralId || !stage) return c.json({ error: "referralId and stage required" }, 400);
+    const column = REFERRAL_STAGES[stage];
+    if (!column) return c.json({ error: `Unknown stage: ${stage}` }, 400);
+
+    const { data: ref } = await db().from("ambassador_referrals_f5961d0c").select("*").eq("id", referralId).maybeSingle();
+    if (!ref) return c.json({ error: "Referral not found" }, 404);
+
+    const now = new Date().toISOString();
+    const patch: Record<string, any> = { [column]: now, status: stage, updated_at: now };
+
+    // The reward is earned only once both conditions in the programme rules are
+    // met: a successful first payment and 30 days retained.
+    const firstPayment = column === "first_payment_at" ? now : ref.first_payment_at;
+    const retained = column === "retained_30d_at" ? now : ref.retained_30d_at;
+    if (firstPayment && retained && ref.reward_status === "pending" && !ref.reward_earned_at) {
+      patch.reward_earned_at = now;
+      patch.reward_status = "earned";
+      patch.status = "reward_earned";
+    }
+    await must("referral: advance", db().from("ambassador_referrals_f5961d0c").update(patch).eq("id", referralId));
+    return c.json({ success: true, rewardEarned: !!patch.reward_earned_at });
+  } catch (e: any) { return c.json({ error: e.message }, 500); }
+});
+
+// Paying the reward credits the same ledger the reel payouts use, so ambassador
+// earnings and reel earnings share one balance and one cash-out path.
+app.post("/make-server-f5961d0c/admin/referrals/pay-reward", async (c) => {
+  try {
+    const { referralId } = await c.req.json();
+    if (!referralId) return c.json({ error: "referralId required" }, 400);
+    const { data: ref } = await db().from("ambassador_referrals_f5961d0c").select("*").eq("id", referralId).maybeSingle();
+    if (!ref) return c.json({ error: "Referral not found" }, 404);
+    if (ref.reward_status === "paid") return c.json({ success: true, alreadyPaid: true });
+    if (!ref.reward_earned_at) return c.json({ error: "Reward has not been earned yet" }, 400);
+
+    const { data: amb } = await db().from("ambassadors_f5961d0c").select("creator_token, creator_id").eq("ambassador_id", ref.ambassador_id).maybeSingle();
+    const token = amb?.creator_token;
+    if (!token) return c.json({ error: "Ambassador has no active creator link" }, 400);
+
+    const amount = parseAmount(ref.reward_amount) || REFERRAL_REWARD;
+    // Guarded on referral_id so paying twice cannot double-credit.
+    const { data: already } = await db().from("creator_earnings_f5961d0c")
+      .select("id").eq("referral_id", referralId).limit(1);
+    if (!already?.length) {
+      await must("referral: credit reward", db().from("creator_earnings_f5961d0c").insert({
+        creator_token: token, creator_id: amb?.creator_id || null,
+        amount, source: "ambassador_referral", referral_id: referralId,
+        note: `Ambassador referral reward — ${ref.business_name || "business"}`,
+      }));
+    }
+    const now = new Date().toISOString();
+    await must("referral: mark reward paid", db().from("ambassador_referrals_f5961d0c")
+      .update({ reward_status: "paid", reward_paid_at: now, status: "reward_paid", updated_at: now })
+      .eq("id", referralId));
+    return c.json({ success: true, credited: amount, balance: await creatorBalance(token) });
+  } catch (e: any) { return c.json({ error: e.message }, 500); }
+});
+
 // ─── Admin: mark a creator as paid ───────────────────────────────────────────
 // Zeroes the creator's balance by settling what they are owed. Nothing is
 // deleted — the credits stay in the ledger and the settlement is recorded as a

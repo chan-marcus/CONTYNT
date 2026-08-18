@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from "react";
-import { CheckCircle, Copy, RefreshCw, ExternalLink, ThumbsUp, ThumbsDown, Link, ChevronDown } from "lucide-react";
+import { CheckCircle, Copy, RefreshCw, ExternalLink, ThumbsUp, ThumbsDown, Link, ChevronDown, Award } from "lucide-react";
 import { projectId, publicAnonKey } from "/utils/supabase/info";
+import { AmbassadorAdmin, type AmbassadorAdminData } from "./AmbassadorAdmin";
 
 const BASE = `https://${projectId}.supabase.co/functions/v1/make-server-f5961d0c`;
 const AUTH = { Authorization: `Bearer ${publicAnonKey}` };
@@ -13,7 +14,7 @@ const apiFetch = (path: string, opts?: RequestInit) =>
     headers: { ...AUTH, "Content-Type": "application/json", "x-admin-token": adminSession(), ...(opts?.headers ?? {}) },
   });
 
-type Tab = "creators" | "businesses" | "reels" | "pageviews";
+type Tab = "creators" | "businesses" | "reels" | "pageviews" | "ambassadors";
 
 interface Signup { id: string; instagram: string; email: string; city: string; createdAt: string; totalEarned?: number; pendingEarnings?: number; availableEarnings?: number; }
 interface BusinessSignup { id: string; businessName: string; instagram: string; email: string; city: string; address: string; preferredContact: string; createdAt: string; }
@@ -701,6 +702,19 @@ export function Analytics({ adminToken }: { adminToken?: string } = {}) {
   const [loading, setLoading] = useState(true);
   const [planClicksMap, setPlanClicksMap] = useState<Record<string, number>>({});
   const [markingPaid, setMarkingPaid] = useState<string | null>(null);
+  const [ambData, setAmbData] = useState<AmbassadorAdminData | null>(null);
+  const [ambBusy, setAmbBusy] = useState<string | null>(null);
+
+  const loadAmbassadors = useCallback(async () => {
+    const res = await apiFetch("/admin/ambassadors").catch(() => null);
+    if (res?.ok) setAmbData(await res.json());
+  }, []);
+  const ambAction = async (id: string, path: string, body: object) => {
+    setAmbBusy(id);
+    await apiFetch(path, { method: "POST", body: JSON.stringify(body) }).catch(() => {});
+    setAmbBusy(null);
+    await loadAmbassadors();
+  };
 
   // The password is checked server-side against ADMIN_SECRET; on success the
   // server hands back a session token that authorizes every later admin call.
@@ -839,6 +853,7 @@ export function Analytics({ adminToken }: { adminToken?: string } = {}) {
   }, []);
 
   useEffect(() => { if (isAuthenticated) fetchAll(); }, [isAuthenticated, fetchAll]);
+  useEffect(() => { if (isAuthenticated && tab === "ambassadors" && !ambData) loadAmbassadors(); }, [isAuthenticated, tab, ambData, loadAmbassadors]);
 
 
   const markCreatorPaid = async (id: string, token?: string, label?: string) => {
@@ -964,6 +979,7 @@ export function Analytics({ adminToken }: { adminToken?: string } = {}) {
     { key: "businesses", label: "Businesses", count: businessSignups.length },
     { key: "reels", label: "Submitted Reels", count: submissions.length },
     { key: "pageviews", label: "Page Views" },
+    { key: "ambassadors", label: "Ambassadors", count: ambData?.overview.totalAmbassadors },
   ];
 
   return (
@@ -1149,6 +1165,18 @@ export function Analytics({ adminToken }: { adminToken?: string } = {}) {
               </div>
             )}
           </div>
+        )}
+
+        {!loading && tab === "ambassadors" && (
+          ambData
+            ? <AmbassadorAdmin
+                data={ambData}
+                busy={ambBusy}
+                onAdvance={(id, stage) => ambAction(id, "/admin/referrals/advance", { referralId: id, stage })}
+                onPayReward={(id) => ambAction(id, "/admin/referrals/pay-reward", { referralId: id })}
+                onToggle={(id, enabled) => ambAction(id, "/admin/ambassadors/toggle", { ambassadorId: id, enabled })}
+              />
+            : <p className="text-neutral-400 text-sm">Loading ambassadors…</p>
         )}
       </div>
     </div>

@@ -69,7 +69,7 @@ assert_sql() {
 cleanup() {
   head_ "cleanup"
   supabase db query --linked "
-    delete from public.creator_earnings_f5961d0c        where creator_token in (select creator_token from public.creator_earnings_f5961d0c where note like '${TAG}%') or note like '${TAG}%';
+    delete from public.creator_earnings_f5961d0c        where note like '%${TAG}%' or creator_token in (select creator_token from public.ambassadors_f5961d0c where creator_instagram like '${TAG}%');
     delete from public.creator_payout_requests_f5961d0c where creator_instagram like '${TAG}%';
     delete from public.submissions_f5961d0c             where creator_instagram like '${TAG}%';
     delete from public.creator_claims_f5961d0c          where creator_instagram like '${TAG}%';
@@ -259,6 +259,45 @@ api GET "/creator-portal/ambassador?t=$CTOK" 200 && {
   [ "$(echo "$BODY" | jget stats businessesReferred)" = "2" ] \
     && ok "ambassador stats count 2 referrals" || bad "stats" "got $(echo "$BODY" | jget stats businessesReferred)"
 } || bad "ambassador stats" "$HTTP"
+
+head_ "referral reward pipeline"
+REF_ID=$(sql "select id from public.ambassador_referrals_f5961d0c where business_name='${TAG} Referred' limit 1;")
+api POST /admin/referrals/pay-reward 400 "{\"referralId\":\"$REF_ID\"}" \
+  && ok "cannot pay a reward before it is earned" || bad "paid an unearned reward" "$HTTP"
+
+api POST /admin/referrals/advance 200 "{\"referralId\":\"$REF_ID\",\"stage\":\"subscription_activated\"}" && ok "advance: subscription" || bad "advance subscription" "$HTTP"
+api POST /admin/referrals/advance 200 "{\"referralId\":\"$REF_ID\",\"stage\":\"first_payment\"}" && {
+  [ "$(echo "$BODY" | jget rewardEarned)" = "False" ] \
+    && ok "first payment alone does not earn the reward" || bad "reward earned too early"
+} || bad "advance first payment" "$HTTP"
+api POST /admin/referrals/advance 200 "{\"referralId\":\"$REF_ID\",\"stage\":\"retained_30d\"}" && {
+  [ "$(echo "$BODY" | jget rewardEarned)" = "True" ] \
+    && ok "payment + 30d retention earns the reward" || bad "reward not earned after both conditions"
+} || bad "advance retention" "$HTTP"
+api POST /admin/referrals/advance 400 "{\"referralId\":\"$REF_ID\",\"stage\":\"made_up_stage\"}" \
+  && ok "unknown stage rejected" || bad "unknown stage accepted" "$HTTP"
+
+api POST /admin/referrals/pay-reward 200 "{\"referralId\":\"$REF_ID\"}" && ok "reward paid" || bad "pay reward" "$HTTP $BODY"
+assert_sql "reward credited to the creator ledger" \
+  "select count(*) from public.creator_earnings_f5961d0c where referral_id='$REF_ID' and source='ambassador_referral';" "1"
+assert_sql "reward amount is \$25" \
+  "select amount from public.creator_earnings_f5961d0c where referral_id='$REF_ID';" "25.00"
+
+api POST /admin/referrals/pay-reward 200 "{\"referralId\":\"$REF_ID\"}" >/dev/null
+assert_sql "paying twice does not double-credit" \
+  "select count(*) from public.creator_earnings_f5961d0c where referral_id='$REF_ID';" "1"
+
+head_ "admin ambassador management"
+api GET /admin/ambassadors 200 && {
+  [ "$(echo "$BODY" | jget overview totalAmbassadors)" -ge 1 ] && ok "overview returns ambassadors" || bad "overview empty"
+  [ "$(echo "$BODY" | jget overview totalRewardsPaid)" != "" ] && ok "overview totals rewards paid" || bad "rewards total missing"
+} || bad "admin ambassadors" "$HTTP"
+AMB_ID=$(sql "select ambassador_id from public.ambassadors_f5961d0c where creator_instagram='${TAG}_creator' limit 1;")
+api POST /admin/ambassadors/toggle 200 "{\"ambassadorId\":\"$AMB_ID\",\"enabled\":false}" && ok "disable ambassador" || bad "toggle off" "$HTTP"
+assert_sql "ambassador disabled" "select enabled_status from public.ambassadors_f5961d0c where ambassador_id='$AMB_ID';" "False"
+api GET "/referral/$RCODE" 200 && {
+  [ "$(echo "$BODY" | jget valid)" = "False" ] && ok "disabled ambassador's link stops working" || bad "disabled link still valid"
+} || bad "referral lookup after disable" "$HTTP"
 
 head_ "database state (the assertions that matter)"
 assert_sql "feature is completed"      "select status from public.features_f5961d0c where id='$FEAT';" "completed"
