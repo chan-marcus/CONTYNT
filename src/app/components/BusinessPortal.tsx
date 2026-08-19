@@ -739,7 +739,13 @@ export function BusinessPortal({ token }: { token: string }) {
           {[
             { label: "Live Reels", value: data.reels.length, color: "text-green-400", ring: "bg-green-500/10 text-green-400", Icon: Film, estimated: false },
             { label: "This Month", value: data.reels.filter((r: any) => { const d = new Date(r.approvedAt || r.submittedAt); const now = new Date(); return d.getMonth() === now.getMonth() && d.getFullYear() === now.getFullYear(); }).length, color: "text-blue-400", ring: "bg-blue-500/10 text-blue-400", Icon: CalendarDays, estimated: false },
-            { label: "Pending", value: (data.publishedFeatures?.filter(f => f.status === "pending").length || 0) + visibleFakes, color: "text-yellow-400", ring: "bg-yellow-500/10 text-yellow-400", Icon: Clock, estimated: false },
+            // Everything the business has accepted that has not produced a Reel
+            // yet: waiting on us to publish it ("pending") and published and
+            // waiting on a creator ("available", shown as Live & Active).
+            // "available" counted toward nothing before, so a published feature
+            // was invisible in the stats. Unaccepted offers are excluded --
+            // those are waiting on the business, not in progress.
+            { label: "In Progress", value: (data.publishedFeatures?.filter(f => f.status === "pending" || f.status === "available").length || 0) + visibleFakes, color: "text-yellow-400", ring: "bg-yellow-500/10 text-yellow-400", Icon: Clock, estimated: false },
             { label: "Est. Reach", value: data.reels.length > 0 ? `${(data.reels.length * 2.4).toFixed(1)}k` : "—", color: "text-neutral-300", ring: "bg-white/5 text-neutral-500", Icon: TrendingUp, estimated: true },
           ].map(stat => (
             <div key={stat.label}
