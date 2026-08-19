@@ -372,7 +372,7 @@ function StatsBar({ stats, instagram, onOpenWallet, earnedGlow }: {
         onKeyDown={(e) => {
           if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onOpenWallet?.(); }
         }}
-        className={`bg-white/5 border rounded-2xl p-4 text-center transition-all cursor-pointer focus:outline-none focus-visible:ring-2 focus-visible:ring-white/40 ${
+        className={`group relative bg-white/5 border rounded-2xl p-4 text-center transition-all cursor-pointer focus:outline-none focus-visible:ring-2 focus-visible:ring-white/40 ${
           earnedGlow
             ? "border-green-400/60 shadow-[0_0_18px_rgba(74,222,128,0.35)] animate-pulse"
             : hasMoney
@@ -391,9 +391,14 @@ function StatsBar({ stats, instagram, onOpenWallet, earnedGlow }: {
           earnedGlow ? "text-green-300" : hasMoney ? "text-green-400" : "text-neutral-500"
         }`}>${available}</p>
         {/* Money in flight is still theirs, so say so rather than letting the
-            tile look like the balance vanished. */}
+            tile look like the balance vanished. Revealed on hover or keyboard
+            focus, and positioned absolutely so the three tiles keep equal
+            heights whether or not a payout is pending. Touch devices get the
+            same figure from the wallet itself, which a tap opens. */}
         {pending > 0 && (
-          <p className="text-[10px] text-yellow-400/90 mt-0.5 leading-tight">${pending} on the way</p>
+          <p className="pointer-events-none absolute inset-x-0 bottom-1.5 text-[10px] text-yellow-400/90 leading-tight opacity-0 transition-opacity duration-200 group-hover:opacity-100 group-focus-visible:opacity-100">
+            ${pending} on the way
+          </p>
         )}
       </div>
     </div>
