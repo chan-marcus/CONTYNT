@@ -949,7 +949,7 @@ export function Analytics({ adminToken }: { adminToken?: string } = {}) {
       });
       console.log("Impersonate response data:", d);
       if (res.ok && d?.token) {
-        const url = `${window.location.origin}?biz=${encodeURIComponent(d.token)}&imp=1`;
+        const url = `${window.location.origin}/business?biz=${encodeURIComponent(d.token)}&imp=1`;
         console.log("Opening:", url);
         const opened = window.open(url, "_blank", "noopener");
         if (!opened) {
