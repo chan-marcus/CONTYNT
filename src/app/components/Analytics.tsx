@@ -1017,9 +1017,9 @@ export function Analytics({ adminToken }: { adminToken?: string } = {}) {
     { key: "creators", label: "Creators", count: signups.length },
     { key: "businesses", label: "Businesses", count: businessSignups.length },
     { key: "reels", label: "Submitted Reels", count: submissions.length },
-    { key: "pageviews", label: "Page Views" },
     { key: "ambassadors", label: "Ambassadors", count: ambData?.overview.totalAmbassadors },
     { key: "readiness", label: "Creator Readiness", count: readyData?.funnel.confirmed },
+    { key: "pageviews", label: "Page Views" },
   ];
 
   return (
