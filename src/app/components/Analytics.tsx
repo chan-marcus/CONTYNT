@@ -938,8 +938,12 @@ export function Analytics({ adminToken }: { adminToken?: string } = {}) {
       const d = await res.json().catch(() => null);
       if (res.ok && d?.token) {
         window.open(`${window.location.origin}?biz=${encodeURIComponent(d.token)}&imp=1`, "_blank", "noopener");
+      } else {
+        console.error("Impersonation failed:", d?.error || `HTTP ${res.status}`);
       }
-    } catch { /* button returns to idle below */ }
+    } catch (e) {
+      console.error("Impersonation error:", e);
+    }
     setImpersonatingBizId(null);
   };
   // These three already had server endpoints doing the same writes; the direct
