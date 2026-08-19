@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { motion } from "motion/react";
-import { ExternalLink, CheckCircle, AlertCircle, Star, ThumbsUp, ThumbsDown, ArrowRight, Film, ChevronDown } from "lucide-react";
+import { ExternalLink, CheckCircle, AlertCircle, Star, ThumbsUp, ThumbsDown, ArrowRight, Film, ChevronDown,
+         MapPin, Mail, Instagram, CalendarDays, Clock, TrendingUp } from "lucide-react";
 import { projectId, publicAnonKey } from "/utils/supabase/info";
 
 const BASE = `https://${projectId}.supabase.co/functions/v1/make-server-f5961d0c`;
@@ -317,7 +318,10 @@ function FeatureNoteCard({ feature: f, bizPortalData: data, bizToken, onNoteSave
               <div className="w-7 h-7 rounded-lg bg-gradient-to-br from-purple-500/30 to-pink-500/30 border border-white/10 flex items-center justify-center shrink-0">
                 <Film className="w-3.5 h-3.5 text-pink-300" />
               </div>
-              <p className="text-sm font-semibold text-white">Instagram Reel</p>
+              {/* The category is what distinguishes one feature from another.
+                  Every card said "Instagram Reel", so a list of them was
+                  indistinguishable at a glance. */}
+              <p className="text-sm font-semibold text-white truncate">{f.category || "Instagram Reel"}</p>
             </div>
             <p className="text-xs text-neutral-500">
               {!isOffered || submitted ? (f.approvedAt ? new Date(f.approvedAt).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" }) : "") : ""}
@@ -632,60 +636,94 @@ export function BusinessPortal({ token }: { token: string }) {
       </header>
 
       <main className="relative z-10 max-w-3xl mx-auto px-4 sm:px-6 py-10 space-y-10">
-        {/* Welcome */}
-        <div>
-          <div className="flex items-center gap-3 flex-wrap">
-            <h1 className="text-2xl font-semibold">{data.businessName}</h1>
-            <div className="flex items-center gap-1.5 bg-green-500/15 border border-green-500/25 px-2.5 py-1 rounded-full">
-              <div className="relative flex items-center justify-center w-2 h-2">
-                <span className="absolute w-2 h-2 rounded-full bg-green-400 animate-ping" />
-                <div className="w-2 h-2 rounded-full bg-green-400" />
-              </div>
-              <span className="text-xs font-medium text-green-400">Active</span>
+        {/* Identity — a monogram anchors the card so the business, rather than
+            the CONTYNT header, is what the eye lands on first. The meta used to
+            stack as one field per line, which read like a raw record dump. */}
+        <div className="relative overflow-hidden rounded-3xl border border-white/10 bg-gradient-to-br from-white/[0.07] to-white/[0.02] px-5 py-5 sm:px-7 sm:py-6">
+          <div className="absolute -top-16 -right-10 w-56 h-56 rounded-full pointer-events-none"
+            style={{ background: "radial-gradient(circle, rgba(99,102,241,0.12) 0%, transparent 70%)" }} />
+          <div className="relative flex items-start gap-4">
+            <div className="shrink-0 w-14 h-14 rounded-2xl bg-gradient-to-br from-indigo-500/30 to-purple-500/20 border border-white/15 flex items-center justify-center">
+              <span className="text-lg font-bold tracking-tight text-white">
+                {data.businessName.split(/\s+/).filter(Boolean).slice(0, 2).map(w => w[0]).join("").toUpperCase() || "?"}
+              </span>
             </div>
-          </div>
-          <div className="mt-2 space-y-1">
-            {data.address && <p className="text-sm text-neutral-400">{data.address}</p>}
-            <p className="text-sm text-neutral-400">{data.city}</p>
-            {data.instagram && (
-              <a href={`https://instagram.com/${data.instagram.replace(/^@/, "")}`} target="_blank" rel="noopener noreferrer"
-                className="text-sm text-blue-400 hover:text-blue-300 transition-colors block">
-                @{data.instagram.replace(/^@/, "")}
-              </a>
-            )}
-            <div className="flex items-center gap-2 pt-0.5">
-              {editingEmail ? (
-                <form onSubmit={e => { e.preventDefault(); saveEmail(emailInput); }} className="flex gap-2 items-center">
-                  <input value={emailInput} onChange={e => setEmailInput(e.target.value)} type="email"
-                    className="text-sm bg-white/10 border border-white/20 rounded-lg px-2 py-1 text-white placeholder:text-neutral-500 focus:outline-none"
-                    placeholder="email@example.com" autoFocus />
-                  <button type="submit" className="text-xs text-green-400 hover:text-green-300 font-medium">Save</button>
-                  <button type="button" onClick={() => setEditingEmail(false)} className="text-xs text-neutral-500">Cancel</button>
-                </form>
-              ) : (
-                <>
-                  <span className="text-sm text-neutral-400">{data.email || "No email set"}</span>
-                  <button onClick={() => { setEmailInput(data.email || ""); setEditingEmail(true); }}
-                    className="text-[10px] text-neutral-600 hover:text-neutral-400 border border-white/10 px-1.5 py-0.5 rounded transition-colors">
-                    Edit
-                  </button>
-                </>
-              )}
+            <div className="min-w-0 flex-1">
+              <div className="flex items-center gap-2.5 flex-wrap">
+                <h1 className="text-2xl font-semibold leading-tight">{data.businessName}</h1>
+                <div className="flex items-center gap-1.5 bg-green-500/15 border border-green-500/25 px-2.5 py-1 rounded-full shrink-0">
+                  <div className="relative flex items-center justify-center w-2 h-2">
+                    <span className="absolute w-2 h-2 rounded-full bg-green-400 animate-ping" />
+                    <div className="w-2 h-2 rounded-full bg-green-400" />
+                  </div>
+                  <span className="text-xs font-medium text-green-400">Active</span>
+                </div>
+                {data.subscriptionTier && (
+                  <span className="text-[11px] font-medium text-indigo-300 bg-indigo-500/15 border border-indigo-500/25 px-2 py-0.5 rounded-full shrink-0">
+                    {data.subscriptionTier}
+                  </span>
+                )}
+              </div>
+
+              {/* Meta as inline chips — one wrapping row instead of four lines. */}
+              <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-2">
+                <span className="inline-flex items-start gap-1.5 text-sm text-neutral-400 min-w-0">
+                  <MapPin className="w-3.5 h-3.5 shrink-0 text-neutral-500 mt-0.5" />
+                  {/* Wraps rather than truncates: at 375px a truncated address
+                      cut the city off, which is the part that matters most. */}
+                  <span>{[data.address, data.city].filter(Boolean).join(" · ")}</span>
+                </span>
+                {data.instagram && (
+                  <a href={`https://instagram.com/${data.instagram.replace(/^@/, "")}`} target="_blank" rel="noopener noreferrer"
+                    className="inline-flex items-center gap-1.5 text-sm text-blue-400 hover:text-blue-300 transition-colors">
+                    <Instagram className="w-3.5 h-3.5 shrink-0" />
+                    @{data.instagram.replace(/^@/, "")}
+                  </a>
+                )}
+                {editingEmail ? (
+                  <form onSubmit={e => { e.preventDefault(); saveEmail(emailInput); }} className="flex gap-2 items-center">
+                    <input value={emailInput} onChange={e => setEmailInput(e.target.value)} type="email"
+                      className="text-sm bg-white/10 border border-white/20 rounded-lg px-2 py-1 text-white placeholder:text-neutral-500 focus:outline-none focus:ring-2 focus:ring-white/20"
+                      placeholder="email@example.com" autoFocus />
+                    <button type="submit" className="text-xs text-green-400 hover:text-green-300 font-medium">Save</button>
+                    <button type="button" onClick={() => setEditingEmail(false)} className="text-xs text-neutral-500 hover:text-neutral-300">Cancel</button>
+                  </form>
+                ) : (
+                  <span className="inline-flex items-center gap-1.5 text-sm text-neutral-400 min-w-0 group">
+                    <Mail className="w-3.5 h-3.5 shrink-0 text-neutral-500" />
+                    <span className="truncate">{data.email || "No email set"}</span>
+                    <button onClick={() => { setEmailInput(data.email || ""); setEditingEmail(true); }}
+                      className="text-[10px] text-neutral-500 hover:text-neutral-200 border border-white/10 hover:border-white/25 px-1.5 py-0.5 rounded transition-colors shrink-0">
+                      Edit
+                    </button>
+                  </span>
+                )}
+              </div>
             </div>
           </div>
         </div>
 
-        {/* Stats */}
+        {/* Stats — an icon per tile gives each number a scannable identity, and
+            the estimate is set apart from the three measured counts so it does
+            not read as something we actually recorded. */}
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
           {[
-            { label: "Live Reels", value: data.reels.length, color: "text-green-400" },
-            { label: "This Month", value: data.reels.filter((r: any) => { const d = new Date(r.approvedAt || r.submittedAt); const now = new Date(); return d.getMonth() === now.getMonth() && d.getFullYear() === now.getFullYear(); }).length, color: "text-blue-400" },
-            { label: "Pending", value: (data.publishedFeatures?.filter(f => f.status === "pending").length || 0) + visibleFakes, color: "text-yellow-400" },
-            { label: "Est. Reach", value: data.reels.length > 0 ? `${(data.reels.length * 2.4).toFixed(1)}k` : "—", color: "text-purple-400" },
+            { label: "Live Reels", value: data.reels.length, color: "text-green-400", ring: "bg-green-500/10 text-green-400", Icon: Film, estimated: false },
+            { label: "This Month", value: data.reels.filter((r: any) => { const d = new Date(r.approvedAt || r.submittedAt); const now = new Date(); return d.getMonth() === now.getMonth() && d.getFullYear() === now.getFullYear(); }).length, color: "text-blue-400", ring: "bg-blue-500/10 text-blue-400", Icon: CalendarDays, estimated: false },
+            { label: "Pending", value: (data.publishedFeatures?.filter(f => f.status === "pending").length || 0) + visibleFakes, color: "text-yellow-400", ring: "bg-yellow-500/10 text-yellow-400", Icon: Clock, estimated: false },
+            { label: "Est. Reach", value: data.reels.length > 0 ? `${(data.reels.length * 2.4).toFixed(1)}k` : "—", color: "text-neutral-300", ring: "bg-white/5 text-neutral-500", Icon: TrendingUp, estimated: true },
           ].map(stat => (
-            <div key={stat.label} className="bg-white/5 border border-white/10 rounded-2xl p-4 text-center">
-              <p className={`text-2xl font-bold ${stat.color}`}>{stat.value}</p>
-              <p className="text-xs text-neutral-500 mt-1">{stat.label}</p>
+            <div key={stat.label}
+              className={`rounded-2xl p-4 border transition-colors ${
+                stat.estimated
+                  ? "bg-transparent border-dashed border-white/10"
+                  : "bg-white/5 border-white/10 hover:border-white/20"
+              }`}>
+              <div className={`w-8 h-8 rounded-xl flex items-center justify-center mb-2.5 ${stat.ring}`}>
+                <stat.Icon className="w-4 h-4" />
+              </div>
+              <p className={`text-2xl font-bold leading-none ${stat.color}`}>{stat.value}</p>
+              <p className="text-xs text-neutral-500 mt-1.5">{stat.label}</p>
             </div>
           ))}
         </div>
@@ -703,7 +741,9 @@ export function BusinessPortal({ token }: { token: string }) {
           return (
           <section className="space-y-0">
             {/* Tab bar */}
-            <div className="flex gap-0 border-b border-white/10 mb-4">
+            {/* flex-wrap so the refresh/quota group drops to its own line on
+                narrow screens instead of overflowing off the right edge. */}
+            <div className="flex flex-wrap items-center gap-y-2 border-b border-white/10 mb-4">
               {(["features", "submissions"] as const).map(tab => {
                 const isActive = bizTab === tab;
                 const count = tab === "features" ? totalFeatures : submissionsTotal;
@@ -720,7 +760,7 @@ export function BusinessPortal({ token }: { token: string }) {
                       try { localStorage.setItem(featuresSeenKey, String(newFeaturesCount)); } catch {}
                     }
                   }}
-                    className={`relative px-4 py-2.5 text-sm font-medium transition-all border-b-2 -mb-px flex items-center gap-2 ${isActive ? "border-white text-white" : "border-transparent text-neutral-500 hover:text-neutral-300"}`}>
+                    className={`relative px-3 sm:px-4 py-2.5 text-sm font-medium transition-all border-b-2 -mb-px flex items-center gap-2 whitespace-nowrap ${isActive ? "border-white text-white" : "border-transparent text-neutral-500 hover:text-neutral-300"}`}>
                     {label}
                     {count > 0 && (
                       <span className={`flex items-center justify-center min-w-[20px] h-5 px-1 rounded-full text-[10px] font-bold transition-all ${unread && !isActive ? "bg-green-400 text-neutral-900 animate-pulse" : "bg-white/15 text-neutral-300"}`}>
@@ -730,7 +770,7 @@ export function BusinessPortal({ token }: { token: string }) {
                   </button>
                 );
               })}
-              <div className="ml-auto flex items-center gap-3 pb-2">
+              <div className="w-full sm:w-auto sm:ml-auto flex items-center gap-3 pb-2 justify-end">
                 <button onClick={refreshFeatures} disabled={refreshing}
                   className="text-xs text-neutral-500 hover:text-neutral-300 transition-colors flex items-center gap-1 disabled:opacity-40">
                   <svg className={`w-3 h-3 ${refreshing ? "animate-spin" : ""}`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" /></svg>
