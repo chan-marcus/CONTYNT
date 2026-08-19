@@ -1049,7 +1049,9 @@ export function CreatorPortal({ token, impersonating }: { token: string; imperso
     // authoritative expiresAt so the UI does not compute a second, divergent one.
     const res = await api("/creator-portal/accept-feature", { method: "POST", body: JSON.stringify({ token, featureId }) }).catch(() => null);
     const expiresAt = (await res?.json().catch(() => null))?.expiresAt
-      ?? new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
+      // Fallback only; the server returns the authoritative expiry. Kept in
+      // step with CLAIM_DAYS in the accept-feature route.
+      ?? new Date(Date.now() + 5 * 24 * 60 * 60 * 1000).toISOString();
     setClaims(prev => {
       const updated = { ...prev, [featureId]: { ...prev[featureId], status: "claimed" as const, expiresAt } };
       saveLocalClaims(updated);

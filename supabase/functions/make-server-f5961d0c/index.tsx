@@ -2404,7 +2404,9 @@ app.post("/make-server-f5961d0c/creator-portal/accept-feature", async (c) => {
     // short lived admin token, which expires in an hour and is in no index.
     const token = creatorData.realToken ?? rawToken;
     const now = new Date();
-    const expiresAt = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000).toISOString();
+    // Creators get 5 days to film and submit once they accept a Feature.
+    const CLAIM_DAYS = 5;
+    const expiresAt = new Date(now.getTime() + CLAIM_DAYS * 24 * 60 * 60 * 1000).toISOString();
     await db().from("creator_claims_f5961d0c").update({ status: "claimed", expires_at: expiresAt, claimed_at: now.toISOString() }).eq("creator_token", token).eq("feature_id", featureId);
     return c.json({ success: true, expiresAt });
   } catch (e: any) { return c.json({ error: e.message }, 500); }
