@@ -236,8 +236,10 @@ function RequestSlotCard({ bizToken, reelsLeft, reelsLimit, onSubmitted }: {
     if (newId) onSubmitted(newId, notesVal);
   };
 
+  // Same weight as an offered FeatureNoteCard. Both are actionable rows, so an
+  // open slot sitting between two offers should not read as dimmer.
   return (
-    <div className={`border rounded-2xl overflow-hidden transition-all cursor-pointer ${expanded ? "bg-white/8 border-white/20" : "bg-white/5 border-white/10 hover:border-white/20"}`}
+    <div className="border rounded-2xl overflow-hidden transition-all cursor-pointer bg-white/8 border-white/20 hover:border-white/30"
       onClick={() => setExpanded(v => !v)}>
       {/* Same header structure as FeatureNoteCard -- dot, then icon and label --
           so an open slot and an offered feature read as one kind of row. */}
