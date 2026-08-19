@@ -25,6 +25,16 @@ interface Claim { featureId: string; status: "interested" | "admin_approved" | "
 interface PayoutInfo { stripeLink: string; payoutAmount: string; submissionId: string; }
 interface PortalStats { completed: number; activeClaims: number; totalPayout: number; creatorScore?: number; }
 
+// Order of the claim cards in the Features tab: soonest deadline and anything
+// needing the creator to act comes first, then the ones merely waiting on us.
+const CLAIM_TAB_ORDER: Record<string, number> = {
+  admin_approved: 0, // accept within 24h or lose it
+  claimed: 1,        // filming, on a 5 day clock
+  denied: 2,         // needs another Reel
+  submitted: 3,      // under review, nothing for them to do
+  interested: 4,     // requested, waiting to be accepted
+};
+
 const FAKE_FEATURES = [
   { id: "fake_1", businessName: "Maxfield's House of Caffeine", address: "Upper Haight", city: "San Francisco, CA", category: "Coffee Shop", payoutRange: "$15–$25", status: "completed" as const, claimedBy: "sarahv" },
   { id: "fake_2", businessName: "Duboce Park Cafe", address: "Duboce Triangle", city: "San Francisco, CA", category: "Cafe", payoutRange: "$10–$20", status: "completed" as const, claimedBy: "mikec" },
@@ -1481,8 +1491,13 @@ export function CreatorPortal({ token, impersonating }: { token: string; imperso
                 </div>
               ) : null;
             })()}
-            {/* Interested/in-progress features — always on top */}
-            {Object.entries(claims).filter(([, c]) => ["interested","admin_approved","claimed","submitted","denied"].includes(c.status as string)).map(([fid, claim]) => {
+            {/* Interested/in-progress features — always on top, ordered by how
+                much they still want from the creator. These render in whatever
+                order the claims object happened to be built in otherwise, so a
+                Reel under review could sit below one merely requested. */}
+            {Object.entries(claims).filter(([, c]) => ["interested","admin_approved","claimed","submitted","denied"].includes(c.status as string))
+              .sort(([, a], [, b]) => (CLAIM_TAB_ORDER[a.status as string] ?? 9) - (CLAIM_TAB_ORDER[b.status as string] ?? 9))
+              .map(([fid, claim]) => {
               const f = features.find(ft => ft.id === fid);
               if (!f) return null;
               // Hide from Features tab if feature is globally claimed and this creator isn't the winner
