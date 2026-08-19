@@ -403,6 +403,10 @@ function BusinessCard({ signup, approved, onApprove, onImpersonate, impersonatin
           <p className="text-xs font-medium text-neutral-500">Features</p>
           {(bizFeatures || []).filter((f: any) => ["offered", "available", "completed"].includes(f.status)).map((f: any) => {
             const featureClaims = (allClaims || []).filter((c: any) => c.featureId === f.id);
+            // markReelLive sets the claim to approved when the Reel is signed
+            // off. The Feature is not finished until the creator is credited,
+            // so it reads as Pending in between rather than Accepted.
+            const awaitingCredit = f.status !== "completed" && featureClaims.some((c: any) => c.status === "approved");
             const allFeatureClaims = featureClaims.filter((c: any) => c.status !== "viewing");
             const interested = featureClaims.filter((c: any) => c.status === "interested");
             const adminApproved = featureClaims.filter((c: any) => c.status === "approved");
@@ -420,10 +424,11 @@ function BusinessCard({ signup, approved, onApprove, onImpersonate, impersonatin
                   <div className="flex items-center gap-1.5 shrink-0">
                     <span className={`text-xs px-1.5 py-0.5 rounded-full ${
                       f.status === "completed" ? "bg-purple-500/15 text-purple-400" :
+                      awaitingCredit ? "bg-yellow-500/15 text-yellow-400" :
                       f.status === "offered" ? "bg-neutral-500/15 text-neutral-400" :
                       "bg-green-100/10 text-green-400"
                     }`}>
-                      {f.status === "completed" ? "Completed" : f.status === "offered" ? "Not Accepted Yet" : "Accepted"}
+                      {f.status === "completed" ? "Completed" : awaitingCredit ? "Pending" : f.status === "offered" ? "Not Accepted Yet" : "Accepted"}
                     </span>
                     <button onClick={() => onRemoveFeature?.(f.id)}
                       className="text-[10px] px-1.5 py-0.5 text-red-400/70 hover:text-red-400 hover:bg-red-500/10 rounded transition-all">

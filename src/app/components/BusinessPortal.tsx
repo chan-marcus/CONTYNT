@@ -294,9 +294,13 @@ function FeatureNoteCard({ feature: f, bizPortalData: data, bizToken, onNoteSave
   const isCompleted = f.status === "completed";
   const isOffered = f.status === "offered";
   const isPending = f.status === "pending";
-  const label = isCompleted ? "Completed" : isPending ? "Submitted" : hasInProgress ? "In Progress" : isOffered ? "Available" : "Live & Active";
+  // The Reel is signed off but the creator has not been paid, so the Feature is
+  // not finished. It reads as Pending until Approve & Add to Balance closes it.
+  const awaitingCredit = !isCompleted && data.reels?.some(r =>
+    r.featureId === f.id && (r.businessFeedback?.reaction === "approve" || (r as any).status === "approved"));
+  const label = isCompleted ? "Completed" : awaitingCredit ? "Pending" : isPending ? "Submitted" : hasInProgress ? "In Progress" : isOffered ? "Available" : "Live & Active";
   const dotColor = isCompleted ? "bg-green-400" : isPending ? "bg-yellow-400" : hasInProgress ? "bg-blue-400 animate-pulse" : isOffered ? "bg-green-400 animate-pulse" : "bg-blue-400 animate-pulse";
-  const badgeColor = isCompleted ? "bg-green-500/15 text-green-400 border-green-500/25" : isPending ? "bg-yellow-500/15 text-yellow-400 border-yellow-500/25" : hasInProgress ? "bg-blue-500/15 text-blue-400 border-blue-500/25" : isOffered ? "bg-white/15 text-white border-white/25" : "bg-blue-500/15 text-blue-400 border-blue-500/25";
+  const badgeColor = isCompleted ? "bg-green-500/15 text-green-400 border-green-500/25" : awaitingCredit ? "bg-yellow-500/15 text-yellow-400 border-yellow-500/25" : isPending ? "bg-yellow-500/15 text-yellow-400 border-yellow-500/25" : hasInProgress ? "bg-blue-500/15 text-blue-400 border-blue-500/25" : isOffered ? "bg-white/15 text-white border-white/25" : "bg-blue-500/15 text-blue-400 border-blue-500/25";
   // Includes one-off purchases, so a business with no tier but a bought
   // Reel still sees the allowance line.
   const totalReels = quotaLimit(data.reelsLimit || 0, data.publishedFeatures);
