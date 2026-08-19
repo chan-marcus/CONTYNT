@@ -893,9 +893,16 @@ export function Analytics({ adminToken }: { adminToken?: string } = {}) {
         // imp=1 keeps the portal from persisting this as a real session.
         // "_blank" rather than a named target, so each creator opens in its own tab
         // and a second impersonation does not replace the first.
-        window.open(`${window.location.origin}/app?creator=${encodeURIComponent(d.token)}&imp=1`, "_blank", "noopener");
+        const url = `${window.location.origin}/app?creator=${encodeURIComponent(d.token)}&imp=1`;
+        const opened = window.open(url, "_blank", "noopener");
+        if (!opened) {
+          console.warn("Creator popup was blocked. URL:", url);
+          alert("Popup blocked. Please check your popup blocker settings.");
+        }
       }
-    } catch { /* button returns to idle below */ }
+    } catch (e) {
+      console.error("Creator impersonation error:", e);
+    }
     setImpersonatingId(null);
   };
   const resetCreator = async (creatorId: string) => {
@@ -944,7 +951,11 @@ export function Analytics({ adminToken }: { adminToken?: string } = {}) {
       if (res.ok && d?.token) {
         const url = `${window.location.origin}?biz=${encodeURIComponent(d.token)}&imp=1`;
         console.log("Opening:", url);
-        window.open(url, "_blank", "noopener");
+        const opened = window.open(url, "_blank", "noopener");
+        if (!opened) {
+          console.warn("Popup was blocked or could not be opened. URL:", url);
+          alert("Popup blocked. Please check your popup blocker settings.");
+        }
       } else {
         console.error("Impersonation failed - res.ok:", res.ok, "has token:", !!d?.token, "error:", d?.error || `HTTP ${res.status}`);
       }
