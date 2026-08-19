@@ -291,14 +291,15 @@ function BusinessCard({ signup, approved, onApprove, onImpersonate, impersonatin
   const [pendingPayouts, setPendingPayouts] = useState<Record<string, string>>({});
   const [pendingNotes, setPendingNotes] = useState<Record<string, string>>({});
   const [tier, setTierLocal] = useState(signup.subscriptionTier || "");
-  const [offeringSaving, setOfferingSaving] = useState(false);
+  // Which offer is in flight, so only the clicked button shows "Sending…".
+  const [offering, setOffering] = useState<null | "trial" | "oneoff">(null);
 
   const tierLimit = TIER_LIMITS[tier] || 0;
   // Count offered/pending/available/completed features this month as "used"
   const reelsUsed = (bizFeatures || []).filter((f: any) => ["pending","available","completed"].includes(f.status) && !f.isTrial).length;
 
   const offerFeature = async (isTrial = false) => {
-    setOfferingSaving(true);
+    setOffering(isTrial ? "trial" : "oneoff");
     const now = new Date().toISOString();
     // The server builds the row from the business record and returns the id.
     const res = await apiFetch("/admin/offer-feature", {
@@ -308,7 +309,7 @@ function BusinessCard({ signup, approved, onApprove, onImpersonate, impersonatin
     if (newId) {
       onFeatureOffered?.({ id: newId, businessId: signup.id, businessName: signup.businessName || "", category: "", payoutRange: "", status: "offered", isTrial, offeredAt: now });
     }
-    setOfferingSaving(false);
+    setOffering(null);
   };
 
   const saveTier = async (newTier: string) => {
@@ -454,9 +455,16 @@ function BusinessCard({ signup, approved, onApprove, onImpersonate, impersonatin
 
       {/* Bottom actions */}
       <div className="pt-2 border-t border-white/10 space-y-2">
-        <button onClick={() => offerFeature(true)} disabled={offeringSaving}
+        <button onClick={() => offerFeature(true)} disabled={!!offering}
           className="w-full py-2 text-sm bg-blue-600/20 text-blue-300 border border-blue-500/20 rounded-lg hover:bg-blue-600/30 transition-all disabled:opacity-50 flex items-center justify-center gap-2">
-          {offeringSaving ? "Sending…" : "🎁 Send Free Feature"}
+          {offering === "trial" ? "Sending…" : "🎁 Send Free Feature"}
+        </button>
+        {/* Same call as above with is_trial false, so it counts against the
+            business's monthly quota rather than being a giveaway. Purple to
+            match how paid/completed features read elsewhere in this panel. */}
+        <button onClick={() => offerFeature(false)} disabled={!!offering}
+          className="w-full py-2 text-sm bg-purple-600/20 text-purple-300 border border-purple-500/20 rounded-lg hover:bg-purple-600/30 transition-all disabled:opacity-50 flex items-center justify-center gap-2">
+          {offering === "oneoff" ? "Sending…" : "🎟️ Add One-Time Feature"}
         </button>
         <button onClick={onImpersonate} disabled={impersonating}
           className="w-full py-2 bg-white text-neutral-900 text-sm rounded-lg hover:bg-neutral-100 transition-all disabled:opacity-50 flex items-center justify-center gap-2">
