@@ -881,6 +881,17 @@ export function CreatorPortal({ token, impersonating }: { token: string; imperso
   // which anyone can strip from the address bar.
   const [serverImpersonated, setServerImpersonated] = useState(false);
   const [creator, setCreator] = useState<{ instagram: string; city: string; email?: string } | null>(null);
+
+  // The tab title carries the handle, so a creator with several tabs open — or
+  // an admin impersonating more than one creator at once — can tell them apart
+  // without switching to each. App.tsx's title effect never runs here: the
+  // portal routes return before it.
+  useEffect(() => {
+    const who = creator?.instagram?.replace(/^@+/, "");
+    document.title = phase === "signedout" ? "Creator Sign In | CONTYNT"
+      : who ? `@${who} · Creator Portal | CONTYNT`
+      : "Creator Portal | CONTYNT";
+  }, [creator?.instagram, phase]);
   const [features, setFeatures] = useState<Feature[]>([]);
   const [claims, setClaims] = useState<Record<string, Claim>>({});
   const [stats, setStats] = useState<PortalStats>({ completed: 0, activeClaims: 0, totalPayout: 0 });

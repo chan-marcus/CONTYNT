@@ -416,6 +416,14 @@ function PlanCard({ plan, featured }: { plan: typeof PLANS[0]; featured: boolean
 
 export function BusinessPortal({ token }: { token: string }) {
   const [data, setData] = useState<BizData | null>(null);
+
+  // Named tab title, matching the creator portal. App.tsx's title effect never
+  // runs on this route: it returns <BusinessPortal> before reaching it.
+  useEffect(() => {
+    document.title = data?.businessName
+      ? `${data.businessName} · Business Portal | CONTYNT`
+      : "Business Portal | CONTYNT";
+  }, [data?.businessName]);
   const [bizId, setBizId] = useState<string>("");
   const [loading, setLoading] = useState(true);
   const fakesKey = `contynt_biz_fakes_${token}`;
