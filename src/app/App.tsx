@@ -61,28 +61,17 @@ export default function App() {
   const path = window.location.pathname.replace(/\/+$/, "") || "/";
   const isAppPath = path === "/app";
 
-  if (referralCode) return <ReferralLanding code={referralCode} />;
-  if (adminToken) return <Analytics adminToken={adminToken} />;
-
-  // Links minted before /app existed still arrive at the root. Forward them once,
-  // query string intact. No loop is possible: the target sets isAppPath.
-  if (!isAppPath && (creatorToken || view === "login" || view === "confirm")) {
-    window.location.replace(`/app${window.location.search}`);
-    return null;
-  }
-
-  if (isAppPath) {
-    // Checked before the portal so ?view=confirm opens the confirmation screen
-    // rather than dropping straight into the portal.
-    if (activeCreator && view === "confirm") return <ConfirmProfile token={activeCreator} />;
-    if (activeCreator) return <CreatorPortal token={activeCreator} impersonating={impersonating} />;
-    return <CreatorLogin />;
-  }
-
-  if (bizToken) return <BusinessPortal token={bizToken} />;
-  if (view === "submission") return <CreatorSubmissionPending />;
+  // Every hook must run on every render, so these route tests are computed up
+  // front and the effect below is hoisted above the returns that follow.
+  const isRedirecting = !isAppPath && !!(creatorToken || view === "login" || view === "confirm");
+  const isLanding = !referralCode && !adminToken && !isRedirecting && !isAppPath
+    && !bizToken && view !== "submission";
 
   useEffect(() => {
+    // Guarded in the body rather than by placement, so the hook itself always
+    // runs. Effects fire child-first, so an unguarded parent effect here would
+    // land after each portal's own title effect and overwrite it.
+    if (!isLanding) return;
     document.title = "CONTYNT | Local Creator Network";
 
     // Set favicon
@@ -202,7 +191,28 @@ export default function App() {
     }
 
     return () => window.removeEventListener("hashchange", checkHash);
-  }, []);
+  }, [isLanding]);
+
+  if (referralCode) return <ReferralLanding code={referralCode} />;
+  if (adminToken) return <Analytics adminToken={adminToken} />;
+
+  // Links minted before /app existed still arrive at the root. Forward them once,
+  // query string intact. No loop is possible: the target sets isAppPath.
+  if (isRedirecting) {
+    window.location.replace(`/app${window.location.search}`);
+    return null;
+  }
+
+  if (isAppPath) {
+    // Checked before the portal so ?view=confirm opens the confirmation screen
+    // rather than dropping straight into the portal.
+    if (activeCreator && view === "confirm") return <ConfirmProfile token={activeCreator} />;
+    if (activeCreator) return <CreatorPortal token={activeCreator} impersonating={impersonating} />;
+    return <CreatorLogin />;
+  }
+
+  if (bizToken) return <BusinessPortal token={bizToken} />;
+  if (view === "submission") return <CreatorSubmissionPending />;
 
   // Show analytics dashboard
   if (showAnalytics) {
