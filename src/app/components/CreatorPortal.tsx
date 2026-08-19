@@ -452,6 +452,10 @@ function FeatureCard({ feature, claim, token, onClaim, onUnclaim, onAccept, onSu
   };
 
   const winner = (feature as any).winnerInstagram || claimedBy || "";
+  // Independent of `fake`, so the Activity feed can tell the creator's own
+  // completed Features apart from everyone else's and leave them unmasked.
+  const winnerIsMe = !!myInstagram && !!winner &&
+    winner.replace(/^@+/, "").toLowerCase() === myInstagram.replace(/^@+/, "").toLowerCase();
   const isMyWin = !fake && isGloballyClaimed && myInstagram &&
     winner.replace(/^@+/, "").toLowerCase() === myInstagram.replace(/^@+/, "").toLowerCase();
   // stripeLink needed before isMyWin check
@@ -489,7 +493,9 @@ function FeatureCard({ feature, claim, token, onClaim, onUnclaim, onAccept, onSu
       <div className="bg-white/5 border border-white/10 rounded-2xl p-5">
         <div className="flex items-start justify-between gap-3 mb-3">
           <div>
-            <p className="font-medium text-neutral-400"><BlurredName name={feature.businessName} /></p>
+            <p className={`font-medium ${winnerIsMe ? "text-white" : "text-neutral-400"}`}>
+              {winnerIsMe ? feature.businessName : <BlurredName name={feature.businessName} />}
+            </p>
             <div className="flex items-center gap-1 text-neutral-600 text-xs mt-1">
               <MapPin className="w-3 h-3" />{feature.city}
             </div>
@@ -499,10 +505,9 @@ function FeatureCard({ feature, claim, token, onClaim, onUnclaim, onAccept, onSu
         <div className="flex items-center justify-between">
           <span className="text-xs text-neutral-600 bg-white/5 px-2.5 py-1 rounded-full">{feature.category}</span>
           {winner && (() => {
-            const isYou = myInstagram && winner.replace(/^@+/,"").toLowerCase() === myInstagram.replace(/^@+/,"").toLowerCase();
             return (
               <span className="text-xs text-neutral-500">
-                Claimed by {isYou ? <span className="text-neutral-300 font-medium">You</span> : <BlurredHandle username={winner} />}
+                Claimed by {winnerIsMe ? <span className="text-neutral-200 font-semibold">You</span> : <BlurredHandle username={winner} />}
               </span>
             );
           })()}
@@ -1373,7 +1378,7 @@ export function CreatorPortal({ token, impersonating }: { token: string; imperso
           const completedByMe = features.filter(f => f.status === "completed" && (f as any).winnerInstagram?.replace(/^@/,"").toLowerCase() === (creator?.instagram||"").replace(/^@/,"").toLowerCase()).length;
           const completedCount = pendingCashOut + completedByMe;
           const availableCount = features.filter(f => f.status === "available").length;
-          const activityCount = features.filter(f => f.status === "completed" && (f as any).winnerInstagram?.replace(/^@/,"").toLowerCase() !== (creator?.instagram||"").replace(/^@/,"").toLowerCase()).length + FAKE_FEATURES.length;
+          const activityCount = features.filter(f => f.status === "completed").length + FAKE_FEATURES.length;
 
           const featsUnread = availableCount > featsSeen && portalTab !== "features";
           const compUnread  = pendingCashOut > 0 && portalTab !== "completed";
@@ -1576,12 +1581,15 @@ export function CreatorPortal({ token, impersonating }: { token: string; imperso
           );
         })()}
 
-        {/* Activity tab — claimed by others + fake examples */}
+        {/* Activity tab — every completed Feature, the creator's own included */}
         {portalTab === "activity" && (
           <div className="w-full flex flex-col gap-4">
-            <p className="text-xs text-neutral-500">Features recently claimed by other creators.</p>
+            <p className="text-xs text-neutral-500">Features recently claimed, including your own.</p>
             {[
-              ...features.filter(f => f.status === "completed" && (f as any).winnerInstagram?.replace(/^@/,"").toLowerCase() !== (creator?.instagram || "").replace(/^@/,"").toLowerCase()).slice().reverse(),
+              // The creator's own completed Features belong here too. They stay
+              // unmasked and read "Claimed by You" -- there is nothing to hide
+              // from someone about their own work.
+              ...features.filter(f => f.status === "completed").slice().reverse(),
               ...FAKE_FEATURES,
             ].map((feature, i) => (
               <motion.div key={feature.id} className="w-full min-w-0" initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }}>
