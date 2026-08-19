@@ -175,24 +175,22 @@ function WalletModal({ available, token, onClose, onRequested }: {
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center px-5 bg-black/70 backdrop-blur-sm" onClick={onClose}>
-      <div className="w-full max-w-sm bg-neutral-900 border border-white/15 rounded-2xl p-6 space-y-4" onClick={e => e.stopPropagation()}>
-        <div className="flex items-start justify-between gap-3">
-          <div>
-            <h2 className="text-lg font-bold text-white">Cash Out Earnings</h2>
-            <p className="text-xs text-neutral-400 mt-0.5">Available balance</p>
-          </div>
-          <button onClick={onClose} className="text-neutral-500 hover:text-white transition-colors"><X className="w-5 h-5" /></button>
+      <div className="w-full max-w-sm bg-neutral-900 border border-white/15 rounded-2xl p-6 space-y-4 relative" onClick={e => e.stopPropagation()}>
+        <button onClick={onClose} className="absolute top-6 right-6 text-neutral-500 hover:text-white transition-colors"><X className="w-5 h-5" /></button>
+        <div className="text-center space-y-1">
+          <h2 className="text-lg font-bold text-white">Cash Out Earnings</h2>
+          <p className="text-xs text-neutral-400">Available balance</p>
         </div>
 
-        <p className="text-3xl font-bold text-green-400">${available}</p>
+        <p className="text-3xl font-bold text-green-400 text-center">${available}</p>
 
         {done ? (
-          <div className="bg-green-500/10 border border-green-500/25 rounded-xl p-4 space-y-1">
+          <div className="bg-green-500/10 border border-green-500/25 rounded-xl p-4 space-y-1 text-center">
             <p className="text-sm font-semibold text-green-300">Payout requested</p>
             <p className="text-xs text-neutral-400">We'll send ${available} to your {method} ({handle}). You'll get a confirmation once it's sent.</p>
           </div>
         ) : available <= 0 ? (
-          <p className="text-sm text-neutral-400 text-balance">Nothing to cash out yet.</p>
+          <p className="text-sm text-neutral-400 text-balance text-center">Nothing to cash out yet.</p>
         ) : (
           <>
             <div className="space-y-1.5">
@@ -1182,6 +1180,13 @@ export function CreatorPortal({ token, impersonating }: { token: string; imperso
   // URL flag or server record: either is enough to lock the view down.
   const isImpersonating = impersonating || serverImpersonated;
 
+  // Home content sits at the top of the page, so returning to it while scrolled
+  // down would otherwise land the creator on an apparently blank screen.
+  const goHome = () => {
+    setPortalTab("home");
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  };
+
   if (phase === "signedout") return <CreatorLogin />;
 
   if (phase === "error") {
@@ -1232,12 +1237,19 @@ export function CreatorPortal({ token, impersonating }: { token: string; imperso
       {/* Header */}
       <header className="relative z-10 border-b border-white/10 px-6 py-4">
         <div className="max-w-2xl mx-auto flex items-center justify-between">
-          <div className="flex items-center gap-3">
+          {/* Both header labels return to the home view. Without them, home was
+              reachable only on arrival: once a tab was selected there was no way
+              back to the explainer short of reloading. */}
+          <button type="button" onClick={goHome} aria-label="Back to portal home"
+            className="flex items-center gap-3 rounded-lg transition-opacity hover:opacity-80 focus:outline-none focus-visible:ring-2 focus-visible:ring-white/40">
             <span className="text-sm font-semibold tracking-[0.2em]">C O N T Y N T</span>
             <span className="text-[10px] font-bold tracking-widest text-yellow-400 border border-yellow-400/40 px-1.5 py-0.5 rounded">BETA</span>
-          </div>
+          </button>
           <div className="flex items-center gap-3">
-            <span className="text-xs text-neutral-500">Creator Portal</span>
+            <button type="button" onClick={goHome} aria-label="Back to portal home"
+              className="text-xs text-neutral-500 hover:text-neutral-300 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-white/40 rounded">
+              Creator Portal
+            </button>
             {!isImpersonating && (
               <button onClick={() => {
                 try { localStorage.removeItem(CREATOR_TOKEN_KEY); } catch { /* private mode */ }
