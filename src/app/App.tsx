@@ -71,8 +71,6 @@ export default function App() {
     return null;
   }
 
-  const isBizPath = path === "/business";
-
   if (isAppPath) {
     // Checked before the portal so ?view=confirm opens the confirmation screen
     // rather than dropping straight into the portal.
@@ -81,7 +79,6 @@ export default function App() {
     return <CreatorLogin />;
   }
 
-  if (isBizPath && bizToken) return <BusinessPortal token={bizToken} />;
   if (bizToken) return <BusinessPortal token={bizToken} />;
   if (view === "submission") return <CreatorSubmissionPending />;
 

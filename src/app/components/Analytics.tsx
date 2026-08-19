@@ -667,6 +667,7 @@ export function Analytics({ adminToken }: { adminToken?: string } = {}) {
   const [impersonatingId, setImpersonatingId] = useState<string | null>(null);
   const [approvingBiz, setApprovingBiz] = useState<string | null>(null);
   const [impersonatingBizId, setImpersonatingBizId] = useState<string | null>(null);
+  const [impersonateError, setImpersonateError] = useState("");
   const [approvingReel, setApprovingReel] = useState<string | null>(null);
   const [fetchingMetrics, setFetchingMetrics] = useState<string | null>(null);
   const [adminLink, setAdminLink] = useState("");
@@ -893,16 +894,13 @@ export function Analytics({ adminToken }: { adminToken?: string } = {}) {
         // imp=1 keeps the portal from persisting this as a real session.
         // "_blank" rather than a named target, so each creator opens in its own tab
         // and a second impersonation does not replace the first.
-        const url = `${window.location.origin}/app?creator=${encodeURIComponent(d.token)}&imp=1`;
-        const opened = window.open(url, "_blank", "noopener");
-        if (!opened) {
-          console.warn("Creator popup was blocked. URL:", url);
-          alert("Popup blocked. Please check your popup blocker settings.");
-        }
+        window.open(`${window.location.origin}/app?creator=${encodeURIComponent(d.token)}&imp=1`, "_blank", "noopener");
+      } else {
+        // A failure used to leave the button silently returning to idle, which
+        // made a missing server route look like a dead button.
+        setImpersonateError(d?.error || `Could not open creator portal (${res.status}).`);
       }
-    } catch (e) {
-      console.error("Creator impersonation error:", e);
-    }
+    } catch { setImpersonateError("Could not reach the server."); }
     setImpersonatingId(null);
   };
   const resetCreator = async (creatorId: string) => {
@@ -936,32 +934,22 @@ export function Analytics({ adminToken }: { adminToken?: string } = {}) {
     }
     setApprovingBiz(null);
   };
+  // Same mechanics as impersonateCreator: a short lived token minted by the
+  // server, opened in its own tab, and never written to the business's own
+  // biztokenref_ so their real portal link keeps working.
   const impersonateBusiness = async (id: string) => {
     setImpersonatingBizId(id);
     try {
       const res = await apiFetch("/admin/impersonate-business", {
         method: "POST", body: JSON.stringify({ businessId: id }),
       });
-      console.log("Impersonate response status:", res.status);
-      const d = await res.json().catch(() => {
-        console.error("Failed to parse JSON response");
-        return null;
-      });
-      console.log("Impersonate response data:", d);
+      const d = await res.json().catch(() => null);
       if (res.ok && d?.token) {
-        const url = `${window.location.origin}/business?biz=${encodeURIComponent(d.token)}&imp=1`;
-        console.log("Opening:", url);
-        const opened = window.open(url, "_blank", "noopener");
-        if (!opened) {
-          console.warn("Popup was blocked or could not be opened. URL:", url);
-          alert("Popup blocked. Please check your popup blocker settings.");
-        }
+        window.open(`${window.location.origin}?biz=${encodeURIComponent(d.token)}&imp=1`, "_blank", "noopener");
       } else {
-        console.error("Impersonation failed - res.ok:", res.ok, "has token:", !!d?.token, "error:", d?.error || `HTTP ${res.status}`);
+        setImpersonateError(d?.error || `Could not open business portal (${res.status}).`);
       }
-    } catch (e) {
-      console.error("Impersonation error:", e);
-    }
+    } catch { setImpersonateError("Could not reach the server."); }
     setImpersonatingBizId(null);
   };
   // These three already had server endpoints doing the same writes; the direct
@@ -1089,6 +1077,13 @@ export function Analytics({ adminToken }: { adminToken?: string } = {}) {
 
       {/* Content */}
       <div className="max-w-5xl mx-auto px-4 sm:px-6 py-8">
+        {impersonateError && (
+          <div className="mb-4 flex items-center justify-between gap-3 bg-red-500/10 border border-red-500/25 rounded-xl px-4 py-2.5">
+            <p className="text-xs text-red-300">{impersonateError}</p>
+            <button onClick={() => setImpersonateError("")}
+              className="text-xs text-neutral-400 hover:text-neutral-200 shrink-0">Dismiss</button>
+          </div>
+        )}
         {loading && <p className="text-neutral-400 text-sm text-center py-12">Loading…</p>}
 
         {/* ── Creators tab ── */}

@@ -135,6 +135,20 @@ async function creatorFromToken(token: string): Promise<any | null> {
   return data;
 }
 
+// Business portal tokens work the same way, so they expire the same way: a real
+// business link has no expiresAt and lives until it is regenerated, while an
+// admin impersonation token carries one and stops working when it passes.
+async function businessFromToken(token: string): Promise<any | null> {
+  if (!token) return null;
+  const data = await kv.get(`biztoken_${token}`).catch(() => null);
+  if (!data) return null;
+  if (data.expiresAt && new Date(data.expiresAt) <= new Date()) {
+    await kv.del(`biztoken_${token}`).catch(() => {});
+    return null;
+  }
+  return data;
+}
+
 // These two ARE the auth handshake, so they cannot require auth themselves.
 const ADMIN_OPEN = new Set([
   "/make-server-f5961d0c/admin/login",
@@ -1984,7 +1998,7 @@ app.post("/make-server-f5961d0c/admin/offer-feature", async (c) => {
 app.post("/make-server-f5961d0c/business-portal/submit-feature", async (c) => {
   try {
     const { bizToken, featureId, requestNotes, isNewRequest } = await c.req.json();
-    const bizData = await kv.get(`biztoken_${bizToken}`);
+    const bizData = await businessFromToken(bizToken);
     if (!bizData) return c.json({ error: "Invalid token" }, 401);
     const now = new Date().toISOString().slice(0, 7); // YYYY-MM
     const notes = requestNotes || "No specific requests, creator's choice";
@@ -2900,7 +2914,7 @@ app.get("/make-server-f5961d0c/business-portal", async (c) => {
   if (!token) return c.json({ error: "Token required" }, 400);
 
   let bizData: any = null;
-  try { bizData = await kv.get(`biztoken_${token}`); } catch {}
+  try { bizData = await businessFromToken(token); } catch {}
   if (!bizData) return c.json({ error: "Invalid or expired link" }, 401);
 
   const result: any = { business: bizData, reels: [], requestingCreators: [], inProgressCreators: [], publishedFeatures: [] };
@@ -2966,7 +2980,7 @@ app.post("/make-server-f5961d0c/business-portal/update-email", async (c) => {
   try {
     const { bizToken, email } = await c.req.json();
     if (!bizToken || !email) return c.json({ error: "bizToken and email required" }, 400);
-    const bizData = await kv.get(`biztoken_${bizToken}`).catch(() => null);
+    const bizData = await businessFromToken(bizToken);
     if (!bizData) return c.json({ error: "Invalid token" }, 401);
     // Scoped to the token's own business — the id never comes from the client.
     const { error } = await db().from("business_signups_f5961d0c").update({ email }).eq("id", bizData.businessId);
@@ -2980,7 +2994,7 @@ app.post("/make-server-f5961d0c/business-portal/track-plan-click", async (c) => 
   try {
     const { bizToken } = await c.req.json();
     if (!bizToken) return c.json({ error: "bizToken required" }, 400);
-    const bizData = await kv.get(`biztoken_${bizToken}`).catch(() => null);
+    const bizData = await businessFromToken(bizToken);
     if (!bizData) return c.json({ error: "Invalid token" }, 401);
     // Read-then-write server-side so the client cannot set an arbitrary count.
     const { data: row } = await db().from("business_signups_f5961d0c").select("plan_clicks").eq("id", bizData.businessId).single();
@@ -2995,7 +3009,7 @@ app.post("/make-server-f5961d0c/business-portal/feedback", async (c) => {
   try {
     const { bizToken, submissionId, reaction, note } = await c.req.json();
     if (!bizToken || !submissionId || !reaction) return c.json({ error: "bizToken, submissionId, and reaction required" }, 400);
-    const bizData = await kv.get(`biztoken_${bizToken}`);
+    const bizData = await businessFromToken(bizToken);
     if (!bizData) return c.json({ error: "Invalid token" }, 401);
 
     // Save feedback
