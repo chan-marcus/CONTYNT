@@ -1,0 +1,24 @@
+-- History-alignment stub. Intentionally does nothing.
+--
+-- This version is recorded as applied in the remote migration history, but no
+-- file for it was ever committed: the original schema was created directly
+-- against the hosted database before this repo tracked migrations. `supabase
+-- db push` refuses to run while remote history contains a version that local
+-- does not, so this file exists to make the two agree.
+--
+-- The alternative the CLI suggests — `migration repair --status reverted
+-- 20260705163039` — rewrites the remote history to claim the migration was
+-- rolled back while its tables remain in the database. That records something
+-- untrue, so it is deliberately not what was done here.
+--
+-- WARNING: because this stub is empty, `supabase db reset` (or any replay from
+-- an empty database) will NOT recreate the baseline schema, and the migrations
+-- that follow will fail against the missing tables. To make a replay work, dump
+-- the real baseline into this file with Docker running:
+--
+--   supabase db dump --schema public -f \
+--     supabase/migrations/20260705163039_baseline_applied_out_of_band.sql
+--
+-- Docker was unavailable when this stub was written, which is why it is a stub.
+
+select 1 where false;
