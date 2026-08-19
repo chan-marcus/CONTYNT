@@ -159,6 +159,8 @@ app.use("/make-server-f5961d0c/creator-links", adminGuard);
 app.use("/make-server-f5961d0c/creator-links/*", adminGuard);
 app.use("/make-server-f5961d0c/business-links", adminGuard);
 app.use("/make-server-f5961d0c/business-links/*", adminGuard);
+app.use("/make-server-f5961d0c/admin/impersonate-creator", adminGuard);
+app.use("/make-server-f5961d0c/admin/impersonate-business", adminGuard);
 // Only the admin panel closes out a feature; it writes to any feature by id.
 app.use("/make-server-f5961d0c/feature-complete", adminGuard);
 
