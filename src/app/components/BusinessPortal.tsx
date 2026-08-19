@@ -239,12 +239,19 @@ function RequestSlotCard({ bizToken, reelsLeft, reelsLimit, onSubmitted }: {
   return (
     <div className={`border rounded-2xl overflow-hidden transition-all cursor-pointer ${expanded ? "bg-white/8 border-white/20" : "bg-white/5 border-white/10 hover:border-white/20"}`}
       onClick={() => setExpanded(v => !v)}>
+      {/* Same header structure as FeatureNoteCard -- dot, then icon and label --
+          so an open slot and an offered feature read as one kind of row. */}
       <div className="px-5 py-4 flex items-center justify-between gap-3">
-        <div className="flex items-center gap-3">
-          <div className="w-7 h-7 rounded-lg bg-gradient-to-br from-purple-500/30 to-pink-500/30 border border-white/10 flex items-center justify-center shrink-0">
-            <Film className="w-3.5 h-3.5 text-pink-300" />
+        <div className="flex items-center gap-3 min-w-0">
+          <span className="w-2.5 h-2.5 rounded-full shrink-0 bg-green-400 animate-pulse" />
+          <div className="min-w-0">
+            <div className="flex items-center gap-2">
+              <div className="w-7 h-7 rounded-lg bg-gradient-to-br from-purple-500/30 to-pink-500/30 border border-white/10 flex items-center justify-center shrink-0">
+                <Film className="w-3.5 h-3.5 text-pink-300" />
+              </div>
+              <p className="text-sm font-semibold text-white">Reel</p>
+            </div>
           </div>
-          <p className="text-sm font-semibold text-white">Reel</p>
         </div>
         <span className="text-xs bg-white/15 text-white border border-white/25 px-2.5 py-1 rounded-full shrink-0">Available</span>
       </div>
