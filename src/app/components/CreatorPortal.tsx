@@ -1,6 +1,6 @@
 import { useEffect, useState, useRef, useLayoutEffect } from "react";
 import { motion, AnimatePresence } from "motion/react";
-import { MapPin, DollarSign, CheckCircle, Lock, X, ExternalLink, AlertCircle, Users, Zap, TrendingUp, Award } from "lucide-react";
+import { MapPin, DollarSign, CheckCircle, X, ExternalLink, AlertCircle, Users, Zap, TrendingUp, Award } from "lucide-react";
 import { projectId, publicAnonKey } from "/utils/supabase/info";
 import { CreatorLogin, CREATOR_TOKEN_KEY } from "./CreatorLogin";
 import { AmbassadorPanel, AmbassadorUpsell, AmbassadorEmptyState, AmbassadorInstructions, useAmbassador,
@@ -633,12 +633,6 @@ function FeatureCard({ feature, claim, token, onClaim, onUnclaim, onAccept, onSu
                   <ExternalLink className="w-3 h-3" />View
                 </a>
               )}
-            </div>
-            <div className="flex items-center justify-between">
-              <button disabled className="flex items-center gap-2 px-4 py-2 bg-neutral-800 text-neutral-500 text-sm rounded-xl cursor-not-allowed border border-white/5">
-                <Lock className="w-3.5 h-3.5" />Cash Out
-              </button>
-              <p className="text-xs text-neutral-500">Available after approval</p>
             </div>
           </>}
 
