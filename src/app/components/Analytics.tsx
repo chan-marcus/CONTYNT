@@ -935,11 +935,18 @@ export function Analytics({ adminToken }: { adminToken?: string } = {}) {
       const res = await apiFetch("/admin/impersonate-business", {
         method: "POST", body: JSON.stringify({ businessId: id }),
       });
-      const d = await res.json().catch(() => null);
+      console.log("Impersonate response status:", res.status);
+      const d = await res.json().catch(() => {
+        console.error("Failed to parse JSON response");
+        return null;
+      });
+      console.log("Impersonate response data:", d);
       if (res.ok && d?.token) {
-        window.open(`${window.location.origin}?biz=${encodeURIComponent(d.token)}&imp=1`, "_blank", "noopener");
+        const url = `${window.location.origin}?biz=${encodeURIComponent(d.token)}&imp=1`;
+        console.log("Opening:", url);
+        window.open(url, "_blank", "noopener");
       } else {
-        console.error("Impersonation failed:", d?.error || `HTTP ${res.status}`);
+        console.error("Impersonation failed - res.ok:", res.ok, "has token:", !!d?.token, "error:", d?.error || `HTTP ${res.status}`);
       }
     } catch (e) {
       console.error("Impersonation error:", e);
