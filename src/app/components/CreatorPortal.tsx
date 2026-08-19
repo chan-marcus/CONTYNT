@@ -877,6 +877,7 @@ function FeatureCard({ feature, claim, token, onClaim, onUnclaim, onAccept, onSu
 // ─── Creator Portal ───────────────────────────────────────────────────────────
 export function CreatorPortal({ token, impersonating }: { token: string; impersonating?: boolean }) {
   const [phase, setPhase] = useState<"loading" | "ready" | "error" | "signedout">("loading");
+  const [requestError, setRequestError] = useState("");
   // The server reports this off the session record. Trusted over the URL flag,
   // which anyone can strip from the address bar.
   const [serverImpersonated, setServerImpersonated] = useState(false);
@@ -1017,14 +1018,31 @@ export function CreatorPortal({ token, impersonating }: { token: string; imperso
     load();
   }, [token]);
 
-  const claimFeature = (featureId: string) => {
+  const claimFeature = async (featureId: string) => {
+    const prev = claims;
     setClaims((p) => {
       const updated = { ...p, [featureId]: { featureId, status: "interested" as const } };
       saveLocalClaims(updated);
       return updated;
     });
     // The server upserts the claim row itself, so no direct SQL write is needed.
-    api("/creator-portal/claim", { method: "POST", body: JSON.stringify({ token, featureId }) }).catch(() => {});
+    // fetch only rejects on a network failure, so the status has to be checked:
+    // this used to be .catch(() => {}) with no res.ok test, which meant a
+    // rejected request -- an expired session, or the read-only admin view --
+    // left the button looking successful while nothing was ever written.
+    try {
+      const res = await api("/creator-portal/claim", { method: "POST", body: JSON.stringify({ token, featureId }) });
+      if (!res.ok) {
+        const d = await res.json().catch(() => null);
+        setClaims(prev);
+        saveLocalClaims(prev);
+        setRequestError(d?.error || "Could not send that request. Please try again.");
+      }
+    } catch {
+      setClaims(prev);
+      saveLocalClaims(prev);
+      setRequestError("Could not reach the server. Please try again.");
+    }
   };
   const acceptFeature = async (featureId: string) => {
     // The server sets the claim status and the expiry window; it returns the
@@ -1241,6 +1259,19 @@ export function CreatorPortal({ token, impersonating }: { token: string; imperso
             </p>
             <button onClick={() => window.close()}
               className="shrink-0 text-xs text-amber-200/70 hover:text-amber-100 whitespace-nowrap">Close</button>
+          </div>
+        </div>
+      )}
+
+      {/* A rejected request used to fail silently, so the button looked like it
+          had worked. The impersonation case lands here with the server's own
+          "read-only admin view" wording. */}
+      {requestError && (
+        <div className="relative z-20 bg-red-500/15 border-b border-red-400/40 px-4 py-2">
+          <div className="max-w-2xl mx-auto flex items-center justify-between gap-3">
+            <p className="text-xs text-red-200">{requestError}</p>
+            <button onClick={() => setRequestError("")}
+              className="shrink-0 text-xs text-red-200/70 hover:text-red-100 whitespace-nowrap">Dismiss</button>
           </div>
         </div>
       )}
