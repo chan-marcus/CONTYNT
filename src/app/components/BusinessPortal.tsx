@@ -644,7 +644,20 @@ export function BusinessPortal({ token }: { token: string }) {
 
   // Free offered features first, then rest
   const freeFeatures = data.publishedFeatures.filter(f => f.isTrial && f.status === "offered");
-  const otherFeatures = data.publishedFeatures.filter(f => !(f.isTrial && f.status === "offered"));
+  // Order by how much the row still wants from the business, so anything
+  // needing a decision sits above anything already running. The server returns
+  // these newest-first, which interleaved live features with open offers.
+  // Array.prototype.sort is stable, so newest-first is preserved within a rank.
+  const FEATURE_ORDER: Record<string, number> = {
+    offered: 0,    // needs the business to accept
+    pending: 1,    // submitted, waiting on us to publish
+    available: 2,  // Live & Active -- running, waiting on a creator
+    completed: 3,  // done
+  };
+  const otherFeatures = data.publishedFeatures
+    .filter(f => !(f.isTrial && f.status === "offered"))
+    .slice()
+    .sort((a, b) => (FEATURE_ORDER[a.status] ?? 9) - (FEATURE_ORDER[b.status] ?? 9));
 
   return (
     <div className="min-h-screen bg-neutral-950 text-white">
