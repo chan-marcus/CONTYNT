@@ -1132,8 +1132,13 @@ app.post("/make-server-f5961d0c/a/:code/lead", async (c) => {
 async function markReelLive(sub: any) {
   const now = new Date().toISOString();
   await db().from("submissions_f5961d0c").update({ status: "approved", approved_at: now }).eq("id", sub.id);
-  await must("approve-reel: complete feature", db().from("features_f5961d0c").update({
-    status: "completed", completed_at: now, winner_instagram: sub.creator_instagram || "",
+  // The winner is settled here, but the Feature is deliberately NOT completed.
+  // Both callers -- the admin sending a Reel to the business, and the business
+  // approving it -- come before any money moves. Only Approve & Add to Balance
+  // (/admin/approve-payout) closes the Feature, so it cannot read as finished
+  // while the creator is still owed.
+  await must("approve-reel: record winner", db().from("features_f5961d0c").update({
+    winner_instagram: sub.creator_instagram || "",
   }).eq("id", sub.feature_id));
   await db().from("creator_claims_f5961d0c").update({ status: "approved" })
     .eq("feature_id", sub.feature_id).eq("creator_token", sub.token);

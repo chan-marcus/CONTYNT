@@ -581,8 +581,9 @@ export function BusinessPortal({ token }: { token: string }) {
 
   const handleFeedback = async (submissionId: string, reaction: "approve" | "report", note?: string) => {
     const now = new Date().toISOString();
-    // The server records the feedback and, on approve, closes out the feature —
-    // the client no longer writes either table itself.
+    // The server records the feedback; the client no longer writes either table
+    // itself. Approving does NOT close the Feature — that happens when an admin
+    // credits the creator via Approve & Add to Balance.
     await fetch(`${BASE}/business-portal/feedback`, {
       method: "POST", headers: { ...AUTH, "Content-Type": "application/json" },
       body: JSON.stringify({ bizToken: token, submissionId, reaction, note }),
@@ -595,11 +596,8 @@ export function BusinessPortal({ token }: { token: string }) {
         ...prev,
         reels: prev.reels.map(r => r.id === submissionId
           ? { ...r, businessFeedback: { reaction, note: note || "", submittedAt: now } } : r),
-        // Approving closes the feature server-side, so reflect that in Your
-        // Features immediately instead of waiting for the next poll.
-        publishedFeatures: reaction === "approve" && featureId
-          ? prev.publishedFeatures.map(f => f.id === featureId ? { ...f, status: "completed" } : f)
-          : prev.publishedFeatures,
+        // The Feature stays as it is: approving the Reel is not the same as the
+        // Feature being finished, which waits on the creator being paid.
         inProgressCreators: reaction === "approve" && featureId
           ? prev.inProgressCreators.filter(c => c.featureId !== featureId)
           : prev.inProgressCreators,
