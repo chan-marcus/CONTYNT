@@ -1774,6 +1774,30 @@ app.post("/make-server-f5961d0c/admin/impersonate-creator", async (c) => {
   } catch (e: any) { return c.json({ error: e.message }, 500); }
 });
 
+// ─── Admin: impersonate a business ────────────────────────────────────────────
+app.post("/make-server-f5961d0c/admin/impersonate-business", async (c) => {
+  try {
+    const { businessId } = await c.req.json();
+    if (!businessId) return c.json({ error: "businessId required" }, 400);
+
+    const { data: biz, error } = await db().from("business_signups_f5961d0c")
+      .select("id, business_name, city").eq("id", businessId).maybeSingle();
+    if (error || !biz) return c.json({ error: "Business not found" }, 404);
+
+    // Create a short-lived impersonation token similar to creator impersonation
+    const token = secureToken(24);
+    const expiresAt = new Date(Date.now() + IMPERSONATE_MINUTES * 60e3).toISOString();
+    await kv.set(`biztoken_${token}`, {
+      businessId: biz.id, businessName: biz.business_name, city: biz.city,
+      createdAt: new Date().toISOString(),
+      impersonated: true, expiresAt,
+    });
+    // Not written to biztokenref_ on purpose: that's the business's real session
+
+    return c.json({ success: true, token, expiresAt, minutes: IMPERSONATE_MINUTES });
+  } catch (e: any) { return c.json({ error: e.message }, 500); }
+});
+
 // ─── Health ───────────────────────────────────────────────────────────────────
 app.get("/make-server-f5961d0c/health", (c) => c.json({ status: "ok" }));
 

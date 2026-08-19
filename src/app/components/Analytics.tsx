@@ -283,8 +283,7 @@ function InlineFeatureEdit({ featureId, category, payoutRange, onSaved }: { feat
   );
 }
 
-function BusinessCard({ signup, bizToken, approved, onApprove, onGenerateLink, onCopyLink, payoutRange, setPayoutRange, category, setCategory, approving, generatingLink, copiedId, bizFeatures, allClaims, onApproveCreatorClaim, onResetCreatorClaim, onFeatureOffered, onRemoveFeature, planClicks = 0 }: any) {
-  const portalUrl = bizToken ? `${window.location.origin}?biz=${bizToken}` : null;
+function BusinessCard({ signup, approved, onApprove, onImpersonate, impersonating, payoutRange, setPayoutRange, category, setCategory, approving, bizFeatures, allClaims, onApproveCreatorClaim, onResetCreatorClaim, onFeatureOffered, onRemoveFeature, planClicks = 0 }: any) {
   const [showAddAnother, setShowAddAnother] = useState(false);
   const [addCategory, setAddCategory] = useState("");
   const [addPayout, setAddPayout] = useState("");
@@ -459,23 +458,10 @@ function BusinessCard({ signup, bizToken, approved, onApprove, onGenerateLink, o
           className="w-full py-2 text-sm bg-blue-600/20 text-blue-300 border border-blue-500/20 rounded-lg hover:bg-blue-600/30 transition-all disabled:opacity-50 flex items-center justify-center gap-2">
           {offeringSaving ? "Sending…" : "🎁 Send Free Feature"}
         </button>
-        {!bizToken ? (
-          <button onClick={onGenerateLink} disabled={generatingLink}
-            className="w-full py-2 bg-white text-neutral-900 text-sm rounded-lg hover:bg-neutral-100 transition-all disabled:opacity-50 flex items-center justify-center gap-2">
-            <Link className="w-4 h-4" />{generatingLink ? "Generating…" : "Generate Business Portal Link"}
-          </button>
-        ) : (
-          <div className="flex gap-2">
-            <a href={portalUrl!} target="_blank" rel="noopener noreferrer"
-              className="flex items-center gap-1.5 text-xs text-blue-400 hover:text-blue-300 font-mono truncate flex-1">
-              <ExternalLink className="w-3 h-3 shrink-0" />{`…?biz=${bizToken.slice(0, 10)}…`}
-            </a>
-            <button onClick={onCopyLink}
-              className="px-3 py-1.5 text-xs bg-white/10 text-neutral-300 rounded-lg hover:bg-white/15 transition-all flex items-center gap-1 shrink-0">
-              <Copy className="w-3 h-3" />{copiedId ? "Copied!" : "Copy Link"}
-            </button>
-          </div>
-        )}
+        <button onClick={onImpersonate} disabled={impersonating}
+          className="w-full py-2 bg-white text-neutral-900 text-sm rounded-lg hover:bg-neutral-100 transition-all disabled:opacity-50 flex items-center justify-center gap-2">
+          <Eye className="w-4 h-4" />{impersonating ? "Opening…" : "View as business"}
+        </button>
       </div>
     </div>
   );
@@ -673,7 +659,6 @@ export function Analytics({ adminToken }: { adminToken?: string } = {}) {
   const [pageViews, setPageViews] = useState<PageView[]>([]);
   const [stats, setStats] = useState<{ totalSignups: number; totalBusinessSignups: number } | null>(null);
   const [creatorLinks, setCreatorLinks] = useState<Record<string, string>>({});
-  const [bizLinks, setBizLinks] = useState<Record<string, string>>({});
   const [approvedBusinesses, setApprovedBusinesses] = useState<Set<string>>(new Set());
   const [features, setFeatures] = useState<Feature[]>([]);
   const [claims, setClaims] = useState<Claim[]>([]);
@@ -681,8 +666,7 @@ export function Analytics({ adminToken }: { adminToken?: string } = {}) {
   const [categories, setCategories] = useState<Record<string, string>>({});
   const [impersonatingId, setImpersonatingId] = useState<string | null>(null);
   const [approvingBiz, setApprovingBiz] = useState<string | null>(null);
-  const [generatingBizLink, setGeneratingBizLink] = useState<string | null>(null);
-  const [copiedBiz, setCopiedBiz] = useState<string | null>(null);
+  const [impersonatingBizId, setImpersonatingBizId] = useState<string | null>(null);
   const [approvingReel, setApprovingReel] = useState<string | null>(null);
   const [fetchingMetrics, setFetchingMetrics] = useState<string | null>(null);
   const [adminLink, setAdminLink] = useState("");
@@ -782,13 +766,12 @@ export function Analytics({ adminToken }: { adminToken?: string } = {}) {
   const fetchAll = useCallback(async () => {
     setLoading(true);
     try {
-      const [statsRes, signupsRes, bizRes, subsRes, linksRes, bizLinksRes, featuresRows, claimsRes, payoutRes] = await Promise.all([
+      const [statsRes, signupsRes, bizRes, subsRes, linksRes, featuresRows, claimsRes, payoutRes] = await Promise.all([
         apiFetch("/analytics/stats"),
         apiFetch("/signups"),
         apiFetch("/business-signups"),
         apiFetch("/admin/submissions"),
         apiFetch("/creator-links"),
-        apiFetch("/business-links"),
         apiFetch("/admin/features"),
         apiFetch("/admin/claims"),
         apiFetch("/admin/payout-requests"),
@@ -838,7 +821,6 @@ export function Analytics({ adminToken }: { adminToken?: string } = {}) {
         setSubmissions(Array.from(seen.values()));
       }
       if (linksRes.ok) { const d = await linksRes.json(); setCreatorLinks(d.links || {}); }
-      if (bizLinksRes.ok) { const d = await bizLinksRes.json(); setBizLinks(d.links || {}); }
       // The server returns camelCase for the fields it renames and snake_case
       // for the ones the admin UI reads verbatim, so accept either.
       if (featuresRows.ok) {
@@ -947,16 +929,18 @@ export function Analytics({ adminToken }: { adminToken?: string } = {}) {
     }
     setApprovingBiz(null);
   };
-  const generateBizLink = async (id: string) => {
-    setGeneratingBizLink(id);
-    const res = await apiFetch(`/business-links/${id}`, { method: "POST" });
-    const d = await res.json();
-    if (res.ok) setBizLinks((p) => ({ ...p, [id]: d.token }));
-    setGeneratingBizLink(null);
-  };
-  const copyBizLink = (token: string, id: string) => {
-    navigator.clipboard.writeText(`${window.location.origin}?biz=${token}`);
-    setCopiedBiz(id); setTimeout(() => setCopiedBiz(null), 2000);
+  const impersonateBusiness = async (id: string) => {
+    setImpersonatingBizId(id);
+    try {
+      const res = await apiFetch("/admin/impersonate-business", {
+        method: "POST", body: JSON.stringify({ businessId: id }),
+      });
+      const d = await res.json().catch(() => null);
+      if (res.ok && d?.token) {
+        window.open(`${window.location.origin}?biz=${encodeURIComponent(d.token)}&imp=1`, "_blank", "noopener");
+      }
+    } catch { /* button returns to idle below */ }
+    setImpersonatingBizId(null);
   };
   // These three already had server endpoints doing the same writes; the direct
   // SQL calls alongside them were redundant.
@@ -1158,18 +1142,15 @@ export function Analytics({ adminToken }: { adminToken?: string } = {}) {
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 {businessSignups.map((b) => (
                   <BusinessCard key={b.id} signup={b}
-                    bizToken={bizLinks[b.id]}
                     approved={approvedBusinesses.has(b.id)}
                     payoutRange={payoutRanges[b.id] || ""}
                     setPayoutRange={(v: string) => setPayoutRanges((p) => ({ ...p, [b.id]: v }))}
                     category={categories[b.id] || ""}
                     setCategory={(v: string) => setCategories((p) => ({ ...p, [b.id]: v }))}
                     onApprove={(cat?: string, payout?: string, fid?: string, notes?: string) => approveBusiness(b.id, cat, payout, fid, notes)}
-                    onGenerateLink={() => generateBizLink(b.id)}
-                    onCopyLink={() => copyBizLink(bizLinks[b.id], b.id)}
+                    onImpersonate={() => impersonateBusiness(b.id)}
+                    impersonating={impersonatingBizId === b.id}
                     approving={approvingBiz === b.id}
-                    generatingLink={generatingBizLink === b.id}
-                    copiedId={copiedBiz === b.id}
                     planClicks={planClicksMap[b.id] || 0}
                     bizFeatures={features.filter(f => f.businessId === b.id)}
                     allClaims={claims}
