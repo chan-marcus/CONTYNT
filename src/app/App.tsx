@@ -18,7 +18,6 @@ import { CreatorLogin, CREATOR_TOKEN_KEY } from "./components/CreatorLogin";
 import { ReferralLanding } from "./components/ReferralLanding";
 import { CreatorSubmissionPending } from "./components/CreatorSubmissionPending";
 import { BusinessPortal } from "./components/BusinessPortal";
-import faviconUrl from "../imports/favicon_(1)-1.png";
 import { projectId, publicAnonKey } from "/utils/supabase/info";
 
 // Generate or retrieve visitor ID
@@ -73,15 +72,6 @@ export default function App() {
     // land after each portal's own title effect and overwrite it.
     if (!isLanding) return;
     document.title = "CONTYNT | Local Creator Network";
-
-    // Set favicon
-    const existingLink = document.querySelector("link[rel*='icon']");
-    if (existingLink) existingLink.remove();
-    const link = document.createElement("link");
-    link.type = "image/png";
-    link.rel = "icon";
-    link.href = faviconUrl;
-    document.head.appendChild(link);
 
     // Helper to upsert a <meta> tag
     const setMeta = (attrs: Record<string, string>) => {

@@ -16,7 +16,7 @@ export const CREATOR_TOKEN_KEY = "contynt_creator_token";
 export function CreatorLogin({ onSignedIn }: { onSignedIn?: (token: string, needsConfirm: boolean) => void }) {
   // Named here too, so signing out does not flip the tab back to the marketing
   // title. App.tsx's title effect is unreachable on /app.
-  useEffect(() => { document.title = "Creator Sign In | CONTYNT"; }, []);
+  useEffect(() => { document.title = "CONTYNT | Creator Sign In"; }, []);
   const [step, setStep] = useState<"email" | "code">("email");
   const [email, setEmail] = useState("");
   const [code, setCode] = useState("");

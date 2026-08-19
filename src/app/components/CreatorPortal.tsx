@@ -888,9 +888,9 @@ export function CreatorPortal({ token, impersonating }: { token: string; imperso
   // portal routes return before it.
   useEffect(() => {
     const who = creator?.instagram?.replace(/^@+/, "");
-    document.title = phase === "signedout" ? "Creator Sign In | CONTYNT"
-      : who ? `@${who} · Creator Portal | CONTYNT`
-      : "Creator Portal | CONTYNT";
+    document.title = phase === "signedout" ? "CONTYNT | Creator Sign In"
+      : who ? `CONTYNT | @${who} · Creator Portal`
+      : "CONTYNT | Creator Portal";
   }, [creator?.instagram, phase]);
   const [features, setFeatures] = useState<Feature[]>([]);
   const [claims, setClaims] = useState<Record<string, Claim>>({});

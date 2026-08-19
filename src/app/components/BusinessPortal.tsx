@@ -421,8 +421,8 @@ export function BusinessPortal({ token }: { token: string }) {
   // runs on this route: it returns <BusinessPortal> before reaching it.
   useEffect(() => {
     document.title = data?.businessName
-      ? `${data.businessName} · Business Portal | CONTYNT`
-      : "Business Portal | CONTYNT";
+      ? `CONTYNT | ${data.businessName} · Business Portal`
+      : "CONTYNT | Business Portal";
   }, [data?.businessName]);
   const [bizId, setBizId] = useState<string>("");
   const [loading, setLoading] = useState(true);
