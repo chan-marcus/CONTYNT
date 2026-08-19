@@ -2936,7 +2936,7 @@ app.get("/make-server-f5961d0c/business-portal", async (c) => {
     result.instagram = (bizInfo as any)?.instagram || "";
     result.email = (bizInfo as any)?.email || "";
     result.planClicks = (bizInfo as any)?.plan_clicks || 0;
-    const featRes = await db().from("features_f5961d0c").select("id, category, payout_range, status, approved_at, business_notes, is_trial, request_notes, submitted_by_business").eq("business_id", bizId).order("offered_at", { ascending: false });
+    const featRes = await db().from("features_f5961d0c").select("id, category, payout_range, status, approved_at, business_notes, is_trial, is_one_off, request_notes, submitted_by_business").eq("business_id", bizId).order("offered_at", { ascending: false });
     const featureIds: string[] = (featRes.data ?? []).map((f: any) => String(f.id));
     result.publishedFeatures = (featRes.data ?? []).map((f: any) => ({ id: f.id, category: f.category, payoutRange: f.payout_range, status: f.status, approvedAt: f.approved_at || null, businessNotes: f.business_notes || "", isTrial: f.is_trial || false, isOneOff: f.is_one_off || false, requestNotes: f.request_notes || "", submittedByBusiness: f.submitted_by_business || false }));
     if (featureIds.length === 0) return c.json(result);
