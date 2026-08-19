@@ -3,7 +3,7 @@ import { motion } from "motion/react";
 import { ExternalLink, CheckCircle, AlertCircle, Star, ThumbsUp, ThumbsDown, ArrowRight, Film, ChevronDown,
          MapPin, Mail, Instagram, CalendarDays, Clock, TrendingUp } from "lucide-react";
 import { projectId, publicAnonKey } from "/utils/supabase/info";
-import { countQuotaUsed, quotaLimit, quotaRemaining, openRequestSlots } from "../lib/featureQuota";
+import { countQuotaUsed, countOpenOffers, quotaLimit, quotaRemaining, openRequestSlots } from "../lib/featureQuota";
 
 const BASE = `https://${projectId}.supabase.co/functions/v1/make-server-f5961d0c`;
 const AUTH = { Authorization: `Bearer ${publicAnonKey}` };
@@ -325,7 +325,10 @@ function FeatureNoteCard({ feature: f, bizPortalData: data, bizToken, onNoteSave
       onClick={isOffered && !submitted ? () => setExpanded(v => !v) : undefined}>
       <div className="px-5 py-4 flex items-center justify-between gap-3">
         <div className="flex items-center gap-3 min-w-0">
-          <span className={`w-2.5 h-2.5 rounded-full shrink-0 ${dotColor}`} />
+          {/* The dot means "this row needs you". Once the offer is accepted the
+              card goes neutral and the dot goes with it, so a list of settled
+              features does not keep signalling for attention. */}
+          {isOffered && !submitted && <span className={`w-2.5 h-2.5 rounded-full shrink-0 ${dotColor}`} />}
           <div className="min-w-0">
             <div className="flex items-center gap-2">
               <div className="w-7 h-7 rounded-lg bg-gradient-to-br from-purple-500/30 to-pink-500/30 border border-white/10 flex items-center justify-center shrink-0">
@@ -763,9 +766,12 @@ export function BusinessPortal({ token }: { token: string }) {
           const reelsUsedNow = countQuotaUsed(data.publishedFeatures);
           const reelsLeftNow = quotaRemaining(data.reelsLimit || 0, data.publishedFeatures);
           const openSlots = openRequestSlots(data.reelsLimit || 0, data.publishedFeatures);
-          const totalFeatures = (data.publishedFeatures?.length || 0) + openSlots;
-          const newFeaturesCount = data.publishedFeatures?.filter(f => f.status === "available" || f.status === "offered").length || 0;
-          const featuresUnread = newFeaturesCount > featuresSeen;
+          // The badge counts rows still waiting on the business -- unaccepted
+          // offers plus open request slots -- so it falls as they are dealt
+          // with, matching the dots. Settled features stay in the list but stop
+          // being advertised on the tab.
+          const actionableFeatures = countOpenOffers(data.publishedFeatures) + openSlots;
+          const featuresUnread = actionableFeatures > featuresSeen;
 
           const submissionsTotal = data.reels.length + (data.inProgressCreators?.filter(rc => !data.reels.some(r => r.featureId === rc.featureId)).length || 0) + (data.requestingCreators?.length || 0) + visibleFakes;
           const unreviewedReels = data.reels.filter(r => !r.businessFeedback).length;
@@ -779,7 +785,7 @@ export function BusinessPortal({ token }: { token: string }) {
             <div className="flex flex-wrap items-center gap-y-2 border-b border-white/10 mb-4">
               {(["features", "submissions"] as const).map(tab => {
                 const isActive = bizTab === tab;
-                const count = tab === "features" ? totalFeatures : submissionsTotal;
+                const count = tab === "features" ? actionableFeatures : submissionsTotal;
                 const unread = tab === "features" ? featuresUnread : submissionsUnread;
                 const label = tab === "features" ? "Your Features" : "Creator Submissions";
                 return (
@@ -789,8 +795,8 @@ export function BusinessPortal({ token }: { token: string }) {
                       setSubmissionsSeen(submissionsTotal);
                       try { localStorage.setItem(submissionsSeenKey, String(submissionsTotal)); } catch {}
                     } else {
-                      setFeaturesSeen(newFeaturesCount);
-                      try { localStorage.setItem(featuresSeenKey, String(newFeaturesCount)); } catch {}
+                      setFeaturesSeen(actionableFeatures);
+                      try { localStorage.setItem(featuresSeenKey, String(actionableFeatures)); } catch {}
                     }
                   }}
                     className={`relative px-3 sm:px-4 py-2.5 text-sm font-medium transition-all border-b-2 -mb-px flex items-center gap-2 whitespace-nowrap ${isActive ? "border-white text-white" : "border-transparent text-neutral-500 hover:text-neutral-300"}`}>
