@@ -3,7 +3,7 @@ import { CheckCircle, Copy, RefreshCw, ExternalLink, ThumbsUp, ThumbsDown, Link,
 import { projectId, publicAnonKey } from "/utils/supabase/info";
 import { AmbassadorAdmin, type AmbassadorAdminData } from "./AmbassadorAdmin";
 import { CreatorReadiness, type ReadinessData } from "./CreatorReadiness";
-import { countQuotaUsed } from "../lib/featureQuota";
+import { countQuotaUsed, quotaLimit, quotaRemaining } from "../lib/featureQuota";
 
 const BASE = `https://${projectId}.supabase.co/functions/v1/make-server-f5961d0c`;
 const AUTH = { Authorization: `Bearer ${publicAnonKey}` };
@@ -22,7 +22,7 @@ interface Signup { id: string; instagram: string; email: string; city: string; c
 interface BusinessSignup { id: string; businessName: string; instagram: string; email: string; city: string; address: string; preferredContact: string; createdAt: string; }
 interface Submission { id: string; featureId: string; creatorInstagram: string; reelUrl: string; status: string; submittedAt: string; reportNote?: string; metrics?: any; businessFeedback?: { reaction: "approve" | "report"; note?: string; submittedAt: string; businessName?: string }; }
 interface PageView { visitorId: string; referrer: string; timestamp: string; country?: string; city?: string; }
-interface Feature { id: string; businessId: string; businessName: string; category: string; payoutRange: string; status: string; total_payout?: string; claimed_by?: string; winner_instagram?: string; claimed_at?: string; isTrial?: boolean; requestNotes?: string; submittedByBusiness?: boolean; }
+interface Feature { id: string; businessId: string; businessName: string; category: string; payoutRange: string; status: string; total_payout?: string; claimed_by?: string; winner_instagram?: string; claimed_at?: string; isTrial?: boolean; isOneOff?: boolean; requestNotes?: string; submittedByBusiness?: boolean; }
 interface BusinessSignupExtended extends BusinessSignup { subscriptionTier?: string; }
 interface Claim { featureId: string; creatorToken: string; creatorInstagram: string; status: string; claimedAt: string; reelUrl?: string; approvedAt?: string; expiresAt?: string; acceptanceExpiresAt?: string; lastViewed?: string; }
 
@@ -296,19 +296,20 @@ function BusinessCard({ signup, approved, onApprove, onImpersonate, impersonatin
   const [offering, setOffering] = useState<null | "trial" | "oneoff">(null);
 
   const tierLimit = TIER_LIMITS[tier] || 0;
+  const totalReels = quotaLimit(tierLimit, bizFeatures || []);
   // Count offered/pending/available/completed features this month as "used"
   const reelsUsed = countQuotaUsed(bizFeatures || []);
 
-  const offerFeature = async (isTrial = false) => {
-    setOffering(isTrial ? "trial" : "oneoff");
+  const offerFeature = async (kind: "trial" | "oneoff") => {
+    setOffering(kind);
     const now = new Date().toISOString();
     // The server builds the row from the business record and returns the id.
     const res = await apiFetch("/admin/offer-feature", {
-      method: "POST", body: JSON.stringify({ businessId: signup.id, isTrial }),
+      method: "POST", body: JSON.stringify({ businessId: signup.id, isTrial: kind === "trial", isOneOff: kind === "oneoff" }),
     }).catch(() => null);
     const newId = (await res?.json().catch(() => null))?.featureId || "";
     if (newId) {
-      onFeatureOffered?.({ id: newId, businessId: signup.id, businessName: signup.businessName || "", category: "", payoutRange: "", status: "offered", isTrial, offeredAt: now });
+      onFeatureOffered?.({ id: newId, businessId: signup.id, businessName: signup.businessName || "", category: "", payoutRange: "", status: "offered", isTrial: kind === "trial", isOneOff: kind === "oneoff", offeredAt: now });
     }
     setOffering(null);
   };
@@ -357,8 +358,8 @@ function BusinessCard({ signup, approved, onApprove, onImpersonate, impersonatin
           {TIERS.map(t => <option key={t} value={t}>{t} ({TIER_LIMITS[t]} Reel{TIER_LIMITS[t] !== 1 ? "s" : ""}/mo)</option>)}
         </select>
         {tier && (
-          <span className={`text-xs px-2 py-1 rounded-lg border shrink-0 ${reelsUsed >= tierLimit ? "bg-red-500/10 text-red-400 border-red-500/20" : "bg-white/5 text-neutral-400 border-white/10"}`}>
-            {reelsUsed} of {tierLimit} used
+          <span className={`text-xs px-2 py-1 rounded-lg border shrink-0 ${reelsUsed >= totalReels ? "bg-red-500/10 text-red-400 border-red-500/20" : "bg-white/5 text-neutral-400 border-white/10"}`}>
+            {reelsUsed} of {totalReels} used
           </span>
         )}
       </div>
@@ -456,14 +457,14 @@ function BusinessCard({ signup, approved, onApprove, onImpersonate, impersonatin
 
       {/* Bottom actions */}
       <div className="pt-2 border-t border-white/10 space-y-2">
-        <button onClick={() => offerFeature(true)} disabled={!!offering}
+        <button onClick={() => offerFeature("trial")} disabled={!!offering}
           className="w-full py-2 text-sm bg-blue-600/20 text-blue-300 border border-blue-500/20 rounded-lg hover:bg-blue-600/30 transition-all disabled:opacity-50 flex items-center justify-center gap-2">
           {offering === "trial" ? "Sending…" : "🎁 Send Free Feature"}
         </button>
         {/* Same call as above with is_trial false, so it counts against the
             business's monthly quota rather than being a giveaway. Purple to
             match how paid/completed features read elsewhere in this panel. */}
-        <button onClick={() => offerFeature(false)} disabled={!!offering}
+        <button onClick={() => offerFeature("oneoff")} disabled={!!offering}
           className="w-full py-2 text-sm bg-purple-600/20 text-purple-300 border border-purple-500/20 rounded-lg hover:bg-purple-600/30 transition-all disabled:opacity-50 flex items-center justify-center gap-2">
           {offering === "oneoff" ? "Sending…" : "🎟️ Add One-Time Feature"}
         </button>
@@ -847,6 +848,7 @@ export function Analytics({ adminToken }: { adminToken?: string } = {}) {
           winner_instagram: f.winner_instagram || "",
           claimed_at: f.claimed_at || "",
           isTrial: f.isTrial ?? f.is_trial ?? false,
+          isOneOff: f.isOneOff ?? f.is_one_off ?? false,
           requestNotes: f.requestNotes || f.request_notes || "",
           submittedByBusiness: f.submittedByBusiness ?? f.submitted_by_business ?? false,
           admin_notes: f.admin_notes || "",

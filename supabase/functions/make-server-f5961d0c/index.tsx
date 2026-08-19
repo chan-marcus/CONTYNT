@@ -1979,7 +1979,7 @@ app.post("/make-server-f5961d0c/admin/set-tier", async (c) => {
 // ─── Admin: offer a feature to a business (Enable Feature / Free Feature) ────
 app.post("/make-server-f5961d0c/admin/offer-feature", async (c) => {
   try {
-    const { businessId, isTrial } = await c.req.json();
+    const { businessId, isTrial, isOneOff } = await c.req.json();
     if (!businessId) return c.json({ error: "businessId required" }, 400);
     const { data: biz, error } = await db().from("business_signups_f5961d0c").select("id, business_name, address, city, subscription_tier").eq("id", businessId).single();
     if (error || !biz) return c.json({ error: "Business not found" }, 404);
@@ -1987,7 +1987,8 @@ app.post("/make-server-f5961d0c/admin/offer-feature", async (c) => {
     await db().from("features_f5961d0c").insert({
       id: featureId, business_id: businessId, business_name: biz.business_name,
       address: biz.address || "", city: biz.city || "",
-      status: "offered", is_trial: !!isTrial, offered_at: new Date().toISOString(),
+      status: "offered", is_trial: !!isTrial, is_one_off: !!isOneOff,
+      offered_at: new Date().toISOString(),
       category: "", payout_range: "",
     });
     return c.json({ success: true, featureId });
@@ -2112,7 +2113,8 @@ app.get("/make-server-f5961d0c/admin/features", async (c) => {
       address: r.address || "", city: r.city || "",
       category: r.category || "", payoutRange: r.payout_range || "",
       status: r.status || "", approvedAt: r.approved_at,
-      isTrial: r.is_trial || false, requestNotes: r.request_notes || "",
+      isTrial: r.is_trial || false, isOneOff: r.is_one_off || false,
+      requestNotes: r.request_notes || "",
       submittedByBusiness: r.submitted_by_business || false,
       admin_notes: r.admin_notes || "", total_payout: r.total_payout || "",
       claimed_by: r.claimed_by || "", winner_instagram: r.winner_instagram || "",
@@ -2940,7 +2942,7 @@ app.get("/make-server-f5961d0c/business-portal", async (c) => {
     result.planClicks = (bizInfo as any)?.plan_clicks || 0;
     const featRes = await db().from("features_f5961d0c").select("id, category, payout_range, status, approved_at, business_notes, is_trial, request_notes, submitted_by_business").eq("business_id", bizId).order("offered_at", { ascending: false });
     const featureIds: string[] = (featRes.data ?? []).map((f: any) => String(f.id));
-    result.publishedFeatures = (featRes.data ?? []).map((f: any) => ({ id: f.id, category: f.category, payoutRange: f.payout_range, status: f.status, approvedAt: f.approved_at || null, businessNotes: f.business_notes || "", isTrial: f.is_trial || false, requestNotes: f.request_notes || "", submittedByBusiness: f.submitted_by_business || false }));
+    result.publishedFeatures = (featRes.data ?? []).map((f: any) => ({ id: f.id, category: f.category, payoutRange: f.payout_range, status: f.status, approvedAt: f.approved_at || null, businessNotes: f.business_notes || "", isTrial: f.is_trial || false, isOneOff: f.is_one_off || false, requestNotes: f.request_notes || "", submittedByBusiness: f.submitted_by_business || false }));
     if (featureIds.length === 0) return c.json(result);
 
     const [subsRes, claimsRes] = await Promise.allSettled([

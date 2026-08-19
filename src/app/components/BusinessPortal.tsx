@@ -3,7 +3,7 @@ import { motion } from "motion/react";
 import { ExternalLink, CheckCircle, AlertCircle, Star, ThumbsUp, ThumbsDown, ArrowRight, Film, ChevronDown,
          MapPin, Mail, Instagram, CalendarDays, Clock, TrendingUp } from "lucide-react";
 import { projectId, publicAnonKey } from "/utils/supabase/info";
-import { countQuotaUsed } from "../lib/featureQuota";
+import { countQuotaUsed, quotaLimit, quotaRemaining } from "../lib/featureQuota";
 
 const BASE = `https://${projectId}.supabase.co/functions/v1/make-server-f5961d0c`;
 const AUTH = { Authorization: `Bearer ${publicAnonKey}` };
@@ -47,7 +47,7 @@ interface Reel {
 }
 interface RequestingCreator { featureId: string; instagram: string; requestedAt: string; }
 interface InProgressCreator { featureId: string; instagram: string; approvedAt: string; expiresAt: string; }
-interface PublishedFeature { id: string; category: string; payoutRange: string; status: string; approvedAt?: string; businessNotes?: string; isTrial?: boolean; requestNotes?: string; submittedByBusiness?: boolean; }
+interface PublishedFeature { id: string; category: string; payoutRange: string; status: string; approvedAt?: string; businessNotes?: string; isTrial?: boolean; isOneOff?: boolean; requestNotes?: string; submittedByBusiness?: boolean; }
 interface BizData {
   businessName: string; city: string; address?: string; instagram?: string; email?: string;
   reels: Reel[]; requestingCreators: RequestingCreator[]; inProgressCreators: InProgressCreator[];
@@ -288,9 +288,11 @@ function FeatureNoteCard({ feature: f, bizPortalData: data, bizToken, onNoteSave
   const label = isCompleted ? "Completed" : isPending ? "Submitted" : hasInProgress ? "In Progress" : isOffered ? "Available" : "Live & Active";
   const dotColor = isCompleted ? "bg-green-400" : isPending ? "bg-yellow-400" : hasInProgress ? "bg-blue-400 animate-pulse" : isOffered ? "bg-green-400 animate-pulse" : "bg-blue-400 animate-pulse";
   const badgeColor = isCompleted ? "bg-green-500/15 text-green-400 border-green-500/25" : isPending ? "bg-yellow-500/15 text-yellow-400 border-yellow-500/25" : hasInProgress ? "bg-blue-500/15 text-blue-400 border-blue-500/25" : isOffered ? "bg-white/15 text-white border-white/25" : "bg-blue-500/15 text-blue-400 border-blue-500/25";
-  const reelsLimit = data.reelsLimit || 0;
+  // Includes one-off purchases, so a business with no tier but a bought
+  // Reel still sees the allowance line.
+  const totalReels = quotaLimit(data.reelsLimit || 0, data.publishedFeatures);
   // Derived, never stored: see the note in lib/featureQuota.
-  const reelsUsed = countQuotaUsed(data.publishedFeatures);
+  const reelsLeft = quotaRemaining(data.reelsLimit || 0, data.publishedFeatures);
 
   const submitRequest = async () => {
     setSubmitting(true);
@@ -351,9 +353,9 @@ function FeatureNoteCard({ feature: f, bizPortalData: data, bizToken, onNoteSave
         <div className="px-5 pb-5 space-y-4 border-t border-white/10 pt-4" onClick={e => e.stopPropagation()} onMouseDown={e => e.stopPropagation()}>
           {f.isTrial ? (
             <p className="text-xs text-neutral-500">This is a free feature.</p>
-          ) : reelsLimit > 0 ? (
+          ) : totalReels > 0 ? (
             <p className="text-xs text-neutral-500">
-              This will use <span className="text-white font-medium">1</span> of your <span className="text-white font-medium">{reelsLimit - reelsUsed}</span> available Reels this month.
+              This will use <span className="text-white font-medium">1</span> of your <span className="text-white font-medium">{reelsLeft}</span> available Reels this month.
             </p>
           ) : null}
           <div className="space-y-1.5">
@@ -466,11 +468,12 @@ export function BusinessPortal({ token }: { token: string }) {
     const publishedFeatures: PublishedFeature[] = (json.publishedFeatures || []).map((f: any) => ({
       id: f.id, category: f.category || "", payoutRange: f.payoutRange || "",
       status: f.status || "offered", approvedAt: f.approvedAt || null,
-      businessNotes: f.businessNotes || "", isTrial: f.isTrial || false,
+      businessNotes: f.businessNotes || "", isTrial: f.isTrial || false, isOneOff: f.isOneOff || false,
       requestNotes: f.requestNotes || "", submittedByBusiness: f.submittedByBusiness || false,
     }));
     const subscriptionTier: string | null = json.subscriptionTier || null;
-    const reelsLimit = subscriptionTier ? (TIER_LIMITS_BIZ[subscriptionTier] || 0) : 0;
+    // Tier allowance only. One-off purchases are added on top by quotaLimit.
+    const tierLimit = subscriptionTier ? (TIER_LIMITS_BIZ[subscriptionTier] || 0) : 0;
     // Derived from features rather than the stored counter, matching what the
     // portal displayed before.
     const completedFeatureIds = new Set(publishedFeatures.filter(f => f.status === "completed").map(f => f.id));
@@ -485,7 +488,7 @@ export function BusinessPortal({ token }: { token: string }) {
       .filter((c: any) => !completedFeatureIds.has(c.featureId))
       .map((c: any) => ({ featureId: c.featureId, instagram: c.instagram || "", approvedAt: c.approvedAt || "", expiresAt: "" }));
     return {
-      publishedFeatures, reelsLimit, subscriptionTier, reels,
+      publishedFeatures, reelsLimit: tierLimit, subscriptionTier, reels,
       requestingCreators, inProgressCreators,
       address: json.address || "", instagram: json.instagram || "",
       email: json.email || "", planClicks: json.planClicks || 0,
@@ -747,8 +750,9 @@ export function BusinessPortal({ token }: { token: string }) {
           // Derived from the features themselves, so submitting a request
           // updates the quota purely by changing that feature's status. The
           // old stored counter was bumped by hand in three places and drifted.
+          const totalReels = quotaLimit(data.reelsLimit || 0, data.publishedFeatures);
           const reelsUsedNow = countQuotaUsed(data.publishedFeatures);
-          const reelsLeftNow = Math.max(0, (data.reelsLimit || 0) - reelsUsedNow);
+          const reelsLeftNow = quotaRemaining(data.reelsLimit || 0, data.publishedFeatures);
           const totalFeatures = (data.publishedFeatures?.length || 0) + reelsLeftNow;
           const newFeaturesCount = data.publishedFeatures?.filter(f => f.status === "available" || f.status === "offered").length || 0;
           const featuresUnread = newFeaturesCount > featuresSeen;
@@ -795,9 +799,9 @@ export function BusinessPortal({ token }: { token: string }) {
                   <svg className={`w-3 h-3 ${refreshing ? "animate-spin" : ""}`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" /></svg>
                   {refreshing ? "Updating…" : "Refresh"}
                 </button>
-                {data.reelsLimit ? (
-                  <span className={`text-xs px-3 py-1 rounded-full border ${reelsUsedNow >= (data.reelsLimit || 0) ? "bg-red-500/10 text-red-400 border-red-500/20" : "bg-white/5 text-neutral-400 border-white/10"}`}>
-                    Available Reels: {reelsLeftNow} of {data.reelsLimit}
+                {totalReels > 0 ? (
+                  <span className={`text-xs px-3 py-1 rounded-full border ${reelsUsedNow >= totalReels ? "bg-red-500/10 text-red-400 border-red-500/20" : "bg-white/5 text-neutral-400 border-white/10"}`}>
+                    Available Reels: {reelsLeftNow} of {totalReels}
                   </span>
                 ) : null}
               </div>
