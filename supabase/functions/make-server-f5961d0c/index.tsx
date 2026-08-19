@@ -112,15 +112,12 @@ async function validAdminToken(token: string): Promise<boolean> {
 // Creator portal links are bearer secrets: possession of the token is the only
 // credential. Every route that reads or writes a creator's rows must check it,
 // otherwise any caller can act as an arbitrary creator.
-// Impersonation is deliberately read only. An admin is looking at the portal to
-// see what the creator sees; letting that view claim a Feature, submit a Reel or
-// request a cash-out on the creator's behalf turns a glance into an action taken
-// under someone else's name.
-function impersonationBlock(creatorData: any): { error: string } | null {
-  return creatorData?.impersonated
-    ? { error: "Read-only admin view. Sign in as the creator to make changes." }
-    : null;
-}
+// Impersonation is full access on purpose: an admin viewing a creator's portal
+// can claim Features, submit Reels and request payouts exactly as the creator
+// would. Writes made this way are indistinguishable from the creator's own, so
+// the audit trail is the admin_impersonated event recorded in creator_events
+// when the token is minted -- it says an admin held a session for that creator,
+// but not which rows they touched.
 
 async function creatorFromToken(token: string): Promise<any | null> {
   if (!token) return null;
@@ -252,12 +249,13 @@ app.get("/make-server-f5961d0c/creator-portal/ambassador", async (c) => {
 // same referral code, so printables and QR codes already handed out stay valid.
 app.post("/make-server-f5961d0c/creator-portal/ambassador/enable", async (c) => {
   try {
-    const { token } = await c.req.json();
-    if (!token) return c.json({ error: "token required" }, 400);
-    const creatorData = await creatorFromToken(token);
+    const { token: rawToken } = await c.req.json();
+    if (!rawToken) return c.json({ error: "token required" }, 400);
+    const creatorData = await creatorFromToken(rawToken);
     if (!creatorData?.creatorId) return c.json({ error: "Invalid or expired link" }, 401);
-    const blocked = impersonationBlock(creatorData);
-    if (blocked) return c.json(blocked, 403);
+    // Impersonation writes must land on the creator's own rows, not on the
+    // short lived admin token, which expires in an hour and is in no index.
+    const token = creatorData.realToken ?? rawToken;
 
     // Delegates to the single consent writer so this route cannot leave
     // enabled_status set while ambassador_opted_in stays false.
@@ -694,12 +692,13 @@ app.get("/make-server-f5961d0c/creator-portal/confirm-data", async (c) => {
 app.post("/make-server-f5961d0c/creator-portal/confirm", async (c) => {
   try {
     const body = await c.req.json();
-    const { token } = body;
-    if (!token) return c.json({ error: "token required" }, 400);
-    const creatorData = await creatorFromToken(token);
+    const { token: rawToken } = body;
+    if (!rawToken) return c.json({ error: "token required" }, 400);
+    const creatorData = await creatorFromToken(rawToken);
     if (!creatorData?.creatorId) return c.json({ error: "Invalid or expired link" }, 401);
-    const blocked = impersonationBlock(creatorData);
-    if (blocked) return c.json(blocked, 403);
+    // Impersonation writes must land on the creator's own rows, not on the
+    // short lived admin token, which expires in an hour and is in no index.
+    const token = creatorData.realToken ?? rawToken;
 
     const { data: creator } = await db().from("creator_signups_f5961d0c")
       .select("*").eq("id", creatorData.creatorId).maybeSingle();
@@ -779,12 +778,13 @@ app.post("/make-server-f5961d0c/creator-portal/confirm", async (c) => {
 // confirm so it can be flipped with one POST without resubmitting the form.
 app.post("/make-server-f5961d0c/creator-portal/ambassador/toggle", async (c) => {
   try {
-    const { token, optIn } = await c.req.json();
-    if (!token || typeof optIn !== "boolean") return c.json({ error: "token and optIn required" }, 400);
-    const creatorData = await creatorFromToken(token);
+    const { token: rawToken, optIn } = await c.req.json();
+    if (!rawToken || typeof optIn !== "boolean") return c.json({ error: "token and optIn required" }, 400);
+    const creatorData = await creatorFromToken(rawToken);
     if (!creatorData?.creatorId) return c.json({ error: "Invalid or expired link" }, 401);
-    const blocked = impersonationBlock(creatorData);
-    if (blocked) return c.json(blocked, 403);
+    // Impersonation writes must land on the creator's own rows, not on the
+    // short lived admin token, which expires in an hour and is in no index.
+    const token = creatorData.realToken ?? rawToken;
 
     const { data: creator } = await db().from("creator_signups_f5961d0c")
       .select("*").eq("id", creatorData.creatorId).maybeSingle();
@@ -2362,12 +2362,13 @@ app.get("/make-server-f5961d0c/creator-portal", async (c) => {
 // Interested — marks creator as interested, SQL only
 app.post("/make-server-f5961d0c/creator-portal/claim", async (c) => {
   try {
-    const { token, featureId } = await c.req.json();
-    if (!token || !featureId) return c.json({ error: "Token and featureId required" }, 400);
-    const creatorData = await creatorFromToken(token);
+    const { token: rawToken, featureId } = await c.req.json();
+    if (!rawToken || !featureId) return c.json({ error: "Token and featureId required" }, 400);
+    const creatorData = await creatorFromToken(rawToken);
     if (!creatorData) return c.json({ error: "Invalid or expired link" }, 401);
-    const blocked = impersonationBlock(creatorData);
-    if (blocked) return c.json(blocked, 403);
+    // Impersonation writes must land on the creator's own rows, not on the
+    // short lived admin token, which expires in an hour and is in no index.
+    const token = creatorData.realToken ?? rawToken;
     const instagram = creatorData.instagram || "";
     const now = new Date().toISOString();
     await db().from("creator_claims_f5961d0c").upsert({ feature_id: featureId, creator_token: token, creator_instagram: instagram, status: "interested", claimed_at: now, interested_at: now }, { onConflict: "feature_id,creator_token" });
@@ -2395,12 +2396,13 @@ app.post("/make-server-f5961d0c/admin/approve-creator-claim", async (c) => {
 // Creator accepts the feature → starts 7-day in-progress countdown
 app.post("/make-server-f5961d0c/creator-portal/accept-feature", async (c) => {
   try {
-    const { token, featureId } = await c.req.json();
-    if (!token || !featureId) return c.json({ error: "token and featureId required" }, 400);
-    const creatorData = await creatorFromToken(token);
+    const { token: rawToken, featureId } = await c.req.json();
+    if (!rawToken || !featureId) return c.json({ error: "token and featureId required" }, 400);
+    const creatorData = await creatorFromToken(rawToken);
     if (!creatorData) return c.json({ error: "Invalid or expired link" }, 401);
-    const blocked = impersonationBlock(creatorData);
-    if (blocked) return c.json(blocked, 403);
+    // Impersonation writes must land on the creator's own rows, not on the
+    // short lived admin token, which expires in an hour and is in no index.
+    const token = creatorData.realToken ?? rawToken;
     const now = new Date();
     const expiresAt = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000).toISOString();
     await db().from("creator_claims_f5961d0c").update({ status: "claimed", expires_at: expiresAt, claimed_at: now.toISOString() }).eq("creator_token", token).eq("feature_id", featureId);
@@ -2419,12 +2421,13 @@ app.post("/make-server-f5961d0c/admin/reset-creator-claim", async (c) => {
 
 app.post("/make-server-f5961d0c/creator-portal/unclaim", async (c) => {
   try {
-    const { token, featureId } = await c.req.json();
-    if (!token || !featureId) return c.json({ error: "Token and featureId required" }, 400);
-    const creatorData = await creatorFromToken(token);
+    const { token: rawToken, featureId } = await c.req.json();
+    if (!rawToken || !featureId) return c.json({ error: "Token and featureId required" }, 400);
+    const creatorData = await creatorFromToken(rawToken);
     if (!creatorData) return c.json({ error: "Invalid or expired link" }, 401);
-    const blocked = impersonationBlock(creatorData);
-    if (blocked) return c.json(blocked, 403);
+    // Impersonation writes must land on the creator's own rows, not on the
+    // short lived admin token, which expires in an hour and is in no index.
+    const token = creatorData.realToken ?? rawToken;
     await db().from("creator_claims_f5961d0c").update({ status: "unclaimed", unclaimed_at: new Date().toISOString() }).eq("creator_token", token).eq("feature_id", featureId);
     return c.json({ success: true });
   } catch (e: any) { return c.json({ error: "Failed to unclaim", details: e.message }, 500); }
@@ -2432,12 +2435,13 @@ app.post("/make-server-f5961d0c/creator-portal/unclaim", async (c) => {
 
 app.post("/make-server-f5961d0c/creator-portal/submit", async (c) => {
   try {
-    const { token, featureId, reelUrl, instagram, handedOff, handoffReason } = await c.req.json();
-    if (!token || !featureId || !reelUrl) return c.json({ error: "token, featureId, and reelUrl required" }, 400);
-    const creatorData = await creatorFromToken(token);
+    const { token: rawToken, featureId, reelUrl, instagram, handedOff, handoffReason } = await c.req.json();
+    if (!rawToken || !featureId || !reelUrl) return c.json({ error: "token, featureId, and reelUrl required" }, 400);
+    const creatorData = await creatorFromToken(rawToken);
     if (!creatorData) return c.json({ error: "Invalid or expired link" }, 401);
-    const blocked = impersonationBlock(creatorData);
-    if (blocked) return c.json(blocked, 403);
+    // Impersonation writes must land on the creator's own rows, not on the
+    // short lived admin token, which expires in an hour and is in no index.
+    const token = creatorData.realToken ?? rawToken;
     const creatorInstagram = creatorData.instagram || instagram || "";
     const creatorId = creatorData.creatorId || "";
 
@@ -2472,12 +2476,13 @@ app.post("/make-server-f5961d0c/creator-portal/submit", async (c) => {
 // ─── Creator portal: record feature view — SQL only ──────────────────────────
 app.post("/make-server-f5961d0c/creator-portal/view-feature", async (c) => {
   try {
-    const { token, featureId } = await c.req.json();
-    if (!token || !featureId) return c.json({ ok: true });
-    const creatorData = await creatorFromToken(token);
+    const { token: rawToken, featureId } = await c.req.json();
+    if (!rawToken || !featureId) return c.json({ ok: true });
+    const creatorData = await creatorFromToken(rawToken);
     if (!creatorData) return c.json({ error: "Invalid or expired link" }, 401);
-    const blocked = impersonationBlock(creatorData);
-    if (blocked) return c.json(blocked, 403);
+    // Impersonation writes must land on the creator's own rows, not on the
+    // short lived admin token, which expires in an hour and is in no index.
+    const token = creatorData.realToken ?? rawToken;
     // Try updating last_viewed if row exists, otherwise insert a viewing record
     const { error } = await db().from("creator_claims_f5961d0c").update({ last_viewed: new Date().toISOString() }).eq("creator_token", token).eq("feature_id", featureId);
     if (error) {
@@ -2546,14 +2551,15 @@ app.get("/make-server-f5961d0c/creator-portal/sync", async (c) => {
 // ─── Creator portal: cash out (record payment details) ───────────────────────
 app.post("/make-server-f5961d0c/creator-portal/cash-out", async (c) => {
   try {
-    const { token, featureId, paymentMethod, paymentInfo } = await c.req.json();
-    if (!token || !featureId || !paymentMethod || !paymentInfo) {
+    const { token: rawToken, featureId, paymentMethod, paymentInfo } = await c.req.json();
+    if (!rawToken || !featureId || !paymentMethod || !paymentInfo) {
       return c.json({ error: "token, featureId, paymentMethod, and paymentInfo required" }, 400);
     }
-    const creatorData = await creatorFromToken(token);
+    const creatorData = await creatorFromToken(rawToken);
     if (!creatorData) return c.json({ error: "Invalid token" }, 401);
-    const blocked = impersonationBlock(creatorData);
-    if (blocked) return c.json(blocked, 403);
+    // Impersonation writes must land on the creator's own rows, not on the
+    // short lived admin token, which expires in an hour and is in no index.
+    const token = creatorData.realToken ?? rawToken;
     // Scoped by token so a creator can only cash out their own submission.
     const { error } = await db().from("submissions_f5961d0c")
       .update({ payment_method: paymentMethod, payment_info: paymentInfo, cashed_out_at: new Date().toISOString() })
@@ -2566,12 +2572,13 @@ app.post("/make-server-f5961d0c/creator-portal/cash-out", async (c) => {
 // ─── Creator portal: finish cashing out ──────────────────────────────────────
 app.post("/make-server-f5961d0c/creator-portal/complete-payout", async (c) => {
   try {
-    const { token, featureId, payoutAmount, instagram } = await c.req.json();
-    if (!token || !featureId) return c.json({ error: "token and featureId required" }, 400);
-    const creatorData = await creatorFromToken(token);
+    const { token: rawToken, featureId, payoutAmount, instagram } = await c.req.json();
+    if (!rawToken || !featureId) return c.json({ error: "token and featureId required" }, 400);
+    const creatorData = await creatorFromToken(rawToken);
     if (!creatorData) return c.json({ error: "Invalid token" }, 401);
-    const blocked = impersonationBlock(creatorData);
-    if (blocked) return c.json(blocked, 403);
+    // Impersonation writes must land on the creator's own rows, not on the
+    // short lived admin token, which expires in an hour and is in no index.
+    const token = creatorData.realToken ?? rawToken;
     const ig = creatorData.instagram || instagram || "";
     const now = new Date().toISOString();
     await db().from("submissions_f5961d0c")
@@ -2849,12 +2856,13 @@ app.post("/make-server-f5961d0c/admin/deny-submission", async (c) => {
 // ─── Creator portal: request a cash out ──────────────────────────────────────
 app.post("/make-server-f5961d0c/creator-portal/request-payout", async (c) => {
   try {
-    const { token, method, handle } = await c.req.json();
-    if (!token || !method || !handle) return c.json({ error: "token, method, and handle required" }, 400);
-    const creatorData = await creatorFromToken(token);
+    const { token: rawToken, method, handle } = await c.req.json();
+    if (!rawToken || !method || !handle) return c.json({ error: "token, method, and handle required" }, 400);
+    const creatorData = await creatorFromToken(rawToken);
     if (!creatorData) return c.json({ error: "Invalid or expired link" }, 401);
-    const blocked = impersonationBlock(creatorData);
-    if (blocked) return c.json(blocked, 403);
+    // Impersonation writes must land on the creator's own rows, not on the
+    // short lived admin token, which expires in an hour and is in no index.
+    const token = creatorData.realToken ?? rawToken;
     if (!["PayPal", "Venmo", "Zelle"].includes(method)) return c.json({ error: "Unsupported payout method" }, 400);
 
     // The amount comes from the ledger, never from the client — otherwise a
@@ -2878,12 +2886,13 @@ app.post("/make-server-f5961d0c/creator-portal/request-payout", async (c) => {
 // ─── Creator portal: update email ────────────────────────────────────────────
 app.post("/make-server-f5961d0c/creator-portal/update-email", async (c) => {
   try {
-    const { token, email } = await c.req.json();
-    if (!token || !email) return c.json({ error: "token and email required" }, 400);
-    const creatorData = await creatorFromToken(token);
+    const { token: rawToken, email } = await c.req.json();
+    if (!rawToken || !email) return c.json({ error: "token and email required" }, 400);
+    const creatorData = await creatorFromToken(rawToken);
     if (!creatorData) return c.json({ error: "Invalid token" }, 401);
-    const blocked = impersonationBlock(creatorData);
-    if (blocked) return c.json(blocked, 403);
+    // Impersonation writes must land on the creator's own rows, not on the
+    // short lived admin token, which expires in an hour and is in no index.
+    const token = creatorData.realToken ?? rawToken;
     await db().from("creator_signups_f5961d0c").update({ email }).eq("id", creatorData.creatorId);
     await kv.set(`ctoken_${token}`, { ...creatorData, email });
     return c.json({ success: true });
@@ -2893,12 +2902,13 @@ app.post("/make-server-f5961d0c/creator-portal/update-email", async (c) => {
 // ─── Creator portal: request payout ──────────────────────────────────────────
 app.post("/make-server-f5961d0c/creator-portal/payout", async (c) => {
   try {
-    const { token, submissionId, featureId, payoutRange } = await c.req.json();
-    if (!token || !submissionId) return c.json({ error: "token and submissionId required" }, 400);
-    const creatorData = await creatorFromToken(token);
+    const { token: rawToken, submissionId, featureId, payoutRange } = await c.req.json();
+    if (!rawToken || !submissionId) return c.json({ error: "token and submissionId required" }, 400);
+    const creatorData = await creatorFromToken(rawToken);
     if (!creatorData) return c.json({ error: "Invalid or expired link" }, 401);
-    const blocked = impersonationBlock(creatorData);
-    if (blocked) return c.json(blocked, 403);
+    // Impersonation writes must land on the creator's own rows, not on the
+    // short lived admin token, which expires in an hour and is in no index.
+    const token = creatorData.realToken ?? rawToken;
     const { error } = await db().from("creator_payouts_f5961d0c").insert({ creator_token: token, submission_id: submissionId, feature_id: featureId, payout_range: payoutRange || "" });
     if (error) throw error;
     return c.json({ success: true });
