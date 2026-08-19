@@ -243,7 +243,7 @@ function RequestSlotCard({ bizToken, reelsLeft, reelsLimit, onSubmitted }: {
           <div className="w-7 h-7 rounded-lg bg-gradient-to-br from-purple-500/30 to-pink-500/30 border border-white/10 flex items-center justify-center shrink-0">
             <Film className="w-3.5 h-3.5 text-pink-300" />
           </div>
-          <p className="text-sm font-semibold text-white">Instagram Reel</p>
+          <p className="text-sm font-semibold text-white">Reel</p>
         </div>
         <span className="text-xs bg-white/15 text-white border border-white/25 px-2.5 py-1 rounded-full shrink-0">Available</span>
       </div>
@@ -318,10 +318,11 @@ function FeatureNoteCard({ feature: f, bizPortalData: data, bizToken, onNoteSave
               <div className="w-7 h-7 rounded-lg bg-gradient-to-br from-purple-500/30 to-pink-500/30 border border-white/10 flex items-center justify-center shrink-0">
                 <Film className="w-3.5 h-3.5 text-pink-300" />
               </div>
-              {/* The category is what distinguishes one feature from another.
-                  Every card said "Instagram Reel", so a list of them was
-                  indistinguishable at a glance. */}
-              <p className="text-sm font-semibold text-white truncate">{f.category || "Instagram Reel"}</p>
+              {/* Deliberately a fixed label. `category` is free text the admin
+                  types for internal use ("Cafe", and worse), so it is not fit
+                  for the business's own view of their features. The date below
+                  and the status badge do the distinguishing. */}
+              <p className="text-sm font-semibold text-white">Reel</p>
             </div>
             <p className="text-xs text-neutral-500">
               {!isOffered || submitted ? (f.approvedAt ? new Date(f.approvedAt).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" }) : "") : ""}
