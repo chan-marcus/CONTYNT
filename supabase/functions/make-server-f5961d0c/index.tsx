@@ -53,9 +53,16 @@ async function creatorBalance(token: string) {
   }
   const round = (n: number) => Math.round(n * 100) / 100;
   return {
+    // Balance still owed to the creator, in-flight requests included.
     totalEarned: round(Math.max(0, credits - paid)),
+    // Requested and waiting to be sent.
     pendingEarnings: round(requested),
+    // Free to cash out right now.
     availableEarnings: round(Math.max(0, credits - paid - requested)),
+    // Lifetime figures, for the wallet breakdown. These only ever go up, so
+    // they are the honest answer to "how much have I made with CONTYNT".
+    lifetimeEarned: round(credits),
+    lifetimePaid: round(paid),
   };
 }
 

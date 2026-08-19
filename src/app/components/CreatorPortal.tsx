@@ -23,7 +23,11 @@ interface Feature {
 
 interface Claim { featureId: string; status: "interested" | "admin_approved" | "claimed" | "submitted" | "approved" | "cashed_out" | "denied"; reelUrl?: string; stripeLink?: string; payoutAmount?: string; deniedNote?: string; approvedAt?: string; expiresAt?: string; acceptanceExpiresAt?: string; }
 interface PayoutInfo { stripeLink: string; payoutAmount: string; submissionId: string; }
-interface PortalStats { completed: number; activeClaims: number; totalPayout: number; creatorScore?: number; }
+interface PortalStats {
+  completed: number; activeClaims: number; totalPayout: number; creatorScore?: number;
+  availableEarnings?: number; pendingEarnings?: number;
+  lifetimeEarned?: number; lifetimePaid?: number;
+}
 
 // Order of the claim cards in the Features tab: soonest deadline and anything
 // needing the creator to act comes first, then the ones merely waiting on us.
@@ -160,9 +164,16 @@ function LoadingScreen() {
 // ─── Wallet / cash-out modal ─────────────────────────────────────────────────
 const PAYOUT_METHODS = ["PayPal", "Venmo", "Zelle"] as const;
 
-function WalletModal({ available, token, onClose, onRequested }: {
-  available: number; token: string; onClose: () => void; onRequested: () => void;
+function WalletModal({ stats, token, onClose, onRequested }: {
+  stats: PortalStats; token: string; onClose: () => void; onRequested: (amount: number) => void;
 }) {
+  const available = stats.availableEarnings ?? stats.totalPayout ?? 0;
+  const pending = stats.pendingEarnings ?? 0;
+  // Lifetime figures fall back to what is on hand, so an older server that does
+  // not send them yet shows something truthful rather than $0.
+  const lifetime = stats.lifetimeEarned ?? (stats.totalPayout ?? 0);
+  const paidOut = stats.lifetimePaid ?? 0;
+  const money = (n: number) => `$${Math.round(n * 100) / 100}`;
   const [method, setMethod] = useState<string>("");
   const [handle, setHandle] = useState("");
   const [busy, setBusy] = useState(false);
@@ -179,7 +190,7 @@ function WalletModal({ available, token, onClose, onRequested }: {
       });
       const d = await res.json().catch(() => null);
       if (!res.ok) { setError(d?.error || "Could not submit request."); setBusy(false); return; }
-      setDone(true); setBusy(false); onRequested();
+      setDone(true); setBusy(false); onRequested(available);
     } catch { setError("Could not reach the server."); setBusy(false); }
   };
 
@@ -188,19 +199,42 @@ function WalletModal({ available, token, onClose, onRequested }: {
       <div className="w-full max-w-sm bg-neutral-900 border border-white/15 rounded-2xl p-6 space-y-4 relative" onClick={e => e.stopPropagation()}>
         <button onClick={onClose} className="absolute top-6 right-6 text-neutral-500 hover:text-white transition-colors"><X className="w-5 h-5" /></button>
         <div className="text-center space-y-1">
-          <h2 className="text-lg font-bold text-white">Cash Out Earnings</h2>
-          <p className="text-xs text-neutral-400">Available balance</p>
+          <h2 className="text-lg font-bold text-white">Your Earnings</h2>
+          <p className="text-xs text-neutral-400">Available to cash out</p>
         </div>
 
-        <p className="text-3xl font-bold text-green-400 text-center">${available}</p>
+        <p className={`text-3xl font-bold text-center ${available > 0 ? "text-green-400" : "text-neutral-500"}`}>{money(available)}</p>
+
+        {/* The full picture, so "available" reading low is explained rather than
+            looking like earnings went missing. */}
+        <div className="bg-white/5 border border-white/10 rounded-xl divide-y divide-white/10">
+          {pending > 0 && (
+            <div className="flex items-center justify-between px-3.5 py-2.5">
+              <span className="text-xs text-neutral-400">On the way</span>
+              <span className="text-sm font-semibold text-yellow-400">{money(pending)}</span>
+            </div>
+          )}
+          <div className="flex items-center justify-between px-3.5 py-2.5">
+            <span className="text-xs text-neutral-400">Total earned</span>
+            <span className="text-sm font-semibold text-neutral-200">{money(lifetime)}</span>
+          </div>
+          {paidOut > 0 && (
+            <div className="flex items-center justify-between px-3.5 py-2.5">
+              <span className="text-xs text-neutral-400">Already paid out</span>
+              <span className="text-sm font-semibold text-neutral-300">{money(paidOut)}</span>
+            </div>
+          )}
+        </div>
 
         {done ? (
           <div className="bg-green-500/10 border border-green-500/25 rounded-xl p-4 space-y-1 text-center">
             <p className="text-sm font-semibold text-green-300">Payout requested</p>
-            <p className="text-xs text-neutral-400">We'll send ${available} to your {method} ({handle}). You'll get a confirmation once it's sent.</p>
+            <p className="text-xs text-neutral-400">We'll send {money(available)} to your {method} ({handle}). You'll get a confirmation once it's sent.</p>
           </div>
         ) : available <= 0 ? (
-          <p className="text-sm text-neutral-400 text-balance text-center">Nothing to cash out yet.</p>
+          <p className="text-sm text-neutral-400 text-balance text-center">
+            {pending > 0 ? "Your cash out is on its way." : "Nothing to cash out yet."}
+          </p>
         ) : (
           <>
             <div className="space-y-1.5">
@@ -227,7 +261,7 @@ function WalletModal({ available, token, onClose, onRequested }: {
             {error && <p className="text-xs text-red-400">{error}</p>}
             <button onClick={submit} disabled={!method || !handle.trim() || busy}
               className="w-full py-3 bg-green-500 hover:bg-green-400 text-white text-sm font-semibold rounded-xl transition-all disabled:opacity-40">
-              {busy ? "Submitting…" : `Request $${available}`}
+              {busy ? "Submitting…" : `Request ${money(available)}`}
             </button>
           </>
         )}
@@ -300,7 +334,12 @@ function StatsBar({ stats, instagram, onOpenWallet, earnedGlow }: {
   // Two different signals share this tile. hasMoney is the steady state — there
   // is a balance sitting there — while earnedGlow is the transient pulse set
   // when the balance rises, and it clears once the wallet is opened.
-  const hasMoney = (stats.totalPayout ?? 0) > 0;
+  // The tile shows what is actually cashable. totalPayout is the balance still
+  // owed, which includes money already requested, so it kept reading $15 after
+  // a cash-out request had taken that $15 out of reach.
+  const available = stats.availableEarnings ?? stats.totalPayout ?? 0;
+  const pending = stats.pendingEarnings ?? 0;
+  const hasMoney = available > 0;
 
   return (
     <div className="grid grid-cols-3 gap-3">
@@ -350,7 +389,12 @@ function StatsBar({ stats, instagram, onOpenWallet, earnedGlow }: {
             something the creator has failed at. */}
         <p className={`text-2xl font-bold ${
           earnedGlow ? "text-green-300" : hasMoney ? "text-green-400" : "text-neutral-500"
-        }`}>${stats.totalPayout}</p>
+        }`}>${available}</p>
+        {/* Money in flight is still theirs, so say so rather than letting the
+            tile look like the balance vanished. */}
+        {pending > 0 && (
+          <p className="text-[10px] text-yellow-400/90 mt-0.5 leading-tight">${pending} on the way</p>
+        )}
       </div>
     </div>
   );
@@ -1439,10 +1483,20 @@ export function CreatorPortal({ token, impersonating }: { token: string; imperso
         {/* Features tab */}
         {walletOpen && (
           <WalletModal
-            available={(stats as any).availableEarnings ?? stats.totalPayout ?? 0}
+            stats={stats}
             token={token}
             onClose={() => setWalletOpen(false)}
-            onRequested={() => { setEarnedGlow(false); }}
+            onRequested={(amount) => {
+              setEarnedGlow(false);
+              // Move it from available to pending straight away: the money is
+              // spoken for, so the Earned tile should stop offering it rather
+              // than waiting for the next load to catch up.
+              setStats(p => ({
+                ...p,
+                availableEarnings: 0,
+                pendingEarnings: (p.pendingEarnings ?? 0) + amount,
+              }));
+            }}
           />
         )}
 
