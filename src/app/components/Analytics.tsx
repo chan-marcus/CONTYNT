@@ -3,6 +3,7 @@ import { CheckCircle, Copy, RefreshCw, ExternalLink, ThumbsUp, ThumbsDown, Link,
 import { projectId, publicAnonKey } from "/utils/supabase/info";
 import { AmbassadorAdmin, type AmbassadorAdminData } from "./AmbassadorAdmin";
 import { CreatorReadiness, type ReadinessData } from "./CreatorReadiness";
+import { countQuotaUsed } from "../lib/featureQuota";
 
 const BASE = `https://${projectId}.supabase.co/functions/v1/make-server-f5961d0c`;
 const AUTH = { Authorization: `Bearer ${publicAnonKey}` };
@@ -296,7 +297,7 @@ function BusinessCard({ signup, approved, onApprove, onImpersonate, impersonatin
 
   const tierLimit = TIER_LIMITS[tier] || 0;
   // Count offered/pending/available/completed features this month as "used"
-  const reelsUsed = (bizFeatures || []).filter((f: any) => ["pending","available","completed"].includes(f.status) && !f.isTrial).length;
+  const reelsUsed = countQuotaUsed(bizFeatures || []);
 
   const offerFeature = async (isTrial = false) => {
     setOffering(isTrial ? "trial" : "oneoff");

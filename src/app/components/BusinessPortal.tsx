@@ -3,6 +3,7 @@ import { motion } from "motion/react";
 import { ExternalLink, CheckCircle, AlertCircle, Star, ThumbsUp, ThumbsDown, ArrowRight, Film, ChevronDown,
          MapPin, Mail, Instagram, CalendarDays, Clock, TrendingUp } from "lucide-react";
 import { projectId, publicAnonKey } from "/utils/supabase/info";
+import { countQuotaUsed } from "../lib/featureQuota";
 
 const BASE = `https://${projectId}.supabase.co/functions/v1/make-server-f5961d0c`;
 const AUTH = { Authorization: `Bearer ${publicAnonKey}` };
@@ -50,7 +51,7 @@ interface PublishedFeature { id: string; category: string; payoutRange: string; 
 interface BizData {
   businessName: string; city: string; address?: string; instagram?: string; email?: string;
   reels: Reel[]; requestingCreators: RequestingCreator[]; inProgressCreators: InProgressCreator[];
-  publishedFeatures: PublishedFeature[]; reelsLimit?: number; reelsUsed?: number; subscriptionTier?: string;
+  publishedFeatures: PublishedFeature[]; reelsLimit?: number; subscriptionTier?: string;
   planClicks?: number;
 }
 
@@ -284,11 +285,12 @@ function FeatureNoteCard({ feature: f, bizPortalData: data, bizToken, onNoteSave
   const isCompleted = f.status === "completed";
   const isOffered = f.status === "offered";
   const isPending = f.status === "pending";
-  const label = isCompleted ? "Completed" : isPending ? "Submitted" : hasInProgress ? "In Progress" : isOffered ? "New Feature Available" : "Live & Active";
+  const label = isCompleted ? "Completed" : isPending ? "Submitted" : hasInProgress ? "In Progress" : isOffered ? "Available" : "Live & Active";
   const dotColor = isCompleted ? "bg-green-400" : isPending ? "bg-yellow-400" : hasInProgress ? "bg-blue-400 animate-pulse" : isOffered ? "bg-green-400 animate-pulse" : "bg-blue-400 animate-pulse";
   const badgeColor = isCompleted ? "bg-green-500/15 text-green-400 border-green-500/25" : isPending ? "bg-yellow-500/15 text-yellow-400 border-yellow-500/25" : hasInProgress ? "bg-blue-500/15 text-blue-400 border-blue-500/25" : isOffered ? "bg-white/15 text-white border-white/25" : "bg-blue-500/15 text-blue-400 border-blue-500/25";
   const reelsLimit = data.reelsLimit || 0;
-  const reelsUsed = data.reelsUsed || 0;
+  // Derived, never stored: see the note in lib/featureQuota.
+  const reelsUsed = countQuotaUsed(data.publishedFeatures);
 
   const submitRequest = async () => {
     setSubmitting(true);
@@ -330,7 +332,11 @@ function FeatureNoteCard({ feature: f, bizPortalData: data, bizToken, onNoteSave
           </div>
         </div>
         <div className="flex items-center gap-2 shrink-0">
-          {isOffered && !submitted ? (
+          {/* Gated on isTrial, not just isOffered. A one-time feature is a paid
+              offer, so labelling it "Free Feature" told the business something
+              untrue. Non-trial offers now fall through to the normal badge,
+              which already had a "New Feature Available" branch for them. */}
+          {isOffered && !submitted && f.isTrial ? (
             <span className="text-xs px-2.5 py-1 rounded-full border bg-green-500/15 text-green-300 border-green-500/30 font-medium"
               style={{ animation: "freeFeaturePulse 3s ease-in-out infinite" }}>
               🎁 Free Feature
@@ -467,7 +473,6 @@ export function BusinessPortal({ token }: { token: string }) {
     const reelsLimit = subscriptionTier ? (TIER_LIMITS_BIZ[subscriptionTier] || 0) : 0;
     // Derived from features rather than the stored counter, matching what the
     // portal displayed before.
-    const reelsUsed = publishedFeatures.filter(f => ["pending", "available", "completed"].includes(f.status) && !f.isTrial).length;
     const completedFeatureIds = new Set(publishedFeatures.filter(f => f.status === "completed").map(f => f.id));
     const reels: Reel[] = (json.reels || []).map((s: any) => ({
       id: s.id, featureId: s.featureId,
@@ -480,7 +485,7 @@ export function BusinessPortal({ token }: { token: string }) {
       .filter((c: any) => !completedFeatureIds.has(c.featureId))
       .map((c: any) => ({ featureId: c.featureId, instagram: c.instagram || "", approvedAt: c.approvedAt || "", expiresAt: "" }));
     return {
-      publishedFeatures, reelsLimit, reelsUsed, subscriptionTier, reels,
+      publishedFeatures, reelsLimit, subscriptionTier, reels,
       requestingCreators, inProgressCreators,
       address: json.address || "", instagram: json.instagram || "",
       email: json.email || "", planClicks: json.planClicks || 0,
@@ -739,7 +744,12 @@ export function BusinessPortal({ token }: { token: string }) {
 
         {/* Tabbed section */}
         {(data.reelsLimit! > 0 || data.publishedFeatures?.length > 0 || data.reels.length > 0 || (data.inProgressCreators?.length || 0) > 0 || (data.requestingCreators?.length || 0) > 0) && (() => {
-          const totalFeatures = (data.publishedFeatures?.length || 0) + Math.max(0, (data.reelsLimit || 0) - (data.reelsUsed || 0));
+          // Derived from the features themselves, so submitting a request
+          // updates the quota purely by changing that feature's status. The
+          // old stored counter was bumped by hand in three places and drifted.
+          const reelsUsedNow = countQuotaUsed(data.publishedFeatures);
+          const reelsLeftNow = Math.max(0, (data.reelsLimit || 0) - reelsUsedNow);
+          const totalFeatures = (data.publishedFeatures?.length || 0) + reelsLeftNow;
           const newFeaturesCount = data.publishedFeatures?.filter(f => f.status === "available" || f.status === "offered").length || 0;
           const featuresUnread = newFeaturesCount > featuresSeen;
 
@@ -786,8 +796,8 @@ export function BusinessPortal({ token }: { token: string }) {
                   {refreshing ? "Updating…" : "Refresh"}
                 </button>
                 {data.reelsLimit ? (
-                  <span className={`text-xs px-3 py-1 rounded-full border ${data.reelsUsed! >= data.reelsLimit ? "bg-red-500/10 text-red-400 border-red-500/20" : "bg-white/5 text-neutral-400 border-white/10"}`}>
-                    Available Reels: {data.reelsLimit - (data.reelsUsed || 0)} of {data.reelsLimit}
+                  <span className={`text-xs px-3 py-1 rounded-full border ${reelsUsedNow >= (data.reelsLimit || 0) ? "bg-red-500/10 text-red-400 border-red-500/20" : "bg-white/5 text-neutral-400 border-white/10"}`}>
+                    Available Reels: {reelsLeftNow} of {data.reelsLimit}
                   </span>
                 ) : null}
               </div>
@@ -803,19 +813,17 @@ export function BusinessPortal({ token }: { token: string }) {
                 } : prev)}
                 onSubmitted={id => setData(prev => prev ? {
                   ...prev,
-                  reelsUsed: (prev.reelsUsed || 0) + 1,
                   publishedFeatures: prev.publishedFeatures.map(pf => pf.id === id ? { ...pf, status: "pending", submittedByBusiness: true } : pf)
                 } : prev)} />
             ))}
             {/* Request slots */}
-            {Array.from({ length: Math.max(0, (data.reelsLimit || 0) - (data.reelsUsed || 0)) }).map((_, i) => (
+            {Array.from({ length: reelsLeftNow }).map((_, i) => (
               <RequestSlotCard key={`slot-${i}`}
                 bizToken={token}
-                reelsLeft={(data.reelsLimit || 0) - (data.reelsUsed || 0)}
+                reelsLeft={reelsLeftNow}
                 reelsLimit={data.reelsLimit || 0}
                 onSubmitted={(newId, notes) => setData(prev => prev ? {
                   ...prev,
-                  reelsUsed: (prev.reelsUsed || 0) + 1,
                   publishedFeatures: [...prev.publishedFeatures, {
                     id: newId, category: "", payoutRange: "", status: "pending",
                     submittedByBusiness: true, isTrial: false, requestNotes: notes,
@@ -830,7 +838,6 @@ export function BusinessPortal({ token }: { token: string }) {
                 } : prev)}
                 onSubmitted={id => setData(prev => prev ? {
                   ...prev,
-                  reelsUsed: (prev.reelsUsed || 0) + 1,
                   publishedFeatures: prev.publishedFeatures.map(pf => pf.id === id ? { ...pf, status: "pending", submittedByBusiness: true } : pf)
                 } : prev)} />
             ))}
