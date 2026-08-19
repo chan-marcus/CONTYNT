@@ -3,7 +3,7 @@ import { motion } from "motion/react";
 import { ExternalLink, CheckCircle, AlertCircle, Star, ThumbsUp, ThumbsDown, ArrowRight, Film, ChevronDown,
          MapPin, Mail, Instagram, CalendarDays, Clock, TrendingUp } from "lucide-react";
 import { projectId, publicAnonKey } from "/utils/supabase/info";
-import { countQuotaUsed, quotaLimit, quotaRemaining } from "../lib/featureQuota";
+import { countQuotaUsed, quotaLimit, quotaRemaining, openRequestSlots } from "../lib/featureQuota";
 
 const BASE = `https://${projectId}.supabase.co/functions/v1/make-server-f5961d0c`;
 const AUTH = { Authorization: `Bearer ${publicAnonKey}` };
@@ -753,7 +753,8 @@ export function BusinessPortal({ token }: { token: string }) {
           const totalReels = quotaLimit(data.reelsLimit || 0, data.publishedFeatures);
           const reelsUsedNow = countQuotaUsed(data.publishedFeatures);
           const reelsLeftNow = quotaRemaining(data.reelsLimit || 0, data.publishedFeatures);
-          const totalFeatures = (data.publishedFeatures?.length || 0) + reelsLeftNow;
+          const openSlots = openRequestSlots(data.reelsLimit || 0, data.publishedFeatures);
+          const totalFeatures = (data.publishedFeatures?.length || 0) + openSlots;
           const newFeaturesCount = data.publishedFeatures?.filter(f => f.status === "available" || f.status === "offered").length || 0;
           const featuresUnread = newFeaturesCount > featuresSeen;
 
@@ -821,7 +822,7 @@ export function BusinessPortal({ token }: { token: string }) {
                 } : prev)} />
             ))}
             {/* Request slots */}
-            {Array.from({ length: reelsLeftNow }).map((_, i) => (
+            {Array.from({ length: openSlots }).map((_, i) => (
               <RequestSlotCard key={`slot-${i}`}
                 bizToken={token}
                 reelsLeft={reelsLeftNow}

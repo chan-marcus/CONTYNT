@@ -2001,7 +2001,6 @@ app.post("/make-server-f5961d0c/business-portal/submit-feature", async (c) => {
     const { bizToken, featureId, requestNotes, isNewRequest } = await c.req.json();
     const bizData = await businessFromToken(bizToken);
     if (!bizData) return c.json({ error: "Invalid token" }, 401);
-    const now = new Date().toISOString().slice(0, 7); // YYYY-MM
     const notes = requestNotes || "No specific requests, creator's choice";
     let resultFeatureId = featureId || "";
     if (isNewRequest || !featureId) {
@@ -2022,10 +2021,6 @@ app.post("/make-server-f5961d0c/business-portal/submit-feature", async (c) => {
         submitted_by_business: true, submitted_at_biz: new Date().toISOString(),
       }).eq("id", featureId).eq("business_id", bizData.businessId);
     }
-    const reelsRes = await db().from("business_signups_f5961d0c").select("reels_used_this_month, reels_reset_month").eq("id", bizData.businessId).single();
-    const reelsBiz = reelsRes.data as any;
-    const used = reelsBiz?.reels_reset_month === now ? (reelsBiz?.reels_used_this_month || 0) : 0;
-    await db().from("business_signups_f5961d0c").update({ reels_used_this_month: used + 1, reels_reset_month: String(now) }).eq("id", bizData.businessId);
     return c.json({ success: true, featureId: resultFeatureId });
   } catch (e: any) { return c.json({ error: e.message }, 500); }
 });
@@ -2927,13 +2922,14 @@ app.get("/make-server-f5961d0c/business-portal", async (c) => {
 
     // Reels count
     const tierMap: Record<string, number> = { Starter: 1, Growth: 2, Pro: 4, Scale: 8 };
-    const { data: bizInfo } = await db().from("business_signups_f5961d0c").select("subscription_tier, reels_used_this_month, reels_reset_month, address, instagram, email, plan_clicks").eq("id", bizId).single();
+    const { data: bizInfo } = await db().from("business_signups_f5961d0c").select("subscription_tier, address, instagram, email, plan_clicks").eq("id", bizId).single();
     const tier = (bizInfo as any)?.subscription_tier || null;
     const tierLimit = tier ? (tierMap[tier] || 1) : 0;
-    const currentMonth = new Date().toISOString().slice(0, 7);
-    const reelsUsed = (bizInfo as any)?.reels_reset_month === currentMonth ? ((bizInfo as any)?.reels_used_this_month || 0) : 0;
+    // reelsLimit is the tier allowance only. Usage is derived from the
+    // features themselves client-side (lib/featureQuota), which is the single
+    // source of truth; the old stored counter knew nothing about one-off
+    // purchases or withdrawn features and has been dropped.
     result.reelsLimit = tierLimit;
-    result.reelsUsed = reelsUsed;
     result.subscriptionTier = tier;
     // Profile fields the portal used to read straight from PostgREST.
     result.address = (bizInfo as any)?.address || "";

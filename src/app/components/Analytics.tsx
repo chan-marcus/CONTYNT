@@ -3,7 +3,7 @@ import { CheckCircle, Copy, RefreshCw, ExternalLink, ThumbsUp, ThumbsDown, Link,
 import { projectId, publicAnonKey } from "/utils/supabase/info";
 import { AmbassadorAdmin, type AmbassadorAdminData } from "./AmbassadorAdmin";
 import { CreatorReadiness, type ReadinessData } from "./CreatorReadiness";
-import { countQuotaUsed, quotaLimit, quotaRemaining } from "../lib/featureQuota";
+import { countQuotaUsed, quotaLimit } from "../lib/featureQuota";
 
 const BASE = `https://${projectId}.supabase.co/functions/v1/make-server-f5961d0c`;
 const AUTH = { Authorization: `Bearer ${publicAnonKey}` };
