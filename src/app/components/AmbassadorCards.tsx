@@ -66,7 +66,8 @@ export function AmbassadorPrintSheet({ token }: { token: string }) {
     <div className="amb-card" key={i}>
       <div className="amb-inner">
         <div className="amb-brand">C O N T Y N T</div>
-        <div className="amb-lead">A creator filmed here.</div>
+        <div className="amb-lead">A creator filmed a Reel here.</div>
+        <div className="amb-cta">Claim your business dashboard</div>
         <img className="amb-qr" src={qr} alt="" />
         <div className="amb-code">{state.code}</div>
         <div className="amb-sub">Scan the code, or go to<br />{state.url.replace(/^https?:\/\//, "")}</div>
@@ -92,7 +93,9 @@ export function AmbassadorPrintSheet({ token }: { token: string }) {
                    text-align:center;padding:6mm;box-sizing:border-box}
         .amb-brand{font-size:9pt;font-weight:700;letter-spacing:.34em;color:#111}
         .amb-lead{font-size:10pt;color:#525252;margin-top:2mm}
-        .amb-qr{width:46mm;height:46mm;margin:5mm 0 4mm;display:block}
+        /* The reason to scan, set darker than the lead so it reads as the ask. */
+        .amb-cta{font-size:10.5pt;font-weight:600;color:#111;margin-top:1.5mm}
+        .amb-qr{width:44mm;height:44mm;margin:4mm 0 3.5mm;display:block}
         /* The code is the fallback when a camera will not focus, so it is set
            large and monospaced to survive being read across a counter. */
         .amb-code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:26pt;font-weight:700;

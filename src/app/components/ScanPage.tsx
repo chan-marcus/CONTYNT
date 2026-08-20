@@ -183,16 +183,19 @@ export function ScanPage({ code }: { code: string }) {
   if (done) {
     return <Shell>
       <h1 className="text-xl font-bold mb-2">Thanks</h1>
-      <p className="text-sm text-neutral-400">We will email you as soon as the Reel is live.</p>
+      <p className="text-sm text-neutral-400">
+        We'll email you your dashboard link, and the Reel as soon as it goes live.
+      </p>
     </Shell>;
   }
 
   // ── State A ────────────────────────────────────────────────────────────────
   // The code no longer knows which business this is, so the owner names it.
   return <Shell>
-    <h1 className="text-xl font-bold mb-2">A creator filmed here recently</h1>
+    <h1 className="text-xl font-bold mb-2">A creator filmed a Reel here</h1>
     <p className="text-sm text-neutral-400 mb-5">
-      It will be posted this week. Tell us where this is and we will send you the Reel when it goes live.
+      Tell us where this is and we'll set up your business dashboard. You'll get the Reel
+      as soon as it goes live, and you can request more from there.
     </p>
     <form onSubmit={submit} className="flex flex-col gap-2.5 text-left">
       <input id="bizname" value={businessName} onChange={e => { setBusinessName(e.target.value); setPlaceId(""); }}
@@ -204,7 +207,7 @@ export function ScanPage({ code }: { code: string }) {
       {error && <p className="text-xs text-red-400">{error}</p>}
       <button type="submit" disabled={busy}
         className="w-full py-3.5 rounded-xl bg-white text-neutral-900 text-sm font-semibold disabled:opacity-50">
-        {busy ? "Sending…" : "Send me the Reel"}
+        {busy ? "Claiming…" : "Claim your dashboard"}
       </button>
     </form>
   </Shell>;
