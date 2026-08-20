@@ -842,13 +842,6 @@ function FeatureCard({ feature, claim, token, onClaim, onUnclaim, onAccept, onSu
             {isAmbassador && <AmbassadorFeatureActions token={token} onOpened={onCardPrinted} />}
             {showAmbassadorUpsell && <AmbassadorUpsell onLearnMore={onLearnAmbassador!} />}
             </>}
-            {expiresAt && (
-              <div className="bg-white/5 border border-white/10 rounded-xl px-4 py-2.5 space-y-1 text-center">
-                <p className="text-[10px] text-neutral-500 uppercase tracking-widest">Time Remaining</p>
-                <CountdownTimer expiresAt={expiresAt} />
-                <p className="text-[10px] text-neutral-600">Complete your Reel before this expires.</p>
-              </div>
-            )}
             {expanded && <>
             {/* Asked of ambassadors only. Was gated on a per-feature card
                 object, which no longer exists, so it would never have shown. */}
@@ -873,6 +866,19 @@ function FeatureCard({ feature, claim, token, onClaim, onUnclaim, onAccept, onSu
                 </button>
               )}
             </div>
+            </>}
+            {/* Outside the collapsed section, so a collapsed card still shows the
+                deadline. Placed after Submit so an expanded card reads: what to
+                do, then how long is left. Unclaim stays last -- it is the way
+                out, not the next step. */}
+            {expiresAt && (
+              <div className="bg-white/5 border border-white/10 rounded-xl px-4 py-2.5 space-y-1 text-center">
+                <p className="text-[10px] text-neutral-500 uppercase tracking-widest">Time Remaining</p>
+                <CountdownTimer expiresAt={expiresAt} />
+                <p className="text-[10px] text-neutral-600">Complete your Reel before this expires.</p>
+              </div>
+            )}
+            {expanded && <>
             <button onClick={onUnclaim}
               className="w-full py-2 text-xs text-neutral-500 hover:text-neutral-300 transition-all flex items-center justify-center gap-1">
               <X className="w-3 h-3" />Unclaim
