@@ -4,7 +4,7 @@ import { MapPin, DollarSign, CheckCircle, X, ExternalLink, AlertCircle, Users, Z
 import { projectId, publicAnonKey } from "/utils/supabase/info";
 import { CreatorLogin, CREATOR_TOKEN_KEY } from "./CreatorLogin";
 import { AmbassadorPanel, AmbassadorUpsell, AmbassadorEmptyState, AmbassadorInstructions, useAmbassador,
-         useCards, AmbassadorCardStep, HandoffQuestion, type AmbassadorCard } from "./Ambassador";
+         AmbassadorFeatureActions, HandoffQuestion } from "./Ambassador";
 
 const BASE = `https://${projectId}.supabase.co/functions/v1/make-server-f5961d0c`;
 const AUTH = { Authorization: `Bearer ${publicAnonKey}`, "Content-Type": "application/json" };
@@ -443,15 +443,13 @@ function ViewerCount({ featureId }: { featureId: string }) {
 }
 
 // ─── Feature card ─────────────────────────────────────────────────────────────
-function FeatureCard({ feature, claim, token, onClaim, onUnclaim, onAccept, onSubmit, onPayout, fake, claimedBy, myInstagram, needsAttention, onSeen, showAmbassadorUpsell, onLearnAmbassador, isAmbassador, card, cardMeta, onCardPrinted }: {
+function FeatureCard({ feature, claim, token, onClaim, onUnclaim, onAccept, onSubmit, onPayout, fake, claimedBy, myInstagram, needsAttention, onSeen, showAmbassadorUpsell, onLearnAmbassador, isAmbassador, onCardPrinted }: {
   feature: Feature; claim?: Claim; token: string; myInstagram?: string;
   onClaim: () => void; onUnclaim: () => void; onAccept: () => void;
   onSubmit: (url: string, handedOff: boolean | null, handoffReason: string) => void;
   onPayout: (amount?: string) => void; fake?: boolean; claimedBy?: string;
   needsAttention?: boolean; onSeen?: () => void;
   showAmbassadorUpsell?: boolean; onLearnAmbassador?: () => void; isAmbassador?: boolean;
-  card?: AmbassadorCard;
-  cardMeta?: { handoffScript: string; attributionRule: string; unprintedCount: number } | null;
   onCardPrinted?: () => void;
 }) {
   const [reelUrl, setReelUrl] = useState(claim?.reelUrl || "");
@@ -486,7 +484,7 @@ function FeatureCard({ feature, claim, token, onClaim, onUnclaim, onAccept, onSu
     // The server rejects a submission that omits this when a card exists, so
     // catch it here rather than letting the creator watch a success animation
     // and then find out it failed.
-    if (card && handedOff === null) {
+    if (isAmbassador && handedOff === null) {
       setUrlError("Let us know whether you handed off the card.");
       return;
     }
@@ -821,11 +819,9 @@ function FeatureCard({ feature, claim, token, onClaim, onUnclaim, onAccept, onSu
                 <p className="leading-relaxed">{feature.adminNotes}</p>
               </div>
             )}
-            {card && cardMeta && (
-              <AmbassadorCardStep card={card} token={token}
-                script={cardMeta.handoffScript} rule={cardMeta.attributionRule}
-                unprintedCount={cardMeta.unprintedCount} onPrinted={onCardPrinted ?? (() => {})} />
-            )}
+            {/* Only for creators who opted in. The code itself is not shown
+                here -- it lives in the Ambassador tab. */}
+            {isAmbassador && <AmbassadorFeatureActions token={token} onOpened={onCardPrinted} />}
             {showAmbassadorUpsell && <AmbassadorUpsell onLearnMore={onLearnAmbassador!} />}
             {isAmbassador && <AmbassadorInstructions />}
             {/* Sits directly above the countdown and the Submit box, so the
@@ -844,7 +840,9 @@ function FeatureCard({ feature, claim, token, onClaim, onUnclaim, onAccept, onSu
                 <p className="text-[10px] text-neutral-600">Complete your Reel before this expires.</p>
               </div>
             )}
-            {card && (
+            {/* Asked of ambassadors only. Was gated on a per-feature card
+                object, which no longer exists, so it would never have shown. */}
+            {isAmbassador && (
               <HandoffQuestion value={handedOff} onChange={setHandedOff}
                 reason={handoffReason} onReason={setHandoffReason} />
             )}
@@ -985,7 +983,6 @@ export function CreatorPortal({ token, impersonating }: { token: string; imperso
   const ambassador = useAmbassador(token);
   // Cards only exist for opted-in creators, so the fetch is gated on that
   // rather than firing for every creator on every portal load.
-  const { cards, meta: cardMeta, refresh: refreshCards } = useCards(token, !!ambassador.state?.enabled);
   const featSeenKey = `contynt_cr_feats_seen_${token}`;
   const compSeenKey = `contynt_cr_comp_seen_${token}`;
   const actSeenKey  = `contynt_cr_act_seen_${token}`;
@@ -1140,7 +1137,6 @@ export function CreatorPortal({ token, impersonating }: { token: string; imperso
     const instagram = creator?.instagram || "";
     const body = JSON.stringify({ token, featureId, reelUrl, instagram, handedOff, handoffReason });
     api("/creator-portal/submit", { method: "POST", body })
-      .then(() => refreshCards())
       .catch(() => {});
   };
   // One consolidated poll replaces the four separate PostgREST polls this
@@ -1577,7 +1573,7 @@ export function CreatorPortal({ token, impersonating }: { token: string; imperso
                     onClaim={() => claimFeature(fid)} onUnclaim={() => unclaimFeature(fid)}
                     onAccept={() => acceptFeature(fid)}
                     onSubmit={(url, ho, hr) => submitReel(fid, url, ho, hr)}
-                    card={cards[fid]} cardMeta={cardMeta} onCardPrinted={refreshCards} onPayout={(amt) => requestPayout(fid, amt)}
+                    onPayout={(amt) => requestPayout(fid, amt)}
                     fake={false} myInstagram={creator?.instagram || ""} />
                 </motion.div>
               );
@@ -1591,7 +1587,7 @@ export function CreatorPortal({ token, impersonating }: { token: string; imperso
                   onClaim={() => claimFeature(feature.id)} onUnclaim={() => unclaimFeature(feature.id)}
                   onAccept={() => acceptFeature(feature.id)}
                   onSubmit={(url, ho, hr) => submitReel(feature.id, url, ho, hr)}
-                  card={cards[feature.id]} cardMeta={cardMeta} onCardPrinted={refreshCards} onPayout={(amt) => requestPayout(feature.id, amt)}
+                  onPayout={(amt) => requestPayout(feature.id, amt)}
                   fake={false} claimedBy={(feature as any).claimedBy} myInstagram={creator?.instagram || ""} />
               </motion.div>
             ))}

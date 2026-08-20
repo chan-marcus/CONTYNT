@@ -11,6 +11,10 @@ const api = (path: string, opts?: RequestInit) =>
 export interface AmbassadorState {
   enabled: boolean;
   ambassador: { referralCode: string; referralUrl: string; creatorInstagram: string; createdAt: string } | null;
+  // The creator's own ambassador code and its /a/CODE link. The same pair is
+  // printed on the cards and shown on every in-progress Feature.
+  ambassadorCode?: string | null;
+  cardUrl?: string | null;
   stats: { businessesReferred: number; pendingReferrals: number; activeBusinesses: number; rewardsEarned: number; rewardsPending: number } | null;
   referrals: { id: string; businessName: string; status: string; rewardStatus: string; rewardAmount: number; createdAt: string }[];
 }
@@ -217,69 +221,42 @@ export function useCards(token: string, enabled: boolean) {
   return { cards, meta, refresh };
 }
 
-// Shown before the shoot checklist, because the card has to be in the creator's
-// hand before they go, not remembered on the way out.
-export function AmbassadorCardStep({ card, token, script, rule, unprintedCount, onPrinted }: {
-  card: AmbassadorCard; token: string; script: string; rule: string;
-  unprintedCount: number; onPrinted: () => void;
+// The Feature view's ambassador section. Deliberately two buttons and one line
+// of instruction: the code, the copy button, the handoff script and the
+// attribution rules all live in the Ambassador tab, which is the one place they
+// are explained properly. Repeating them on every in-progress Feature made the
+// card the loudest thing on a screen that is really about filming a Reel.
+export function AmbassadorFeatureActions({ token, onOpened }: {
+  token: string; onOpened?: () => void;
 }) {
-  const [copied, setCopied] = useState(false);
   const q = `?t=${encodeURIComponent(token)}`;
   const open = (path: string) => {
     window.open(`${BASE}${path}`, "_blank", "noopener");
-    // printed_at is stamped server-side on first download; refresh so the step
-    // stops nagging once they have actually printed it.
-    setTimeout(onPrinted, 1200);
+    onOpened?.();
   };
 
   return (
     <div className={`${PURPLE_CARD} px-4 py-3.5 space-y-3`}>
-      <div className="flex items-center justify-between gap-2">
-        <div className="flex items-center gap-2">
-          <Printer className="w-4 h-4 text-purple-300" />
-          <p className="text-xs font-semibold text-white uppercase tracking-widest">Print your card</p>
-        </div>
-        {card.printedAt && (
-          <span className="text-[10px] text-green-400 flex items-center gap-1">
-            <Check className="w-3 h-3" />Printed
-          </span>
-        )}
-      </div>
-
       <div className="flex items-center gap-2">
-        <code className="flex-1 text-center text-lg font-bold tracking-[0.2em] bg-black/30 border border-white/10 rounded-lg py-2 text-purple-200">
-          {card.code}
-        </code>
-        <button onClick={() => { navigator.clipboard.writeText(card.code); setCopied(true); setTimeout(() => setCopied(false), 2000); }}
-          className="shrink-0 px-3 py-2 rounded-lg bg-white/10 text-neutral-200 hover:bg-white/15 transition-all">
-          {copied ? <Check className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
-        </button>
+        <Award className="w-4 h-4 text-purple-300" />
+        <p className="text-xs font-semibold text-white uppercase tracking-widest">Ambassador</p>
       </div>
 
       <div className="grid grid-cols-2 gap-2">
-        <button onClick={() => open(`/portal/cards/${card.id}/print${q}`)}
+        <button onClick={() => open(`/portal/ambassador/print${q}`)}
           className="flex items-center justify-center gap-2 py-2.5 text-xs rounded-xl bg-white/5 border border-white/10 text-neutral-200 hover:border-purple-400/40 transition-all">
-          <Printer className="w-3.5 h-3.5" />Print card
+          <Printer className="w-3.5 h-3.5" />Print cards
         </button>
-        <button onClick={() => open(`/portal/cards/${card.id}/screen${q}`)}
+        <button onClick={() => open(`/portal/ambassador/screen${q}`)}
           className="flex items-center justify-center gap-2 py-2.5 text-xs rounded-xl bg-white/5 border border-white/10 text-neutral-200 hover:border-purple-400/40 transition-all">
-          <QrCode className="w-3.5 h-3.5" />Show on screen
+          <QrCode className="w-3.5 h-3.5" />Show QR
         </button>
       </div>
 
-      {unprintedCount > 1 && (
-        <button onClick={() => open(`/portal/cards/${card.id}/print${q}&batch=1`)}
-          className="w-full py-2 text-[11px] text-purple-300 hover:text-purple-200">
-          Print all {unprintedCount} unprinted cards on one sheet
-        </button>
-      )}
-
-      <div className="bg-black/20 border border-white/10 rounded-xl px-3 py-2.5">
-        <p className="text-[10px] uppercase tracking-widest text-neutral-500 mb-1.5">Say this</p>
-        <p className="text-xs text-neutral-300 leading-relaxed italic">"{script}"</p>
-      </div>
-
-      <p className="text-[11px] text-neutral-500 leading-relaxed">{rule}</p>
+      <p className="text-[11px] text-neutral-400 leading-relaxed">
+        Show the owner your Ambassador printable or have them scan your QR code.
+        If there is no owner, leave the printable with an employee or manager.
+      </p>
     </div>
   );
 }
@@ -313,44 +290,15 @@ export function HandoffQuestion({ value, onChange, reason, onReason }: {
   );
 }
 
-// ─── Printable flyer ─────────────────────────────────────────────────────────
-function buildPrintable(instagram: string, url: string, qrDataUri: string): string {
-  const handle = (instagram || "creator").replace(/^@+/, "");
-  // Self-contained so it prints identically from a new window with no styles.
-  return `<!doctype html><html><head><meta charset="utf-8"><title>CONTYNT Ambassador — @${handle}</title>
-<style>
-  *{box-sizing:border-box;margin:0;padding:0}
-  body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Helvetica,Arial,sans-serif;background:#fff;color:#0a0a0a;
-       display:flex;align-items:center;justify-content:center;min-height:100vh;padding:32px}
-  .card{width:100%;max-width:640px;border:2px solid #111;border-radius:24px;padding:48px;text-align:center}
-  .brand{font-size:13px;font-weight:700;letter-spacing:.42em;margin-bottom:32px}
-  h1{font-size:32px;line-height:1.2;font-weight:800;margin-bottom:14px}
-  p.lead{font-size:16px;line-height:1.55;color:#444;margin-bottom:28px}
-  .qr{width:200px;height:200px;margin:0 auto 12px}
-  .scan{font-size:14px;font-weight:600;margin-bottom:26px}
-  .creator{border-top:1px solid #e5e5e5;padding-top:22px;font-size:14px;color:#444}
-  .creator strong{display:block;font-size:17px;color:#0a0a0a;margin-bottom:3px}
-  .url{margin-top:10px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px;color:#666;word-break:break-all}
-  @media print{body{padding:0}.card{border:none}}
-</style></head><body>
-  <div class="card">
-    <div class="brand">C O N T Y N T</div>
-    <h1>Grow your business with authentic local creators.</h1>
-    <p class="lead">Join CONTYNT and connect with creators who help businesses get discovered.</p>
-    <img class="qr" src="${qrDataUri}" alt="Scan to join CONTYNT">
-    <p class="scan">Scan to get started.</p>
-    <div class="creator">
-      <strong>Referred by @${handle}</strong>
-      Your local CONTYNT Ambassador
-      <div class="url">${url}</div>
-    </div>
-  </div>
-</body></html>`;
-}
-
 // ─── Ambassador dashboard (Ambassador Mode on) ───────────────────────────────
-function Dashboard({ state, instagram }: { state: AmbassadorState; instagram: string }) {
+function Dashboard({ state, instagram, token }: { state: AmbassadorState; instagram: string; token: string }) {
   const amb = state.ambassador!;
+  // One code per creator. referralUrl is the older per-ambassador link and is
+  // only a fallback for a state loaded before the server started sending this.
+  const code = state.ambassadorCode || amb.referralCode;
+  const shareUrl = state.cardUrl || amb.referralUrl;
+  const openServer = (path: string) =>
+    window.open(`${BASE}${path}?t=${encodeURIComponent(token)}`, "_blank", "noopener");
   const [qr, setQr] = useState("");
   const [copied, setCopied] = useState(false);
   const [showQr, setShowQr] = useState(false);
@@ -358,26 +306,17 @@ function Dashboard({ state, instagram }: { state: AmbassadorState; instagram: st
   useEffect(() => {
     // Generated from the referral URL itself, so the code and the QR can never
     // disagree.
-    QRCode.toDataURL(amb.referralUrl, { width: 480, margin: 1 })
+    QRCode.toDataURL(shareUrl, { width: 480, margin: 1 })
       .then(setQr).catch(() => setQr(""));
-  }, [amb.referralUrl]);
+  }, [shareUrl]);
 
   const copy = () => {
-    navigator.clipboard.writeText(amb.referralUrl);
+    navigator.clipboard.writeText(shareUrl);
     setCopied(true); setTimeout(() => setCopied(false), 2000);
   };
 
-  const openPrintable = (print: boolean) => {
-    if (!qr) return;
-    const w = window.open("", "_blank");
-    if (!w) return;
-    w.document.write(buildPrintable(instagram, amb.referralUrl, qr));
-    w.document.close();
-    if (print) setTimeout(() => w.print(), 400);
-  };
-
   const share = async () => {
-    const data = { title: "Join CONTYNT", text: "Grow your business with authentic local creators.", url: amb.referralUrl };
+    const data = { title: "Join CONTYNT", text: "Grow your business with authentic local creators.", url: shareUrl };
     // Web Share only exists on most mobile browsers; fall back to copying.
     if (navigator.share) { try { await navigator.share(data); return; } catch { /* cancelled */ } }
     copy();
@@ -386,7 +325,7 @@ function Dashboard({ state, instagram }: { state: AmbassadorState; instagram: st
   const downloadQr = () => {
     if (!qr) return;
     const a = document.createElement("a");
-    a.href = qr; a.download = `contynt-ambassador-${amb.referralCode}.png`; a.click();
+    a.href = qr; a.download = `contynt-ambassador-${code}.png`; a.click();
   };
 
   const s = state.stats!;
@@ -426,11 +365,26 @@ function Dashboard({ state, instagram }: { state: AmbassadorState; instagram: st
           </div>
         )}
 
+        {/* This is the one place the code and the copy button live. The Feature
+            view deliberately shows neither. */}
         <div className="space-y-1.5">
-          <p className="text-[10px] uppercase tracking-widest text-neutral-500">Your referral link</p>
+          <p className="text-[10px] uppercase tracking-widest text-neutral-500">Your ambassador code</p>
+          <div className="flex items-center gap-2">
+            <code className="flex-1 text-center text-lg font-bold tracking-[0.2em] bg-black/30 border border-white/10 rounded-lg py-2 text-purple-200">
+              {code}
+            </code>
+            <button onClick={() => { navigator.clipboard.writeText(code); setCopied(true); setTimeout(() => setCopied(false), 2000); }}
+              className="shrink-0 px-3 py-2 rounded-lg bg-white/10 text-neutral-200 hover:bg-white/15 transition-all">
+              {copied ? <Check className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
+            </button>
+          </div>
+        </div>
+
+        <div className="space-y-1.5">
+          <p className="text-[10px] uppercase tracking-widest text-neutral-500">Your link</p>
           <div className="flex items-center gap-2">
             <code className="flex-1 min-w-0 truncate text-xs bg-black/30 border border-white/10 rounded-lg px-3 py-2 text-purple-200">
-              {amb.referralUrl}
+              {shareUrl}
             </code>
             <button onClick={copy}
               className="shrink-0 px-3 py-2 text-xs rounded-lg bg-white/10 text-neutral-200 hover:bg-white/15 transition-all">
@@ -438,6 +392,28 @@ function Dashboard({ state, instagram }: { state: AmbassadorState; instagram: st
             </button>
           </div>
         </div>
+      </div>
+
+      {/* The full explanation lives here and nowhere else. The Feature view
+          deliberately carries only the one line about handing the card over. */}
+      <div className="bg-white/5 border border-white/10 rounded-2xl p-4 space-y-2.5">
+        <p className="text-[10px] uppercase tracking-widest text-neutral-500">How attribution works</p>
+        <p className="text-xs text-neutral-400 leading-relaxed">
+          Every card and QR you hand out carries this one code, so it does not matter
+          which card a business scans or when they scan it.
+        </p>
+        <p className="text-xs text-neutral-400 leading-relaxed">
+          First scan at a spot wins. One payout per business, ever — if someone else
+          got there first, that business is already theirs.
+        </p>
+        <p className="text-xs text-neutral-400 leading-relaxed">
+          Rewards are approved by the CONTYNT team before they are paid. A scan on its
+          own does not credit anything, and nothing is credited automatically.
+        </p>
+        <p className="text-[11px] text-neutral-500 leading-relaxed">
+          Your cards never show your name, handle or photo. A business only learns who
+          filmed for them once the Reel is live.
+        </p>
       </div>
 
       <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
@@ -455,13 +431,16 @@ function Dashboard({ state, instagram }: { state: AmbassadorState; instagram: st
       <div className="space-y-2">
         <p className="text-[10px] uppercase tracking-widest text-neutral-500">Quick actions</p>
         <div className="grid grid-cols-2 gap-2">
-          <button onClick={() => openPrintable(true)} disabled={!qr}
-            className="flex items-center justify-center gap-2 py-2.5 text-xs rounded-xl bg-white/5 border border-white/10 text-neutral-200 hover:border-purple-400/40 transition-all disabled:opacity-40">
-            <Printer className="w-3.5 h-3.5" />Print Printable
+          {/* Same two server routes the Feature view uses, so there is one
+              printable and one QR per creator rather than a second pair built
+              in the browser that could drift from it. */}
+          <button onClick={() => openServer("/portal/ambassador/print")}
+            className="flex items-center justify-center gap-2 py-2.5 text-xs rounded-xl bg-white/5 border border-white/10 text-neutral-200 hover:border-purple-400/40 transition-all">
+            <Printer className="w-3.5 h-3.5" />Print cards
           </button>
-          <button onClick={() => openPrintable(false)} disabled={!qr}
-            className="flex items-center justify-center gap-2 py-2.5 text-xs rounded-xl bg-white/5 border border-white/10 text-neutral-200 hover:border-purple-400/40 transition-all disabled:opacity-40">
-            <Download className="w-3.5 h-3.5" />Open Printable
+          <button onClick={() => openServer("/portal/ambassador/screen")}
+            className="flex items-center justify-center gap-2 py-2.5 text-xs rounded-xl bg-white/5 border border-white/10 text-neutral-200 hover:border-purple-400/40 transition-all">
+            <QrCode className="w-3.5 h-3.5" />Show QR
           </button>
           <button onClick={copy}
             className="flex items-center justify-center gap-2 py-2.5 text-xs rounded-xl bg-white/5 border border-white/10 text-neutral-200 hover:border-purple-400/40 transition-all">
@@ -507,6 +486,6 @@ export function AmbassadorPanel({ token, instagram, state, loading, onRefresh }:
   if (loading) return <p className="text-sm text-neutral-500 text-center py-8">Loading…</p>;
   if (!state) return <p className="text-sm text-neutral-500 text-center py-8">Could not load Ambassador details.</p>;
   return state.enabled && state.ambassador
-    ? <Dashboard state={state} instagram={instagram} />
+    ? <Dashboard state={state} instagram={instagram} token={token} />
     : <Onboarding token={token} onEnabled={onRefresh} />;
 }

@@ -227,7 +227,10 @@ app.get("/make-server-f5961d0c/creator-portal/ambassador", async (c) => {
     if (!token) return c.json({ error: "Token required" }, 400);
     const { creatorData, ambassador } = await ambassadorForToken(token);
     if (!creatorData) return c.json({ error: "Invalid or expired link" }, 401);
-    if (!ambassador) return c.json({ enabled: false, ambassador: null, referrals: [], stats: null });
+    if (!ambassador) return c.json({ enabled: false, ambassador: null, referrals: [], stats: null, ambassadorCode: null });
+    // The creator's own code. Backfilled here as well as on opt-in so an
+    // ambassador who predates the per-creator code still gets one.
+    const ambassadorCode = await ensureAmbassadorCode(String(creatorData.creatorId));
 
     const { data: refs } = await db().from("ambassador_referrals_f5961d0c")
       .select("*").eq("ambassador_id", ambassador.ambassador_id).order("created_at", { ascending: false });
@@ -242,6 +245,8 @@ app.get("/make-server-f5961d0c/creator-portal/ambassador", async (c) => {
     return c.json({
       enabled: !!ambassador.enabled_status,
       ambassador: ambassadorPayload(ambassador),
+      ambassadorCode,
+      cardUrl: cardUrlFor(ambassadorCode),
       stats,
       referrals: rows.map((r: any) => ({
         id: r.id, businessName: r.business_name, businessEmail: r.business_email,
@@ -272,8 +277,10 @@ app.post("/make-server-f5961d0c/creator-portal/ambassador/enable", async (c) => 
 
     const wasOptedIn = !!creator.ambassador_opted_in;
     const created = await setAmbassadorOptIn(creator, true);
+    // The creator's own code, minted here and reused everywhere after.
+    const ambassadorCode = await ensureAmbassadorCode(creator.id);
     if (!wasOptedIn) await logCreatorEvent(creator.id, "ambassador_opted_in", { source: "enable" });
-    return c.json({ success: true, ambassador: ambassadorPayload(created) });
+    return c.json({ success: true, ambassadorCode, ambassador: ambassadorPayload(created) });
   } catch (e: any) { return c.json({ error: e.message }, 500); }
 });
 
@@ -916,6 +923,32 @@ const CARD_LIFETIME_DAYS = 60;
 // something read off a card: lowercase, stray hyphens, spaces.
 const canonicalCode = (raw: string) => String(raw ?? "").replace(/[\s-]/g, "").toUpperCase();
 
+// One ambassador code per creator, minted on opt-in and never rotated: the same
+// code is printed on cards, shown as a QR and listed in the Ambassador tab, so
+// changing it would strand every card already handed out.
+//
+// The unique index is what guarantees uniqueness; this retries on collision
+// rather than trusting the random draw.
+async function ensureAmbassadorCode(creatorId: string): Promise<string> {
+  const { data: existing } = await db().from("creator_signups_f5961d0c")
+    .select("ambassador_code").eq("id", creatorId).maybeSingle();
+  if (existing?.ambassador_code) return existing.ambassador_code;
+
+  for (let attempt = 0; attempt < 8; attempt++) {
+    const candidate = anonCode(6);
+    const { error } = await db().from("creator_signups_f5961d0c")
+      .update({ ambassador_code: candidate }).eq("id", creatorId).is("ambassador_code", null);
+    if (!error) {
+      // The update is a no-op if another request won the race, so read back
+      // rather than assuming the candidate stuck.
+      const { data: after } = await db().from("creator_signups_f5961d0c")
+        .select("ambassador_code").eq("id", creatorId).maybeSingle();
+      if (after?.ambassador_code) return after.ambassador_code;
+    }
+  }
+  throw new Error("Could not allocate an ambassador code");
+}
+
 async function hashIp(ip: string): Promise<string> {
   // Salted so scan rows cannot be reversed into visitor IPs by rainbow table.
   const salt = Deno.env.get("SCAN_IP_SALT") || ADMIN_SECRET || "contynt";
@@ -942,19 +975,18 @@ async function ensureCardForApprovedClaim(featureId: string, creatorToken: strin
     const { data: feature } = await db().from("features_f5961d0c")
       .select("id, business_id").eq("id", featureId).maybeSingle();
 
-    for (let i = 0; i < 5; i++) {
-      const code = anonCode();
-      const { data, error } = await db().from("ambassador_cards_f5961d0c").insert({
-        creator_id: creator.id, feature_id: featureId,
-        business_id: feature?.business_id ?? null, code,
-      }).select("*").single();
-      if (!error) {
-        await logCreatorEvent(creator.id, "ambassador_card_generated", { featureId, code });
-        return data;
-      }
-      if (!String(error.message || "").includes("duplicate")) throw error;
+    // No code is minted here any more. The creator already has one, and this
+    // row exists only to track handoff and attribution for the pair.
+    const { data, error } = await db().from("ambassador_cards_f5961d0c").insert({
+      creator_id: creator.id, feature_id: featureId,
+      business_id: feature?.business_id ?? null,
+    }).select("*").single();
+    if (error) {
+      if (String(error.message || "").includes("duplicate")) return null;
+      throw error;
     }
-    return null;
+    await logCreatorEvent(creator.id, "ambassador_card_generated", { featureId });
+    return data;
   } catch (e: any) {
     // A failed card must not block the claim approval itself.
     console.error("[cards] generate failed:", e?.message ?? e);
@@ -964,31 +996,58 @@ async function ensureCardForApprovedClaim(featureId: string, creatorToken: strin
 
 // Resolves which of the three states a card is in, and returns ONLY the fields
 // that state is allowed to render.
-async function cardState(card: any) {
-  const { data: feature } = await db().from("features_f5961d0c")
-    .select("id, business_id, business_name, business_instagram").eq("id", card.feature_id).maybeSingle();
-
+// A creator code has no single Feature behind it, so the state is derived from
+// the creator's own most recent work rather than one card's Feature.
+//
+//   B  a Reel of theirs is live      -> show it; identity is public by now
+//   A  they filmed recently          -> collect the business and an email
+//   C  nothing recent                -> generic, says nothing about anyone
+async function creatorScanState(creatorId: string) {
   const { data: subs } = await db().from("submissions_f5961d0c")
-    .select("status, reel_url, creator_instagram, metrics, approved_at")
-    .eq("feature_id", card.feature_id).order("submitted_at", { ascending: false });
-  const sub = (subs ?? [])[0] ?? null;
+    .select("status, reel_url, creator_instagram, metrics, approved_at, submitted_at, feature_id")
+    .eq("creator_id", creatorId)
+    .order("submitted_at", { ascending: false })
+    .limit(10);
+  const rows = subs ?? [];
 
-  const businessName = feature?.business_name || "this spot";
-  const ageDays = (Date.now() - new Date(card.generated_at).getTime()) / 864e5;
-
-  if (sub?.status === "approved" && sub.reel_url) {
+  const live = rows.find((r: any) => r.status === "approved" && r.reel_url);
+  if (live) {
+    const { data: feature } = await db().from("features_f5961d0c")
+      .select("business_name, business_instagram").eq("id", live.feature_id).maybeSingle();
     return {
-      state: "B" as const, businessName,
-      reelUrl: sub.reel_url,
-      creatorInstagram: (sub.creator_instagram || "").replace(/^@+/, ""),
-      metrics: sub.metrics || {},
-      businessInstagram: feature?.business_instagram || "",
+      state: "B" as const,
+      businessName: feature?.business_name || "this spot",
+      reelUrl: live.reel_url,
+      creatorInstagram: (live.creator_instagram || "").replace(/^@+/, ""),
+      metrics: live.metrics || {},
     };
   }
-  if (sub?.status === "denied" || sub?.status === "reported" || ageDays > CARD_LIFETIME_DAYS) {
-    return { state: "C" as const, businessName };
-  }
-  return { state: "A" as const, businessName };
+
+  const newest = rows[0]?.submitted_at ? new Date(rows[0].submitted_at).getTime() : 0;
+  const recent = newest && (Date.now() - newest) / 864e5 <= CARD_LIFETIME_DAYS;
+  // No submission yet is still state A: the card is handed over at the shoot,
+  // so a scan usually lands before anything has been posted.
+  if (!rows.length || recent) return { state: "A" as const, businessName: "" };
+  return { state: "C" as const, businessName: "" };
+}
+
+// Scans are cheap to forge, so cap them per code and per IP. Counted off the
+// scan log itself rather than a separate store: it is already written on every
+// scan and already indexed by code and time.
+const SCAN_WINDOW_MIN = 10;
+const SCAN_MAX_PER_CODE = 40;
+const SCAN_MAX_PER_IP = 12;
+async function scanRateLimited(code: string, ipHash: string | null) {
+  const since = new Date(Date.now() - SCAN_WINDOW_MIN * 60e3).toISOString();
+  const byCode = await db().from("ambassador_card_scans_f5961d0c")
+    .select("id", { count: "exact", head: true })
+    .eq("card_code", code).gte("occurred_at", since);
+  if ((byCode.count ?? 0) >= SCAN_MAX_PER_CODE) return true;
+  if (!ipHash) return false;
+  const byIp = await db().from("ambassador_card_scans_f5961d0c")
+    .select("id", { count: "exact", head: true })
+    .eq("ip_hash", ipHash).gte("occurred_at", since);
+  return (byIp.count ?? 0) >= SCAN_MAX_PER_IP;
 }
 
 const esc = (s: any) => String(s ?? "").replace(/[&<>"']/g, m =>
@@ -999,71 +1058,57 @@ app.get("/make-server-f5961d0c/a/:code", async (c) => {
   try {
     const raw = c.req.param("code");
     const code = canonicalCode(raw);
-
-    // Canonicalise before anything else so scans are logged against one code.
     if (raw !== code) return c.redirect(`/make-server-f5961d0c/a/${encodeURIComponent(code)}`, 301);
 
-    const { data: card } = await db().from("ambassador_cards_f5961d0c")
-      .select("*").eq("code", code).maybeSingle();
+    // The code identifies a CREATOR now, not a card or a business.
+    const { data: creator } = await db().from("creator_signups_f5961d0c")
+      .select("id, ambassador_opted_in").eq("ambassador_code", code).maybeSingle();
 
-    if (!card) {
+    if (!creator || !creator.ambassador_opted_in) {
       return htmlPage({
         title: "Contynt", noindex: true, status: 404,
         body: `<h1>This card is not active</h1><p>Double check the code, or visit contynt.com to get started.</p>`,
       });
     }
 
-    // A creator previewing their own card must not consume the first scan. There
-    // are no cookies in this stack, so the portal passes its own bearer token on
-    // the preview link; anything else is treated as a genuine outside scan.
+    // A creator previewing their own card must not consume a scan. There are no
+    // cookies in this stack, so the portal passes its own bearer token on the
+    // preview link; anything else is treated as a genuine outside scan.
     const selfToken = c.req.query("t") || "";
     let isSelfScan = false;
     if (selfToken) {
       const cd = await creatorFromToken(selfToken);
-      isSelfScan = !!cd?.creatorId && String(cd.creatorId) === String(card.creator_id);
+      isSelfScan = !!cd?.creatorId && String(cd.creatorId) === String(creator.id);
     }
 
     const ip = c.req.header("cf-connecting-ip") || c.req.header("x-forwarded-for")?.split(",")[0]?.trim() || "";
+    const ipHash = ip ? await hashIp(ip) : null;
+
+    if (!isSelfScan && await scanRateLimited(code, ipHash)) {
+      return htmlPage({
+        title: "Contynt", noindex: true, status: 429,
+        body: `<h1>Give it a moment</h1><p>This code has been scanned a lot just now. Try again shortly.</p>`,
+      });
+    }
+
     await db().from("ambassador_card_scans_f5961d0c").insert({
       card_code: code,
-      ip_hash: ip ? await hashIp(ip) : null,
+      ip_hash: ipHash,
       user_agent: c.req.header("user-agent") || "",
       is_self_scan: isSelfScan,
     });
 
-    if (!isSelfScan) {
-      const now = new Date();
-      if (!card.handed_off_at) {
-        await db().from("ambassador_cards_f5961d0c").update({
-          handed_off_at: now.toISOString(),
-          handoff_status: card.handoff_status === "pending" ? "handed_off" : card.handoff_status,
-        }).eq("id", card.id);
-      }
-      // First scan wins. The unique partial index on (business_id) where
-      // is_attributed is what actually decides a tie between two simultaneous
-      // scans; this update simply loses the race and moves on.
-      if (!card.is_attributed && card.business_id) {
-        const { error } = await db().from("ambassador_cards_f5961d0c").update({
-          is_attributed: true,
-          attribution_locked_until: new Date(now.getTime() + CARD_LIFETIME_DAYS * 864e5).toISOString(),
-        }).eq("id", card.id);
-        if (error && !String(error.message || "").includes("duplicate")) {
-          console.error("[cards] attribution failed:", error.message);
-        }
-      }
-    }
-
-    const s = await cardState(card);
+    const st = await creatorScanState(String(creator.id));
     const foot = `<p class="note">Contynt connects local creators with local businesses.</p>`;
 
-    if (s.state === "B") {
+    if (st.state === "B") {
       return htmlPage({
         title: "Contynt", noindex: true,
         body: `<h1>The Reel is live</h1>
-          <p>Filmed at ${esc(s.businessName)} by @${esc(s.creatorInstagram)}.</p>
-          <p><a href="${esc(s.reelUrl)}" target="_blank" rel="noopener noreferrer"
+          <p>Filmed at ${esc(st.businessName)} by @${esc(st.creatorInstagram)}.</p>
+          <p><a href="${esc(st.reelUrl)}" target="_blank" rel="noopener noreferrer"
                 style="color:#c4b5fd">Watch it on Instagram</a></p>
-          ${s.metrics?.thumbnail ? `<img src="${esc(s.metrics.thumbnail)}" alt="" style="width:100%;border-radius:16px;margin:18px 0">` : ""}
+          ${st.metrics?.thumbnail ? `<img src="${esc(st.metrics.thumbnail)}" alt="" style="width:100%;border-radius:16px;margin:18px 0">` : ""}
           <form method="GET" action="${esc(SITE_ORIGIN)}/">
             <input type="hidden" name="ref" value="${esc(code)}">
             <button type="submit">Create a business account</button>
@@ -1071,7 +1116,7 @@ app.get("/make-server-f5961d0c/a/:code", async (c) => {
       });
     }
 
-    if (s.state === "C") {
+    if (st.state === "C") {
       return htmlPage({
         title: "Contynt", noindex: true,
         body: `<h1>Contynt</h1>
@@ -1083,14 +1128,46 @@ app.get("/make-server-f5961d0c/a/:code", async (c) => {
     }
 
     // ── State A ──────────────────────────────────────────────────────────────
-    // Names the business, never the creator. One email field, one button. No
-    // signup form, no pricing, no plan CTA.
+    // The code no longer knows which business this is, so the owner names it.
+    // Autocomplete gives us a place_id, which is what lets a second card at the
+    // same address attach to the same business instead of creating a twin.
+    // Without a key the field is still a plain required text input: the lead is
+    // captured, just without a place_id to match on.
+    const placesKey = Deno.env.get("GOOGLE_PLACES_KEY") || "";
+    const placesScript = placesKey ? `
+      <script src="https://maps.googleapis.com/maps/api/js?key=${esc(placesKey)}&libraries=places&loading=async" async defer></script>
+      <script>
+        function contyntPlaces() {
+          var input = document.getElementById("bizname");
+          if (!input || !window.google || !google.maps || !google.maps.places) return;
+          var ac = new google.maps.places.Autocomplete(input, {
+            fields: ["place_id", "name", "formatted_address"],
+            types: ["establishment"],
+            // Biased, not restricted: a spot just outside the box should still
+            // be findable rather than silently missing.
+            locationBias: { center: { lat: 37.7749, lng: -122.4194 }, radius: 30000 }
+          });
+          ac.addListener("place_changed", function () {
+            var p = ac.getPlace() || {};
+            document.getElementById("place_id").value = p.place_id || "";
+            document.getElementById("place_address").value = p.formatted_address || "";
+            if (p.name) input.value = p.name;
+          });
+        }
+        window.addEventListener("load", function () { setTimeout(contyntPlaces, 400); });
+      </script>` : "";
+
     return htmlPage({
       title: "Contynt", noindex: true,
+      extraHead: placesScript,
       body: `<h1>A creator filmed here recently</h1>
-        <p>It will be posted this week. Drop your email and we will send you the Reel when it goes live.</p>
+        <p>It will be posted this week. Tell us where this is and we will send you the Reel when it goes live.</p>
         <form method="POST" action="/make-server-f5961d0c/a/${esc(code)}/lead">
-          <input type="email" name="email" placeholder="you@${esc((s.businessName || "yourbusiness").toLowerCase().replace(/[^a-z0-9]/g, "").slice(0, 14) || "yourbusiness")}.com" required autocomplete="email">
+          <input id="bizname" type="text" name="businessName" placeholder="Business name" required
+                 autocomplete="off" autocapitalize="words">
+          <input id="place_id" type="hidden" name="placeId" value="">
+          <input id="place_address" type="hidden" name="placeAddress" value="">
+          <input type="email" name="email" placeholder="you@yourbusiness.com" required autocomplete="email">
           <button type="submit">Send me the Reel</button>
         </form>${foot}`,
     });
@@ -1103,7 +1180,11 @@ app.get("/make-server-f5961d0c/a/:code", async (c) => {
   }
 });
 
-// State A email capture. Stores a lead and nothing more.
+// State A capture: the business this card was left at, plus an email.
+//
+// The code identifies the creator, so this is also where attribution is
+// recorded. Attribution is still one payout per business ever and still admin
+// approved -- nothing here credits anybody.
 app.post("/make-server-f5961d0c/a/:code/lead", async (c) => {
   const thanks = () => htmlPage({
     title: "Contynt", noindex: true,
@@ -1113,16 +1194,76 @@ app.post("/make-server-f5961d0c/a/:code/lead", async (c) => {
     const code = canonicalCode(c.req.param("code"));
     const body = await c.req.parseBody().catch(() => ({} as any));
     const email = String((body as any).email ?? "").trim().toLowerCase();
-    if (!email || !email.includes("@")) return thanks();
+    const businessName = String((body as any).businessName ?? "").trim().slice(0, 120);
+    const placeId = String((body as any).placeId ?? "").trim().slice(0, 200) || null;
+    const placeAddress = String((body as any).placeAddress ?? "").trim().slice(0, 300) || null;
+    if (!email || !email.includes("@") || !businessName) return thanks();
 
-    const { data: card } = await db().from("ambassador_cards_f5961d0c")
-      .select("id, code, business_id").eq("code", code).maybeSingle();
-    if (!card) return thanks();
+    const { data: creator } = await db().from("creator_signups_f5961d0c")
+      .select("id, ambassador_opted_in, city").eq("ambassador_code", code).maybeSingle();
+    if (!creator?.ambassador_opted_in) return thanks();
+
+    // Match on place_id first, then fall back to an exact name match so a lead
+    // submitted without a key still has a chance of attaching rather than
+    // always minting a twin.
+    let business: any = null;
+    if (placeId) {
+      const { data } = await db().from("business_signups_f5961d0c")
+        .select("id, lead_status").eq("place_id", placeId).maybeSingle();
+      business = data ?? null;
+    }
+    if (!business) {
+      const { data } = await db().from("business_signups_f5961d0c")
+        .select("id, lead_status, place_id").ilike("business_name", businessName).limit(1);
+      business = (data ?? [])[0] ?? null;
+    }
+
+    if (business) {
+      // Known business: promote a cold prospect to a lead, and backfill the
+      // place_id so the next scan matches on it directly.
+      const patch: Record<string, unknown> = {};
+      if (business.lead_status === "prospect" || business.lead_status == null) patch.lead_status = "lead";
+      if (placeId && !business.place_id) { patch.place_id = placeId; patch.place_address = placeAddress; }
+      if (Object.keys(patch).length) {
+        await db().from("business_signups_f5961d0c").update(patch).eq("id", business.id);
+      }
+    } else {
+      // Unknown: create it, flagged unverified. Nothing puts a Feature on the
+      // board for it, so it stays invisible to creators until an admin works it.
+      // instagram and city are NOT NULL on this table with no default, so both
+      // are always sent. A scan does not know the handle; admin fills it in when
+      // the lead is worked.
+      const { data: made, error: makeErr } = await db().from("business_signups_f5961d0c").insert({
+        business_name: businessName,
+        instagram: "",
+        email,
+        city: creator.city || "",
+        address: placeAddress || "",
+        place_id: placeId,
+        place_address: placeAddress,
+        lead_status: "unverified_lead",
+        referral_source: "ambassador_scan",
+        referred_by_creator: creator.id,
+      }).select("id").single();
+      // Logged rather than swallowed: a failure here used to leave a lead row
+      // with a null business_id and no trace of why.
+      if (makeErr) console.error("[lead] could not create business:", makeErr.message);
+      business = made ?? null;
+    }
+
+    // Attribution belongs to the creator whose code this is. Recorded against
+    // the business; the single-payout rule is enforced where payouts are made,
+    // not here.
+    if (business?.id) {
+      await db().from("business_signups_f5961d0c")
+        .update({ referred_by_creator: creator.id })
+        .eq("id", business.id).is("referred_by_creator", null);
+    }
 
     // Unique on (business_id, email), so a second submission is a no-op rather
     // than an error the person standing at the counter has to understand.
     const { error } = await db().from("ambassador_leads_f5961d0c").insert({
-      card_code: code, business_id: card.business_id ?? null, email,
+      card_code: code, business_id: business?.id ?? null, email,
     });
     if (error && !String(error.message || "").includes("duplicate")) throw error;
     return thanks();
@@ -1184,7 +1325,11 @@ async function notifyLeadsForFeature(featureId: string) {
 }
 
 // ─── Card printables ──────────────────────────────────────────────────────────
-const CARD_ORIGIN = Deno.env.get("CARD_LINK_ORIGIN") || VERIFY_ORIGIN;
+// The card link is printed and read aloud, so it defaults to the short site
+// origin rather than the raw function URL: getcontynt.com/a/K7M2P9 fits under a
+// QR and can be typed by hand. /a/* is forwarded to this function by the site's
+// _redirects, so the short form resolves here either way.
+const CARD_ORIGIN = Deno.env.get("CARD_LINK_ORIGIN") || SITE_ORIGIN;
 const cardUrlFor = (code: string) => `${CARD_ORIGIN}/a/${code}`;
 
 // Shown on the print sheet and the card screen. Plain language on purpose: the
@@ -1196,127 +1341,141 @@ const HANDOFF_SCRIPT =
   "Hey, I just filmed a Reel here for Contynt. This card has a code on it. " +
   "If you scan it you can see the Reel when it goes live, and get set up if you want more.";
 
-async function cardForCreator(cardId: string, token: string) {
-  const creatorData = await creatorFromToken(token);
-  if (!creatorData?.creatorId) return { error: "Invalid or expired link", status: 401 as const };
-  const { data: card } = await db().from("ambassador_cards_f5961d0c")
-    .select("*").eq("id", cardId).maybeSingle();
-  if (!card) return { error: "Card not found", status: 404 as const };
-  // A card id is a uuid, but never trust it as a capability on its own.
-  if (String(card.creator_id) !== String(creatorData.creatorId)) {
-    return { error: "Card not found", status: 404 as const };
-  }
-  return { card, creatorId: creatorData.creatorId };
-}
 
 // A6 (105x148mm) centred on a letter sheet with crop marks. This is HTML rather
 // than a generated PDF: adding a PDF toolchain to a Deno edge function to draw
 // two rectangles and a QR would cost far more than it returns, and every browser
 // prints this to PDF natively at the right trim size.
-function buildCardSheet(cards: { code: string; qr: string; businessName: string }[]): string {
-  const one = (c: typeof cards[0]) => `
+function buildCardSheet(code: string, qr: string): string {
+  // Four identical cards, 2x2 on a letter sheet, so one print run gives the
+  // creator a handful to leave behind. Identical because the code belongs to
+  // the creator, not to a Feature -- any card works at any business.
+  //
+  // Deliberately anonymous: no handle, name, photo or id. A card left on a
+  // counter should not tell a stranger who dropped it off.
+  const card = `
     <div class="card">
-      <span class="cm tl"></span><span class="cm tr"></span><span class="cm bl"></span><span class="cm br"></span>
       <div class="inner">
         <div class="brand">C O N T Y N T</div>
         <div class="lead">A creator filmed here.</div>
-        <img class="qr" src="${c.qr}" alt="">
-        <div class="code">${esc(c.code)}</div>
-        <div class="sub">Scan the code, or go to<br>${esc(cardUrlFor(c.code))}</div>
+        <img class="qr" src="${qr}" alt="">
+        <div class="code">${esc(code)}</div>
+        <div class="sub">Scan the code, or go to<br>${esc(cardUrlFor(code))}</div>
       </div>
     </div>`;
-  return `<!doctype html><html><head><meta charset="utf-8"><title>Contynt card</title>
+
+  return `<!doctype html><html><head><meta charset="utf-8"><title>Contynt cards</title>
 <meta name="robots" content="noindex,nofollow">
 <style>
-  @page { size: letter; margin: 8mm; }
+  /* Margin keeps the outer cut lines inside every printer's imageable area;
+     letter is 8.5x11in, so 4 cards of 4in x 5in leave room for the guides. */
+  @page { size: letter; margin: 10mm; }
   *{box-sizing:border-box;margin:0;padding:0}
-  body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Helvetica,Arial,sans-serif;background:#fff;color:#0a0a0a}
-  .sheet{display:flex;flex-wrap:wrap}
-  .card{position:relative;width:105mm;height:148mm;page-break-inside:avoid}
-  .inner{position:absolute;inset:6mm;border:1.5pt solid #111;border-radius:6mm;
-         display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;padding:8mm}
-  .brand{font-size:8pt;font-weight:700;letter-spacing:.4em;margin-bottom:8mm}
-  .lead{font-size:15pt;font-weight:800;line-height:1.25;margin-bottom:7mm}
-  .qr{width:44mm;height:44mm;margin-bottom:5mm}
-  /* The code is set large because it is the fallback when a camera will not
-     focus behind a counter, and it is what someone reads aloud over a phone. */
-  .code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:26pt;font-weight:700;letter-spacing:.16em;margin-bottom:4mm}
-  .sub{font-size:7.5pt;line-height:1.5;color:#555}
-  .cm{position:absolute;width:4mm;height:4mm}
-  .cm.tl{top:0;left:0;border-top:.4pt solid #999;border-left:.4pt solid #999}
-  .cm.tr{top:0;right:0;border-top:.4pt solid #999;border-right:.4pt solid #999}
-  .cm.bl{bottom:0;left:0;border-bottom:.4pt solid #999;border-left:.4pt solid #999}
-  .cm.br{bottom:0;right:0;border-bottom:.4pt solid #999;border-right:.4pt solid #999}
-</style></head><body><div class="sheet">${cards.map(one).join("")}</div>
-<script>window.addEventListener("load",function(){setTimeout(function(){window.print()},300)})</script>
+  html,body{background:#fff}
+  body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Helvetica,Arial,sans-serif;color:#0a0a0a}
+
+  .sheet{position:relative;display:grid;grid-template-columns:1fr 1fr;grid-template-rows:1fr 1fr;
+         width:190mm;height:240mm;margin:0 auto}
+  .card{position:relative;page-break-inside:avoid;break-inside:avoid}
+  .inner{position:absolute;inset:5mm;border:1pt solid #d4d4d4;border-radius:4mm;
+         display:flex;flex-direction:column;align-items:center;justify-content:center;
+         text-align:center;padding:6mm}
+  .brand{font-size:9pt;font-weight:700;letter-spacing:.34em;color:#111}
+  .lead{font-size:10pt;color:#525252;margin-top:2mm}
+  .qr{width:46mm;height:46mm;margin:5mm 0 4mm;display:block}
+  /* The code is the fallback when a camera will not focus, so it is set large
+     and monospaced with wide tracking to survive being read across a counter. */
+  .code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:26pt;font-weight:700;
+        letter-spacing:.18em;color:#0a0a0a;line-height:1}
+  .sub{font-size:7.5pt;color:#737373;margin-top:3mm;line-height:1.5}
+
+  /* Perforation guides: dashed lines down the middle of the sheet in both
+     directions, with a scissors at each midpoint so the cut is obvious. */
+  .perf{position:absolute;background:none;color:#a3a3a3;pointer-events:none}
+  .perf.v{left:50%;top:0;bottom:0;border-left:1pt dashed #bdbdbd;transform:translateX(-.5pt)}
+  .perf.h{top:50%;left:0;right:0;border-top:1pt dashed #bdbdbd;transform:translateY(-.5pt)}
+  .scissors{position:absolute;font-size:10pt;line-height:1;color:#9ca3af;background:#fff;padding:1mm}
+  .scissors.top{left:50%;top:-1mm;transform:translateX(-50%)}
+  .scissors.bottom{left:50%;bottom:-1mm;transform:translateX(-50%)}
+  .scissors.left{top:50%;left:-1mm;transform:translateY(-50%)}
+  .scissors.right{top:50%;right:-1mm;transform:translateY(-50%)}
+
+  @media print{
+    /* Keep the guide lines and any fill exactly as designed rather than letting
+       the browser drop "background" ink to save toner. */
+    html,body{-webkit-print-color-adjust:exact;print-color-adjust:exact}
+    .noprint{display:none !important}
+  }
+  .noprint{max-width:190mm;margin:6mm auto 0;font-size:11px;color:#737373;text-align:center}
+</style></head><body>
+  <div class="sheet">
+    ${card}${card}${card}${card}
+    <div class="perf v"><span class="scissors top">&#9986;</span><span class="scissors bottom">&#9986;</span></div>
+    <div class="perf h"><span class="scissors left">&#9986;</span><span class="scissors right">&#9986;</span></div>
+  </div>
+  <p class="noprint">Print this page, then cut along the dashed lines. Every card carries the same code, so any one of them works at any business.</p>
 </body></html>`;
 }
 
-// Batched sheet when the creator has several unprinted cards, so three approved
-// Features do not mean three trips to the printer. Each keeps its own code.
-app.get("/make-server-f5961d0c/portal/cards/:id/print", async (c) => {
+
+// Printable sheet and on-screen QR, both keyed by the creator's own ambassador
+// code rather than a card id. The Ambassador tab and every in-progress Feature
+// hit these same two routes, so there is one printable and one QR per creator.
+async function ambassadorCodeForToken(token: string) {
+  const creatorData = await creatorFromToken(token);
+  if (!creatorData?.creatorId) return { error: "Invalid or expired link", status: 401 as const };
+  const { data: row } = await db().from("creator_signups_f5961d0c")
+    .select("ambassador_opted_in, ambassador_code").eq("id", creatorData.creatorId).maybeSingle();
+  if (!row?.ambassador_opted_in) return { error: "Ambassador Mode is not enabled", status: 403 as const };
+  const code = row.ambassador_code || await ensureAmbassadorCode(String(creatorData.creatorId));
+  return { code, creatorId: String(creatorData.creatorId) };
+}
+
+app.get("/make-server-f5961d0c/portal/ambassador/print", async (c) => {
   try {
-    const token = c.req.query("t") || "";
-    const res = await cardForCreator(c.req.param("id"), token);
+    const res = await ambassadorCodeForToken(c.req.query("t") || "");
     if ("error" in res) return c.json({ error: res.error }, res.status);
-
-    let rows = [res.card];
-    if (c.req.query("batch") === "1") {
-      const { data: unprinted } = await db().from("ambassador_cards_f5961d0c")
-        .select("*").eq("creator_id", res.creatorId).is("printed_at", null).order("generated_at");
-      const merged = [res.card, ...(unprinted ?? []).filter((r: any) => r.id !== res.card.id)];
-      rows = merged;
-    }
-
-    const featureIds = [...new Set(rows.map((r: any) => r.feature_id))];
-    const { data: feats } = await db().from("features_f5961d0c")
-      .select("id, business_name").in("id", featureIds);
-    const nameFor: Record<string, string> = {};
-    for (const f of (feats ?? [])) nameFor[f.id] = f.business_name || "";
-
-    const cards = [];
-    for (const r of rows) {
-      const qr = await QRCode.toDataURL(cardUrlFor(r.code), { width: 640, margin: 1 });
-      cards.push({ code: r.code, qr, businessName: nameFor[r.feature_id] || "" });
-    }
-
-    // First download only, so a reprint does not reset the record of when the
-    // creator actually got the card.
-    const unprintedIds = rows.filter((r: any) => !r.printed_at).map((r: any) => r.id);
-    if (unprintedIds.length) {
-      await db().from("ambassador_cards_f5961d0c")
-        .update({ printed_at: new Date().toISOString() }).in("id", unprintedIds);
-    }
-
-    return new Response(buildCardSheet(cards), {
+    const qr = await QRCode.toDataURL(cardUrlFor(res.code), { width: 640, margin: 1 });
+    return new Response(buildCardSheet(res.code, qr), {
       headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store", "X-Robots-Tag": "noindex, nofollow" },
     });
   } catch (e: any) {
-    console.error("[card print]", e?.message ?? e);
-    return c.json({ error: "Could not build the card" }, 500);
+    console.error("[ambassador print]", e?.message ?? e);
+    return c.json({ error: "Could not build the printable" }, 500);
   }
 });
 
-// Fallback for when there is no printer: a full-bleed QR sized to be scanned
-// off this screen by another phone's camera.
-app.get("/make-server-f5961d0c/portal/cards/:id/screen", async (c) => {
+// No printer to hand: a full-bleed QR sized to be scanned off this screen by
+// somebody else's phone, with the code underneath as the fallback.
+app.get("/make-server-f5961d0c/portal/ambassador/screen", async (c) => {
   try {
-    const token = c.req.query("t") || "";
-    const res = await cardForCreator(c.req.param("id"), token);
+    const res = await ambassadorCodeForToken(c.req.query("t") || "");
     if ("error" in res) return c.json({ error: res.error }, res.status);
-
-    const qr = await QRCode.toDataURL(cardUrlFor(res.card.code), { width: 900, margin: 1 });
-    return htmlPage({
-      title: "Your card", noindex: true,
-      body: `<h1>Show this to staff</h1>
-        <img src="${qr}" alt="" style="width:100%;max-width:320px;background:#fff;padding:12px;border-radius:20px;margin:6px auto 14px">
-        <div style="font-family:ui-monospace,Menlo,monospace;font-size:32px;font-weight:700;letter-spacing:.16em;margin-bottom:14px">${esc(res.card.code)}</div>
-        <p style="text-align:left">${esc(HANDOFF_SCRIPT)}</p>
-        <p class="note">${esc(ATTRIBUTION_RULE)}</p>`,
+    const qr = await QRCode.toDataURL(cardUrlFor(res.code), { width: 1000, margin: 1 });
+    return new Response(`<!doctype html><html><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="robots" content="noindex,nofollow"><title>Your Ambassador code</title>
+<style>
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{background:#fff;color:#0a0a0a;min-height:100vh;display:flex;flex-direction:column;
+       align-items:center;justify-content:center;padding:16px;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Helvetica,Arial,sans-serif}
+  /* Sized off the viewport so it fills the screen on a phone: the whole point
+     is for another phone's camera to lock onto it from across a counter. */
+  img{width:min(88vw,88vh);height:auto;display:block}
+  .code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:clamp(28px,9vw,52px);
+        font-weight:700;letter-spacing:.18em;margin-top:14px}
+  .hint{margin-top:10px;font-size:13px;color:#6b7280;text-align:center;max-width:34ch;line-height:1.5}
+</style></head><body>
+  <img src="${qr}" alt="">
+  <div class="code">${esc(res.code)}</div>
+  <p class="hint">Turn your screen brightness all the way up, then have them scan it.</p>
+</body></html>`, {
+      headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store", "X-Robots-Tag": "noindex, nofollow" },
     });
   } catch (e: any) {
-    console.error("[card screen]", e?.message ?? e);
-    return c.json({ error: "Could not build the card" }, 500);
+    console.error("[ambassador screen]", e?.message ?? e);
+    return c.json({ error: "Could not build the QR" }, 500);
   }
 });
 
@@ -2354,6 +2513,9 @@ app.get("/make-server-f5961d0c/creator-portal", async (c) => {
     // Balance comes from the earnings ledger. The old creator_payouts read that
     // stood here was never written to, so this stat was always zero.
     const balance = await creatorBalance(token);
+    const { data: ambRow } = await db().from("creator_signups_f5961d0c")
+      .select("ambassador_opted_in, ambassador_code").eq("id", creatorData.creatorId).maybeSingle();
+    const ambCode = ambRow?.ambassador_opted_in ? (ambRow.ambassador_code ?? null) : null;
     return c.json({
       creator: { instagram: creatorData.instagram, city: creatorData.city, email: creatorData.email || "" },
       features, claims: claimsMap,
@@ -2364,6 +2526,10 @@ app.get("/make-server-f5961d0c/creator-portal", async (c) => {
         ...balance,
       },
       resetAt,
+      // The one ambassador code, so in-progress Features can offer Print and QR
+      // without minting anything of their own. Null until they opt in.
+      ambassadorCode: ambCode,
+      cardUrl: ambCode ? cardUrlFor(ambCode) : null,
       // Comes from the session itself rather than a URL flag, so the read-only
       // banner cannot be dismissed by editing the address bar.
       impersonated: !!creatorData.impersonated,

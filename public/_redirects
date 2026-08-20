@@ -1,1 +1,8 @@
+# Ambassador scan links are printed on cards as getcontynt.com/a/CODE, which is
+# short enough to read off a card and type by hand. The page itself is rendered
+# by the edge function, which logs the scan and decides which state to show, so
+# this forwards rather than serving the SPA.
+# Must precede the catch-all: the first matching rule wins.
+/a/*  https://kskqipduwovvedcuhwre.supabase.co/functions/v1/make-server-f5961d0c/a/:splat  302
+
 /*  /index.html  200
