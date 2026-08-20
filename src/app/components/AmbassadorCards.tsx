@@ -38,6 +38,12 @@ function useAmbassadorCode(token: string) {
   return { state, error };
 }
 
+// Display only. Hosts are case-insensitive, so capitalising the words makes the
+// link easier to read off a card and type; the QR and the stored URL keep the
+// real lowercase form.
+const prettyUrl = (u: string) =>
+  u.replace(/^https?:\/\//, "").replace(/^getcontynt\.com/i, "GetContynt.com");
+
 function Centered({ children }: { children: React.ReactNode }) {
   return (
     <div style={{ minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center",
@@ -70,7 +76,7 @@ export function AmbassadorPrintSheet({ token }: { token: string }) {
         <div className="amb-cta">Claim your business dashboard</div>
         <img className="amb-qr" src={qr} alt="" />
         <div className="amb-or">Scan the code, or go to</div>
-        <div className="amb-url">{state.url.replace(/^https?:\/\//, "")}</div>
+        <div className="amb-url">{prettyUrl(state.url)}</div>
       </div>
     </div>
   );
