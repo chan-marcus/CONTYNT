@@ -826,6 +826,10 @@ function FeatureCard({ feature, claim, token, onClaim, onUnclaim, onAccept, onSu
                 script={cardMeta.handoffScript} rule={cardMeta.attributionRule}
                 unprintedCount={cardMeta.unprintedCount} onPrinted={onCardPrinted ?? (() => {})} />
             )}
+            {showAmbassadorUpsell && <AmbassadorUpsell onLearnMore={onLearnAmbassador!} />}
+            {isAmbassador && <AmbassadorInstructions />}
+            {/* Sits directly above the countdown and the Submit box, so the
+                rules are the last thing read before posting. */}
             <div className="bg-white/5 rounded-xl px-4 py-3 text-xs text-neutral-400 space-y-1.5">
               <p className="font-medium text-neutral-300 mb-2">Post requirements</p>
               <p>• Add <span className="text-white">@{((feature as any).businessInstagram || feature.businessName).replace(/^@/, "").toLowerCase().replace(/\s+/g, "")}</span> as a collaborator</p>
@@ -833,8 +837,6 @@ function FeatureCard({ feature, claim, token, onClaim, onUnclaim, onAccept, onSu
               <p>• Mention <span className="text-white">@contynt.hq</span> in the caption</p>
               <p>• Posts must remain live for at least <span className="text-white">72 hours</span> to be approved.</p>
             </div>
-            {showAmbassadorUpsell && <AmbassadorUpsell onLearnMore={onLearnAmbassador!} />}
-            {isAmbassador && <AmbassadorInstructions />}
             {expiresAt && (
               <div className="bg-white/5 border border-white/10 rounded-xl px-4 py-2.5 space-y-1 text-center">
                 <p className="text-[10px] text-neutral-500 uppercase tracking-widest">Time Remaining</p>
