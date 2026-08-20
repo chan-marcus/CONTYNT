@@ -67,7 +67,6 @@ export default function App() {
   const isRedirecting = !isAppPath && !!(creatorToken || view === "login" || view === "confirm" || view === "cards" || view === "qr");
   const isLanding = !referralCode && !adminToken && !isRedirecting && !isAppPath
     && !bizToken && view !== "submission"
-    && !/^\/a\/[^/]+$/.test(path)
     && !/^\/[ABCDEFGHJKMNPQRSTVWXYZ23456789]{6}$/i.test(path);
 
   useEffect(() => {
@@ -187,17 +186,12 @@ export default function App() {
     return () => window.removeEventListener("hashchange", checkHash);
   }, [isLanding]);
 
-  // Ambassador card scans. Served by the site because Supabase rewrites any HTML
-  // an Edge Function returns to text/plain, which showed the owner raw markup.
-  //
-  // Two shapes: the bare code that is printed on cards now, and /a/CODE for the
-  // ones printed before. The bare match is deliberately narrow -- exactly six
-  // characters from the code alphabet, which has no I, L, O, U, 0 or 1 -- and it
-  // is tested after every real route, so it can only catch what nothing else
-  // claimed. An unknown code renders "this card is not active" either way.
+  // Ambassador card scans live at the bare code, getcontynt.com/4JEAZ7. The
+  // match is deliberately narrow -- exactly six characters from the code
+  // alphabet, which has no I, L, O, U, 0 or 1 -- and it is tested after every
+  // real route (below), so a path that merely looks like a code can never take
+  // one. An unknown code renders "this card is not active".
   const CODE_RE = /^\/([ABCDEFGHJKMNPQRSTVWXYZ23456789]{6})$/i;
-  const legacyScan = path.match(/^\/a\/([^/]+)$/);
-  if (legacyScan) return <ScanPage code={decodeURIComponent(legacyScan[1]).toUpperCase()} />;
 
   if (referralCode) return <ReferralLanding code={referralCode} />;
   if (adminToken) return <Analytics adminToken={adminToken} />;

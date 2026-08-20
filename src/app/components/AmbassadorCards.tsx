@@ -29,7 +29,7 @@ function useAmbassadorCode(token: string) {
         if (!res.ok) { setError("Your session expired. Open the creator portal again."); return; }
         const code = d?.ambassadorCode;
         if (!code) { setError("Ambassador Mode is not enabled yet."); return; }
-        setState({ code, url: d.cardUrl || `https://getcontynt.com/a/${code}` });
+        setState({ code, url: d.cardUrl || `https://getcontynt.com/${code}` });
       } catch { if (alive) setError("Could not reach the server."); }
     })();
     return () => { alive = false; };
@@ -77,14 +77,17 @@ export function AmbassadorPrintSheet({ token }: { token: string }) {
   return (
     <>
       <style>{`
-        /* Margin keeps the outer cut lines inside every printer's imageable area. */
-        @page { size: letter; margin: 10mm; }
-        html,body{background:#fff;margin:0;padding:0}
+        /* No page margin, so the four cards tile the whole sheet. Cutting the
+           two midlines then gives four identical cards and no leftover strips
+           -- with a margin the sheet floated in the middle of the paper and
+           every cut card carried a different amount of blank edge. */
+        @page { size: letter; margin: 0; }
+        html,body{background:#fff;margin:0;padding:0;width:100%;height:100%}
         body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Helvetica,Arial,sans-serif;color:#0a0a0a}
         .amb-sheet{position:relative;display:grid;grid-template-columns:1fr 1fr;grid-template-rows:1fr 1fr;
-                   width:190mm;height:240mm;margin:0 auto;box-sizing:border-box}
+                   width:216mm;height:279mm;margin:0 auto;box-sizing:border-box}
         .amb-card{position:relative;page-break-inside:avoid;break-inside:avoid}
-        .amb-inner{position:absolute;inset:5mm;border:1pt solid #d4d4d4;border-radius:4mm;
+        .amb-inner{position:absolute;inset:9mm;border:1pt solid #d4d4d4;border-radius:4mm;
                    display:flex;flex-direction:column;align-items:center;justify-content:center;
                    text-align:center;padding:6mm;box-sizing:border-box}
         .amb-brand{font-size:9pt;font-weight:700;letter-spacing:.34em;color:#111}
@@ -104,10 +107,10 @@ export function AmbassadorPrintSheet({ token }: { token: string }) {
         .amb-sc.b{left:50%;bottom:-1mm;transform:translateX(-50%)}
         .amb-sc.l{top:50%;left:-1mm;transform:translateY(-50%)}
         .amb-sc.r{top:50%;right:-1mm;transform:translateY(-50%)}
-        .amb-bar{max-width:190mm;margin:10px auto 0;display:flex;gap:10px;justify-content:center}
+        .amb-bar{max-width:216mm;margin:14px auto 0;display:flex;gap:10px;justify-content:center}
         .amb-bar button{padding:10px 18px;border-radius:10px;border:1px solid #d4d4d4;background:#111;color:#fff;
                         font-size:13px;font-weight:600;cursor:pointer}
-        .amb-note{max-width:190mm;margin:8px auto 0;font-size:11px;color:#737373;text-align:center}
+        .amb-note{max-width:216mm;margin:8px auto 14px;font-size:11px;color:#737373;text-align:center}
         @media print{
           /* Keep the guide lines exactly as designed rather than letting the
              browser drop "background" ink to save toner. */
@@ -115,17 +118,18 @@ export function AmbassadorPrintSheet({ token }: { token: string }) {
           .amb-noprint{display:none !important}
         }
       `}</style>
-      <div className="amb-sheet">
-        {[0, 1, 2, 3].map(card)}
-        <div className="amb-perf v"><span className="amb-sc t">&#9986;</span><span className="amb-sc b">&#9986;</span></div>
-        <div className="amb-perf h"><span className="amb-sc l">&#9986;</span><span className="amb-sc r">&#9986;</span></div>
-      </div>
       <div className="amb-bar amb-noprint">
         <button onClick={() => window.print()}>Print this sheet</button>
       </div>
       <p className="amb-note amb-noprint">
         Cut along the dashed lines. Every card carries the same code, so any one of them works at any business.
+        If your printer adds a margin, choose <strong>Margins: None</strong> in the print dialog.
       </p>
+      <div className="amb-sheet">
+        {[0, 1, 2, 3].map(card)}
+        <div className="amb-perf v"><span className="amb-sc t">&#9986;</span><span className="amb-sc b">&#9986;</span></div>
+        <div className="amb-perf h"><span className="amb-sc l">&#9986;</span><span className="amb-sc r">&#9986;</span></div>
+      </div>
     </>
   );
 }
