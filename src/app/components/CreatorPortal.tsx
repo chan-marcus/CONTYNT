@@ -1,6 +1,6 @@
 import { useEffect, useState, useRef, useLayoutEffect } from "react";
 import { motion, AnimatePresence } from "motion/react";
-import { MapPin, DollarSign, CheckCircle, X, ExternalLink, AlertCircle, Users, Zap, TrendingUp, Award } from "lucide-react";
+import { MapPin, DollarSign, CheckCircle, X, ExternalLink, AlertCircle, Users, Zap, TrendingUp, Award, ChevronDown } from "lucide-react";
 import { projectId, publicAnonKey } from "/utils/supabase/info";
 import { CreatorLogin, CREATOR_TOKEN_KEY } from "./CreatorLogin";
 import { AmbassadorPanel, AmbassadorUpsell, AmbassadorEmptyState, AmbassadorInstructions, useAmbassador,
@@ -787,7 +787,10 @@ function FeatureCard({ feature, claim, token, onClaim, onUnclaim, onAccept, onSu
 
           {/* ── Claimed (in progress — admin approved) ── */}
           {cardState === "claimed" && !isExpired && <>
-            <div className="flex items-start justify-between gap-3">
+            <button type="button" onClick={() => setExpanded(v => !v)}
+              aria-expanded={expanded}
+              aria-label={expanded ? "Collapse Feature details" : "Expand Feature details"}
+              className="w-full text-left flex items-start justify-between gap-3 rounded-xl focus:outline-none focus-visible:ring-2 focus-visible:ring-white/30">
               <div>
                 <p className="font-semibold text-white">{feature.businessName}</p>
                 <div className="flex items-center gap-1 text-neutral-400 text-xs mt-1"><MapPin className="w-3 h-3" />{feature.city}</div>
@@ -799,8 +802,13 @@ function FeatureCard({ feature, claim, token, onClaim, onUnclaim, onAccept, onSu
                   In Progress
                 </div>
                 <span className="text-sm font-bold text-green-400">{formatPayout(feature.payoutRange)}</span>
+                <ChevronDown className={`w-4 h-4 text-neutral-500 transition-transform ${expanded ? "rotate-180" : ""}`} />
               </div>
-            </div>
+            </button>
+            {/* Collapsed by default: the business, the payout and the countdown
+                are what matters at a glance. Everything needed to actually do
+                the shoot opens on tap. */}
+            {expanded && <>
             <a href={`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(`${feature.businessName} ${feature.address} ${feature.city}`)}`}
               target="_blank" rel="noopener noreferrer"
               className="flex items-center gap-3 bg-neutral-800/60 border border-white/10 rounded-xl px-4 py-3 hover:bg-neutral-700/60 transition-all group">
@@ -833,6 +841,7 @@ function FeatureCard({ feature, claim, token, onClaim, onUnclaim, onAccept, onSu
               <p>• Mention <span className="text-white">@contynt.hq</span> in the caption</p>
               <p>• Posts must remain live for at least <span className="text-white">72 hours</span> to be approved.</p>
             </div>
+            </>}
             {expiresAt && (
               <div className="bg-white/5 border border-white/10 rounded-xl px-4 py-2.5 space-y-1 text-center">
                 <p className="text-[10px] text-neutral-500 uppercase tracking-widest">Time Remaining</p>
@@ -840,6 +849,7 @@ function FeatureCard({ feature, claim, token, onClaim, onUnclaim, onAccept, onSu
                 <p className="text-[10px] text-neutral-600">Complete your Reel before this expires.</p>
               </div>
             )}
+            {expanded && <>
             {/* Asked of ambassadors only. Was gated on a per-feature card
                 object, which no longer exists, so it would never have shown. */}
             {isAmbassador && (
@@ -867,6 +877,7 @@ function FeatureCard({ feature, claim, token, onClaim, onUnclaim, onAccept, onSu
               className="w-full py-2 text-xs text-neutral-500 hover:text-neutral-300 transition-all flex items-center justify-center gap-1">
               <X className="w-3 h-3" />Unclaim
             </button>
+            </>}
           </>}
 
           {/* ── Available (default) ── */}
