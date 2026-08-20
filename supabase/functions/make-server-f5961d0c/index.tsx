@@ -1249,7 +1249,10 @@ async function notifyLeadsForFeature(featureId: string) {
 // QR and can be typed by hand. /a/* is forwarded to this function by the site's
 // _redirects, so the short form resolves here either way.
 const CARD_ORIGIN = Deno.env.get("CARD_LINK_ORIGIN") || SITE_ORIGIN;
-const cardUrlFor = (code: string) => `${CARD_ORIGIN}/a/${code}`;
+// Bare code at the root: getcontynt.com/4JEAZ7. This gets read off a card and
+// typed by hand, so every character removed is one fewer to get wrong. /a/CODE
+// still resolves, for cards printed before this.
+const cardUrlFor = (code: string) => `${CARD_ORIGIN}/${code}`;
 
 // Shown on the print sheet and the card screen. Plain language on purpose: the
 // creator is going to be asked "what is this?" while holding it.

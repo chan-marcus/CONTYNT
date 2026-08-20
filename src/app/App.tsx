@@ -66,7 +66,9 @@ export default function App() {
   // front and the effect below is hoisted above the returns that follow.
   const isRedirecting = !isAppPath && !!(creatorToken || view === "login" || view === "confirm" || view === "cards" || view === "qr");
   const isLanding = !referralCode && !adminToken && !isRedirecting && !isAppPath
-    && !bizToken && view !== "submission" && !/^\/a\/[^/]+$/.test(path);
+    && !bizToken && view !== "submission"
+    && !/^\/a\/[^/]+$/.test(path)
+    && !/^\/[ABCDEFGHJKMNPQRSTVWXYZ23456789]{6}$/i.test(path);
 
   useEffect(() => {
     // Guarded in the body rather than by placement, so the hook itself always
@@ -187,8 +189,15 @@ export default function App() {
 
   // Ambassador card scans. Served by the site because Supabase rewrites any HTML
   // an Edge Function returns to text/plain, which showed the owner raw markup.
-  const scanMatch = path.match(/^\/a\/([^/]+)$/);
-  if (scanMatch) return <ScanPage code={decodeURIComponent(scanMatch[1]).toUpperCase()} />;
+  //
+  // Two shapes: the bare code that is printed on cards now, and /a/CODE for the
+  // ones printed before. The bare match is deliberately narrow -- exactly six
+  // characters from the code alphabet, which has no I, L, O, U, 0 or 1 -- and it
+  // is tested after every real route, so it can only catch what nothing else
+  // claimed. An unknown code renders "this card is not active" either way.
+  const CODE_RE = /^\/([ABCDEFGHJKMNPQRSTVWXYZ23456789]{6})$/i;
+  const legacyScan = path.match(/^\/a\/([^/]+)$/);
+  if (legacyScan) return <ScanPage code={decodeURIComponent(legacyScan[1]).toUpperCase()} />;
 
   if (referralCode) return <ReferralLanding code={referralCode} />;
   if (adminToken) return <Analytics adminToken={adminToken} />;
@@ -215,6 +224,11 @@ export default function App() {
 
   if (bizToken) return <BusinessPortal token={bizToken} />;
   if (view === "submission") return <CreatorSubmissionPending />;
+
+  // Bare code last, so any real route added later wins over a string that
+  // merely looks like a code.
+  const bareScan = path.match(CODE_RE);
+  if (bareScan) return <ScanPage code={bareScan[1].toUpperCase()} />;
 
   // Show analytics dashboard
   if (showAnalytics) {

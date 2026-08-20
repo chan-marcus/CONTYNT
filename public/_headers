@@ -1,5 +1,8 @@
 # Scan links are per-creator and handed to one business at a time, so they must
 # never be indexed. Set at the edge as well as in the page, for crawlers that
 # never run the script.
+#
+# The bare-code form (/4JEAZ7) cannot be expressed as a glob without also
+# matching real routes, so those rely on the noindex meta tag the page sets.
 /a/*
   X-Robots-Tag: noindex, nofollow
