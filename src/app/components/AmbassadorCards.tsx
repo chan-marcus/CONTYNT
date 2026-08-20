@@ -193,9 +193,13 @@ export function AmbassadorQrScreen({ token }: { token: string }) {
       {/* Sized off the viewport: the point is for someone else's phone to lock
           onto this from across a counter. */}
       <img src={qr} alt="" style={{ width: "min(88vw, 88vh)", height: "auto", display: "block" }} />
+      {/* The URL, not the bare code: it carries the code inside it and is the
+          thing someone types if their camera will not focus. Sized off the
+          viewport so it stays on one line next to the QR above it. */}
       <div style={{ fontFamily: "ui-monospace,SFMono-Regular,Menlo,monospace", fontWeight: 700,
-                    fontSize: "clamp(28px,9vw,52px)", letterSpacing: ".18em", marginTop: 14 }}>
-        {state.code}
+                    fontSize: "clamp(15px,5.6vw,30px)", letterSpacing: ".01em", marginTop: 14,
+                    whiteSpace: "nowrap" }}>
+        {prettyUrl(state.url)}
       </div>
       <p style={{ marginTop: 10, fontSize: 13, color: "#6b7280", textAlign: "center", maxWidth: "34ch", lineHeight: 1.5 }}>
         Turn your screen brightness all the way up, then have them scan it.
