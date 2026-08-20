@@ -235,9 +235,11 @@ export function AmbassadorFeatureActions({ token, onOpened }: {
         </a>
       </div>
 
+      {/* Two sentences: the ask, then the fallback. Says "card" rather than
+          "printable" to match the button above it and the thing in their hand. */}
       <p className="text-[11px] text-neutral-400 leading-relaxed">
-        Show the owner your Ambassador printable or have them scan your QR code.
-        If there is no owner, leave the printable with an employee or manager.
+        Show the owner a card, or have them scan your QR code. If the owner isn't in,
+        leave a card with a manager — or ask them to save the link and pass it on.
       </p>
     </div>
   );
