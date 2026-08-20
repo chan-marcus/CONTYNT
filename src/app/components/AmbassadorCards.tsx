@@ -69,8 +69,8 @@ export function AmbassadorPrintSheet({ token }: { token: string }) {
         <div className="amb-lead">A creator filmed a Reel here.</div>
         <div className="amb-cta">Claim your business dashboard</div>
         <img className="amb-qr" src={qr} alt="" />
-        <div className="amb-code">{state.code}</div>
-        <div className="amb-sub">Scan the code, or go to<br />{state.url.replace(/^https?:\/\//, "")}</div>
+        <div className="amb-or">Scan the code, or go to</div>
+        <div className="amb-url">{state.url.replace(/^https?:\/\//, "")}</div>
       </div>
     </div>
   );
@@ -95,12 +95,14 @@ export function AmbassadorPrintSheet({ token }: { token: string }) {
         .amb-lead{font-size:10pt;color:#525252;margin-top:2mm}
         /* The reason to scan, set darker than the lead so it reads as the ask. */
         .amb-cta{font-size:10.5pt;font-weight:600;color:#111;margin-top:1.5mm}
-        .amb-qr{width:44mm;height:44mm;margin:4mm 0 3.5mm;display:block}
-        /* The code is the fallback when a camera will not focus, so it is set
-           large and monospaced to survive being read across a counter. */
-        .amb-code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:26pt;font-weight:700;
-                  letter-spacing:.18em;color:#0a0a0a;line-height:1}
-        .amb-sub{font-size:7.5pt;color:#737373;margin-top:3mm;line-height:1.5}
+        .amb-qr{width:50mm;height:50mm;margin:4mm 0 0;display:block}
+        /* The URL is the fallback when a camera will not focus, and it carries
+           the code inside it, so there is no separate code to print. Set large
+           and monospaced to survive being read and typed across a counter. */
+        .amb-or{font-size:8pt;color:#737373;margin-top:4mm}
+        .amb-url{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:15pt;font-weight:700;
+                 letter-spacing:.01em;color:#0a0a0a;line-height:1.2;margin-top:1.5mm;
+                 white-space:nowrap}
         /* Perforation guides down both midlines, scissors at each midpoint. */
         .amb-perf{position:absolute;color:#a3a3a3;pointer-events:none}
         .amb-perf.v{left:50%;top:0;bottom:0;border-left:1pt dashed #bdbdbd;transform:translateX(-.5pt)}
