@@ -117,6 +117,7 @@ export function AmbassadorPrintSheet({ token }: { token: string }) {
         .amb-bar button{padding:10px 18px;border-radius:10px;border:1px solid #d4d4d4;background:#111;color:#fff;
                         font-size:13px;font-weight:600;cursor:pointer}
         .amb-note{max-width:216mm;margin:8px auto 14px;font-size:11px;color:#737373;text-align:center}
+        .amb-note-line{display:block;margin-top:4px}
         @media print{
           /* Keep the guide lines exactly as designed rather than letting the
              browser drop "background" ink to save toner. */
@@ -129,7 +130,11 @@ export function AmbassadorPrintSheet({ token }: { token: string }) {
       </div>
       <p className="amb-note amb-noprint">
         Cut along the dashed lines. Every card carries the same code, so any one of them works at any business.
-        If your printer adds a margin, choose <strong>Margins: None</strong> in the print dialog.
+        {/* Its own line: this is a conditional aside about the print dialog, not
+            part of the instruction above it. */}
+        <span className="amb-note-line">
+          If your printer adds a margin, choose <strong>Margins: None</strong> in the print dialog.
+        </span>
       </p>
       <div className="amb-sheet">
         {[0, 1, 2, 3].map(card)}
