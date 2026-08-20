@@ -101,26 +101,6 @@ const AMBASSADOR_STEPS = [
   "Submit referral confirmation inside CONTYNT.",
 ];
 
-export function AmbassadorInstructions() {
-  return (
-    <div className={`${PURPLE_CARD} px-4 py-3.5 space-y-2.5`}>
-      <div className="flex items-center gap-2">
-        <Award className="w-4 h-4 text-purple-300" />
-        <p className="text-xs font-semibold text-white uppercase tracking-widest">Ambassador Instructions</p>
-      </div>
-      <ol className="space-y-1.5">
-        {AMBASSADOR_STEPS.map((step, i) => (
-          <li key={i} className="flex items-start gap-2.5 text-xs text-neutral-300 leading-relaxed">
-            <span className="shrink-0 w-4 h-4 rounded-full bg-purple-500/25 border border-purple-400/30 text-[9px] font-bold text-purple-100 flex items-center justify-center mt-0.5">
-              {i + 1}
-            </span>
-            {step}
-          </li>
-        ))}
-      </ol>
-    </div>
-  );
-}
 
 // ─── Onboarding (Ambassador Mode off) ────────────────────────────────────────
 function Onboarding({ token, onEnabled }: { token: string; onEnabled: () => void }) {

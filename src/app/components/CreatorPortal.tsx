@@ -3,7 +3,7 @@ import { motion, AnimatePresence } from "motion/react";
 import { MapPin, DollarSign, CheckCircle, X, ExternalLink, AlertCircle, Users, Zap, TrendingUp, Award, ChevronDown } from "lucide-react";
 import { projectId, publicAnonKey } from "/utils/supabase/info";
 import { CreatorLogin, CREATOR_TOKEN_KEY } from "./CreatorLogin";
-import { AmbassadorPanel, AmbassadorUpsell, AmbassadorEmptyState, AmbassadorInstructions, useAmbassador,
+import { AmbassadorPanel, AmbassadorUpsell, AmbassadorEmptyState, useAmbassador,
          AmbassadorFeatureActions, HandoffQuestion } from "./Ambassador";
 
 const BASE = `https://${projectId}.supabase.co/functions/v1/make-server-f5961d0c`;
@@ -831,7 +831,6 @@ function FeatureCard({ feature, claim, token, onClaim, onUnclaim, onAccept, onSu
                 here -- it lives in the Ambassador tab. */}
             {isAmbassador && <AmbassadorFeatureActions token={token} onOpened={onCardPrinted} />}
             {showAmbassadorUpsell && <AmbassadorUpsell onLearnMore={onLearnAmbassador!} />}
-            {isAmbassador && <AmbassadorInstructions />}
             {/* Sits directly above the countdown and the Submit box, so the
                 rules are the last thing read before posting. */}
             <div className="bg-white/5 rounded-xl px-4 py-3 text-xs text-neutral-400 space-y-1.5">
