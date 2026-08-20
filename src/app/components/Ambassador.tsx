@@ -365,21 +365,8 @@ function Dashboard({ state, instagram, token }: { state: AmbassadorState; instag
           </div>
         )}
 
-        {/* This is the one place the code and the copy button live. The Feature
-            view deliberately shows neither. */}
-        <div className="space-y-1.5">
-          <p className="text-[10px] uppercase tracking-widest text-neutral-500">Your ambassador code</p>
-          <div className="flex items-center gap-2">
-            <code className="flex-1 text-center text-lg font-bold tracking-[0.2em] bg-black/30 border border-white/10 rounded-lg py-2 text-purple-200">
-              {code}
-            </code>
-            <button onClick={() => { navigator.clipboard.writeText(code); setCopied(true); setTimeout(() => setCopied(false), 2000); }}
-              className="shrink-0 px-3 py-2 rounded-lg bg-white/10 text-neutral-200 hover:bg-white/15 transition-all">
-              {copied ? <Check className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
-            </button>
-          </div>
-        </div>
-
+        {/* The code is not shown on its own. The link below carries it, and the
+            printable and QR are where it actually gets used. */}
         <div className="space-y-1.5">
           <p className="text-[10px] uppercase tracking-widest text-neutral-500">Your link</p>
           <div className="flex items-center gap-2">
