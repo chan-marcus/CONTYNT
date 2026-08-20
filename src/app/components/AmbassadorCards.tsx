@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import QRCode from "qrcode";
 import { projectId, publicAnonKey } from "/utils/supabase/info";
 import { prettyUrl } from "../lib/prettyUrl";
@@ -59,6 +59,33 @@ export function AmbassadorPrintSheet({ token }: { token: string }) {
     if (!state) return;
     QRCode.toDataURL(state.url, { width: 640, margin: 1 }).then(setQr).catch(() => setQr(""));
   }, [state]);
+
+  // Opens the print dialog on its own once the sheet is painted. Printing
+  // before the QR decodes gives a sheet of empty boxes, so it waits for that --
+  // but with a cap, since the waits stall in a hidden tab. Fires once; the
+  // button below is for a second copy.
+  const autoPrinted = useRef(false);
+  useEffect(() => {
+    if (!state || !qr || autoPrinted.current) return;
+    autoPrinted.current = true;
+    let cancelled = false;
+    (async () => {
+      // Wait for the QR to be painted, but never wait indefinitely. Both
+      // img.decode() and requestAnimationFrame stall while a tab is hidden, so
+      // a sheet opened in a background tab would otherwise sit there and never
+      // reach the dialog. The race caps the wait; the QR is a data URI, so in a
+      // visible tab it is ready well inside it.
+      const painted = (async () => {
+        const imgs = Array.from(document.querySelectorAll<HTMLImageElement>(".amb-qr"));
+        await Promise.all(imgs.map(i => (i.decode ? i.decode().catch(() => {}) : Promise.resolve())));
+        await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(() => r(null))));
+      })();
+      await Promise.race([painted, new Promise(r => setTimeout(r, 600))]);
+      if (!cancelled) window.print();
+    })();
+
+    return () => { cancelled = true; };
+  }, [state, qr]);
 
   if (error) return <Centered><h1 style={{ fontSize: 20, marginBottom: 8 }}>Can't print yet</h1><p style={{ color: "#a3a3a3", fontSize: 14 }}>{error}</p></Centered>;
   if (!state || !qr) return <Centered><p style={{ color: "#a3a3a3", fontSize: 14 }}>Preparing your cards…</p></Centered>;
@@ -126,7 +153,7 @@ export function AmbassadorPrintSheet({ token }: { token: string }) {
         }
       `}</style>
       <div className="amb-bar amb-noprint">
-        <button onClick={() => window.print()}>Print this sheet</button>
+        <button onClick={() => window.print()}>Print again</button>
       </div>
       <p className="amb-note amb-noprint">
         Cut along the dashed lines. Every card carries the same code, so any one of them works at any business.
