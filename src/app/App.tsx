@@ -18,6 +18,7 @@ import { CreatorLogin, CREATOR_TOKEN_KEY } from "./components/CreatorLogin";
 import { ReferralLanding } from "./components/ReferralLanding";
 import { CreatorSubmissionPending } from "./components/CreatorSubmissionPending";
 import { BusinessPortal } from "./components/BusinessPortal";
+import { AmbassadorPrintSheet, AmbassadorQrScreen } from "./components/AmbassadorCards";
 import { projectId, publicAnonKey } from "/utils/supabase/info";
 
 // Generate or retrieve visitor ID
@@ -62,7 +63,7 @@ export default function App() {
 
   // Every hook must run on every render, so these route tests are computed up
   // front and the effect below is hoisted above the returns that follow.
-  const isRedirecting = !isAppPath && !!(creatorToken || view === "login" || view === "confirm");
+  const isRedirecting = !isAppPath && !!(creatorToken || view === "login" || view === "confirm" || view === "cards" || view === "qr");
   const isLanding = !referralCode && !adminToken && !isRedirecting && !isAppPath
     && !bizToken && view !== "submission";
 
@@ -196,6 +197,11 @@ export default function App() {
   if (isAppPath) {
     // Checked before the portal so ?view=confirm opens the confirmation screen
     // rather than dropping straight into the portal.
+    // Rendered by the site, not the edge function: Supabase rewrites any HTML a
+    // function returns to text/plain, so a server-rendered sheet opens as
+    // source text in the browser.
+    if (activeCreator && view === "cards") return <AmbassadorPrintSheet token={activeCreator} />;
+    if (activeCreator && view === "qr") return <AmbassadorQrScreen token={activeCreator} />;
     if (activeCreator && view === "confirm") return <ConfirmProfile token={activeCreator} />;
     if (activeCreator) return <CreatorPortal token={activeCreator} impersonating={impersonating} />;
     return <CreatorLogin />;

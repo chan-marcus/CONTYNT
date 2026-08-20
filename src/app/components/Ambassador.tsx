@@ -231,7 +231,9 @@ export function AmbassadorFeatureActions({ token, onOpened }: {
 }) {
   // Anchors, not window.open: a popup blocker will silently swallow
   // window.open and the button just looks dead. A real link always opens.
-  const q = `?t=${encodeURIComponent(token)}`;
+  // Same-origin SPA routes: a link to the edge function opens as plain text,
+  // because Supabase will not let a function serve HTML.
+  const q = `/app?creator=${encodeURIComponent(token)}`;
   const linkCls = "flex items-center justify-center gap-2 py-2.5 text-xs rounded-xl bg-white/5 border border-white/10 text-neutral-200 hover:border-purple-400/40 transition-all";
 
   return (
@@ -242,11 +244,11 @@ export function AmbassadorFeatureActions({ token, onOpened }: {
       </div>
 
       <div className="grid grid-cols-2 gap-2">
-        <a href={`${BASE}/portal/ambassador/print${q}`} target="_blank" rel="noopener noreferrer"
+        <a href={`${q}&view=cards`} target="_blank" rel="noopener noreferrer"
           onClick={() => onOpened?.()} className={linkCls}>
           <Printer className="w-3.5 h-3.5" />Print cards
         </a>
-        <a href={`${BASE}/portal/ambassador/screen${q}`} target="_blank" rel="noopener noreferrer"
+        <a href={`${q}&view=qr`} target="_blank" rel="noopener noreferrer"
           onClick={() => onOpened?.()} className={linkCls}>
           <QrCode className="w-3.5 h-3.5" />Show QR
         </a>
@@ -296,7 +298,7 @@ function Dashboard({ state, instagram, token }: { state: AmbassadorState; instag
   // only a fallback for a state loaded before the server started sending this.
   const code = state.ambassadorCode || amb.referralCode;
   const shareUrl = state.cardUrl || amb.referralUrl;
-  const serverLink = (path: string) => `${BASE}${path}?t=${encodeURIComponent(token)}`;
+  const cardsLink = (view: string) => `/app?creator=${encodeURIComponent(token)}&view=${view}`;
   const [qr, setQr] = useState("");
   const [copied, setCopied] = useState(false);
   const [showQr, setShowQr] = useState(false);
@@ -419,11 +421,11 @@ function Dashboard({ state, instagram, token }: { state: AmbassadorState; instag
           {/* Same two server routes the Feature view uses, so there is one
               printable and one QR per creator rather than a second pair built
               in the browser that could drift from it. */}
-          <a href={serverLink("/portal/ambassador/print")} target="_blank" rel="noopener noreferrer"
+          <a href={cardsLink("cards")} target="_blank" rel="noopener noreferrer"
             className="flex items-center justify-center gap-2 py-2.5 text-xs rounded-xl bg-white/5 border border-white/10 text-neutral-200 hover:border-purple-400/40 transition-all">
             <Printer className="w-3.5 h-3.5" />Print cards
           </a>
-          <a href={serverLink("/portal/ambassador/screen")} target="_blank" rel="noopener noreferrer"
+          <a href={cardsLink("qr")} target="_blank" rel="noopener noreferrer"
             className="flex items-center justify-center gap-2 py-2.5 text-xs rounded-xl bg-white/5 border border-white/10 text-neutral-200 hover:border-purple-400/40 transition-all">
             <QrCode className="w-3.5 h-3.5" />Show QR
           </a>

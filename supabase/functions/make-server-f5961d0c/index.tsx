@@ -1418,87 +1418,12 @@ function buildCardSheet(code: string, qr: string): string {
 }
 
 
-// Printable sheet and on-screen QR, both keyed by the creator's own ambassador
-// code rather than a card id. The Ambassador tab and every in-progress Feature
-// hit these same two routes, so there is one printable and one QR per creator.
-async function ambassadorCodeForToken(token: string) {
-  const creatorData = await creatorFromToken(token);
-  if (!creatorData?.creatorId) return { error: "Invalid or expired link", status: 401 as const };
-  const { data: row } = await db().from("creator_signups_f5961d0c")
-    .select("ambassador_opted_in, ambassador_code").eq("id", creatorData.creatorId).maybeSingle();
-  // The portal shows these buttons when ambassadors.enabled_status is set, so
-  // gating only on creator_signups.ambassador_opted_in meant a creator whose two
-  // flags disagreed saw buttons that always failed. Either one counts.
-  let allowed = !!row?.ambassador_opted_in;
-  if (!allowed) {
-    const { data: amb } = await db().from("ambassadors_f5961d0c")
-      .select("enabled_status").eq("creator_id", creatorData.creatorId).maybeSingle();
-    allowed = !!amb?.enabled_status;
-  }
-  if (!allowed) return { error: "Ambassador Mode is not enabled", status: 403 as const };
-  const code = row.ambassador_code || await ensureAmbassadorCode(String(creatorData.creatorId));
-  return { code, creatorId: String(creatorData.creatorId) };
-}
-
-app.get("/make-server-f5961d0c/portal/ambassador/print", async (c) => {
-  try {
-    const res = await ambassadorCodeForToken(c.req.query("t") || "");
-    if ("error" in res) return htmlPage({
-      title: "Contynt", noindex: true, status: res.status,
-      body: `<h1>${res.status === 403 ? "Ambassador Mode is off" : "Your session expired"}</h1>
-        <p>${res.status === 403
-          ? "Turn on Ambassador Mode in the portal, then try again."
-          : "Open the creator portal again and tap Print cards from there."}</p>`,
-    });
-    const qr = await QRCode.toDataURL(cardUrlFor(res.code), { width: 640, margin: 1 });
-    return new Response(buildCardSheet(res.code, qr), {
-      headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store", "X-Robots-Tag": "noindex, nofollow" },
-    });
-  } catch (e: any) {
-    console.error("[ambassador print]", e?.message ?? e);
-    return c.json({ error: "Could not build the printable" }, 500);
-  }
-});
-
-// No printer to hand: a full-bleed QR sized to be scanned off this screen by
-// somebody else's phone, with the code underneath as the fallback.
-app.get("/make-server-f5961d0c/portal/ambassador/screen", async (c) => {
-  try {
-    const res = await ambassadorCodeForToken(c.req.query("t") || "");
-    if ("error" in res) return htmlPage({
-      title: "Contynt", noindex: true, status: res.status,
-      body: `<h1>${res.status === 403 ? "Ambassador Mode is off" : "Your session expired"}</h1>
-        <p>${res.status === 403
-          ? "Turn on Ambassador Mode in the portal, then try again."
-          : "Open the creator portal again and tap Print cards from there."}</p>`,
-    });
-    const qr = await QRCode.toDataURL(cardUrlFor(res.code), { width: 1000, margin: 1 });
-    return new Response(`<!doctype html><html><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<meta name="robots" content="noindex,nofollow"><title>Your Ambassador code</title>
-<style>
-  *{box-sizing:border-box;margin:0;padding:0}
-  body{background:#fff;color:#0a0a0a;min-height:100vh;display:flex;flex-direction:column;
-       align-items:center;justify-content:center;padding:16px;
-       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Helvetica,Arial,sans-serif}
-  /* Sized off the viewport so it fills the screen on a phone: the whole point
-     is for another phone's camera to lock onto it from across a counter. */
-  img{width:min(88vw,88vh);height:auto;display:block}
-  .code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:clamp(28px,9vw,52px);
-        font-weight:700;letter-spacing:.18em;margin-top:14px}
-  .hint{margin-top:10px;font-size:13px;color:#6b7280;text-align:center;max-width:34ch;line-height:1.5}
-</style></head><body>
-  <img src="${qr}" alt="">
-  <div class="code">${esc(res.code)}</div>
-  <p class="hint">Turn your screen brightness all the way up, then have them scan it.</p>
-</body></html>`, {
-      headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store", "X-Robots-Tag": "noindex, nofollow" },
-    });
-  } catch (e: any) {
-    console.error("[ambassador screen]", e?.message ?? e);
-    return c.json({ error: "Could not build the QR" }, 500);
-  }
-});
+// The printable sheet and the on-screen QR are rendered by the site, not here.
+// Supabase rewrites any HTML an Edge Function returns to text/plain with
+// `content-security-policy: default-src 'none'; sandbox`, so a page served from
+// this origin opens as source text in a browser. Anything a person is meant to
+// look at lives in the SPA: /app?view=cards and /app?view=qr, which read the
+// code from the JSON route below.
 
 // Cards for the portal's "Print your card" step.
 app.get("/make-server-f5961d0c/portal/cards", async (c) => {
