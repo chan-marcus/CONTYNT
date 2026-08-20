@@ -1054,22 +1054,21 @@ const esc = (s: any) => String(s ?? "").replace(/[&<>"']/g, m =>
   ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[m] as string));
 
 // Public scan route. Mobile in practice: a phone held behind a counter.
-app.get("/make-server-f5961d0c/a/:code", async (c) => {
+// Scan resolution, as JSON.
+//
+// This used to render the page itself, but Supabase rewrites any HTML an Edge
+// Function returns to text/plain with a sandbox CSP, so a business scanning a
+// card saw markup as text. The page is now rendered by the site at /a/CODE and
+// calls this for the data.
+app.get("/make-server-f5961d0c/scan/:code", async (c) => {
   try {
-    const raw = c.req.param("code");
-    const code = canonicalCode(raw);
-    if (raw !== code) return c.redirect(`/make-server-f5961d0c/a/${encodeURIComponent(code)}`, 301);
+    const code = canonicalCode(c.req.param("code"));
 
-    // The code identifies a CREATOR now, not a card or a business.
+    // The code identifies a CREATOR, not a card or a business.
     const { data: creator } = await db().from("creator_signups_f5961d0c")
       .select("id, ambassador_opted_in").eq("ambassador_code", code).maybeSingle();
 
-    if (!creator || !creator.ambassador_opted_in) {
-      return htmlPage({
-        title: "Contynt", noindex: true, status: 404,
-        body: `<h1>This card is not active</h1><p>Double check the code, or visit contynt.com to get started.</p>`,
-      });
-    }
+    if (!creator || !creator.ambassador_opted_in) return c.json({ state: "unknown", code });
 
     // A creator previewing their own card must not consume a scan. There are no
     // cookies in this stack, so the portal passes its own bearer token on the
@@ -1085,10 +1084,7 @@ app.get("/make-server-f5961d0c/a/:code", async (c) => {
     const ipHash = ip ? await hashIp(ip) : null;
 
     if (!isSelfScan && await scanRateLimited(code, ipHash)) {
-      return htmlPage({
-        title: "Contynt", noindex: true, status: 429,
-        body: `<h1>Give it a moment</h1><p>This code has been scanned a lot just now. Try again shortly.</p>`,
-      });
+      return c.json({ state: "throttled", code }, 429);
     }
 
     await db().from("ambassador_card_scans_f5961d0c").insert({
@@ -1099,84 +1095,13 @@ app.get("/make-server-f5961d0c/a/:code", async (c) => {
     });
 
     const st = await creatorScanState(String(creator.id));
-    const foot = `<p class="note">Contynt connects local creators with local businesses.</p>`;
-
-    if (st.state === "B") {
-      return htmlPage({
-        title: "Contynt", noindex: true,
-        body: `<h1>The Reel is live</h1>
-          <p>Filmed at ${esc(st.businessName)} by @${esc(st.creatorInstagram)}.</p>
-          <p><a href="${esc(st.reelUrl)}" target="_blank" rel="noopener noreferrer"
-                style="color:#c4b5fd">Watch it on Instagram</a></p>
-          ${st.metrics?.thumbnail ? `<img src="${esc(st.metrics.thumbnail)}" alt="" style="width:100%;border-radius:16px;margin:18px 0">` : ""}
-          <form method="GET" action="${esc(SITE_ORIGIN)}/">
-            <input type="hidden" name="ref" value="${esc(code)}">
-            <button type="submit">Create a business account</button>
-          </form>${foot}`,
-      });
-    }
-
-    if (st.state === "C") {
-      return htmlPage({
-        title: "Contynt", noindex: true,
-        body: `<h1>Contynt</h1>
-          <p>Local creators film short Reels at local businesses and post them to their own audience.</p>
-          <form method="GET" action="${esc(SITE_ORIGIN)}/">
-            <button type="submit">See how it works</button>
-          </form>${foot}`,
-      });
-    }
-
-    // ── State A ──────────────────────────────────────────────────────────────
-    // The code no longer knows which business this is, so the owner names it.
-    // Autocomplete gives us a place_id, which is what lets a second card at the
-    // same address attach to the same business instead of creating a twin.
-    // Without a key the field is still a plain required text input: the lead is
-    // captured, just without a place_id to match on.
+    // A Places browser key is public by design and restricted by referrer, so
+    // handing it to the page is how it is meant to be used.
     const placesKey = Deno.env.get("GOOGLE_PLACES_KEY") || "";
-    const placesScript = placesKey ? `
-      <script src="https://maps.googleapis.com/maps/api/js?key=${esc(placesKey)}&libraries=places&loading=async" async defer></script>
-      <script>
-        function contyntPlaces() {
-          var input = document.getElementById("bizname");
-          if (!input || !window.google || !google.maps || !google.maps.places) return;
-          var ac = new google.maps.places.Autocomplete(input, {
-            fields: ["place_id", "name", "formatted_address"],
-            types: ["establishment"],
-            // Biased, not restricted: a spot just outside the box should still
-            // be findable rather than silently missing.
-            locationBias: { center: { lat: 37.7749, lng: -122.4194 }, radius: 30000 }
-          });
-          ac.addListener("place_changed", function () {
-            var p = ac.getPlace() || {};
-            document.getElementById("place_id").value = p.place_id || "";
-            document.getElementById("place_address").value = p.formatted_address || "";
-            if (p.name) input.value = p.name;
-          });
-        }
-        window.addEventListener("load", function () { setTimeout(contyntPlaces, 400); });
-      </script>` : "";
-
-    return htmlPage({
-      title: "Contynt", noindex: true,
-      extraHead: placesScript,
-      body: `<h1>A creator filmed here recently</h1>
-        <p>It will be posted this week. Tell us where this is and we will send you the Reel when it goes live.</p>
-        <form method="POST" action="/make-server-f5961d0c/a/${esc(code)}/lead">
-          <input id="bizname" type="text" name="businessName" placeholder="Business name" required
-                 autocomplete="off" autocapitalize="words">
-          <input id="place_id" type="hidden" name="placeId" value="">
-          <input id="place_address" type="hidden" name="placeAddress" value="">
-          <input type="email" name="email" placeholder="you@yourbusiness.com" required autocomplete="email">
-          <button type="submit">Send me the Reel</button>
-        </form>${foot}`,
-    });
+    return c.json({ ...st, code, placesKey, siteOrigin: SITE_ORIGIN });
   } catch (e: any) {
     console.error("[scan]", e?.message ?? e);
-    return htmlPage({
-      title: "Contynt", noindex: true, status: 500,
-      body: `<h1>Something went wrong</h1><p>Try again in a moment.</p>`,
-    });
+    return c.json({ state: "error" }, 500);
   }
 });
 
@@ -1185,23 +1110,21 @@ app.get("/make-server-f5961d0c/a/:code", async (c) => {
 // The code identifies the creator, so this is also where attribution is
 // recorded. Attribution is still one payout per business ever and still admin
 // approved -- nothing here credits anybody.
-app.post("/make-server-f5961d0c/a/:code/lead", async (c) => {
-  const thanks = () => htmlPage({
-    title: "Contynt", noindex: true,
-    body: `<h1>Thanks</h1><p>We will email you as soon as the Reel is live.</p>`,
-  });
+app.post("/make-server-f5961d0c/scan/:code/lead", async (c) => {
   try {
     const code = canonicalCode(c.req.param("code"));
-    const body = await c.req.parseBody().catch(() => ({} as any));
+    const body = await c.req.json().catch(() => ({} as any));
     const email = String((body as any).email ?? "").trim().toLowerCase();
     const businessName = String((body as any).businessName ?? "").trim().slice(0, 120);
     const placeId = String((body as any).placeId ?? "").trim().slice(0, 200) || null;
     const placeAddress = String((body as any).placeAddress ?? "").trim().slice(0, 300) || null;
-    if (!email || !email.includes("@") || !businessName) return thanks();
+    if (!email || !email.includes("@") || !businessName) {
+      return c.json({ error: "A business name and email are required" }, 400);
+    }
 
     const { data: creator } = await db().from("creator_signups_f5961d0c")
       .select("id, ambassador_opted_in, city").eq("ambassador_code", code).maybeSingle();
-    if (!creator?.ambassador_opted_in) return thanks();
+    if (!creator?.ambassador_opted_in) return c.json({ error: "This card is not active" }, 404);
 
     // Match on place_id first, then fall back to an exact name match so a lead
     // submitted without a key still has a chance of attaching rather than
@@ -1209,7 +1132,7 @@ app.post("/make-server-f5961d0c/a/:code/lead", async (c) => {
     let business: any = null;
     if (placeId) {
       const { data } = await db().from("business_signups_f5961d0c")
-        .select("id, lead_status").eq("place_id", placeId).maybeSingle();
+        .select("id, lead_status, place_id").eq("place_id", placeId).maybeSingle();
       business = data ?? null;
     }
     if (!business) {
@@ -1230,9 +1153,7 @@ app.post("/make-server-f5961d0c/a/:code/lead", async (c) => {
     } else {
       // Unknown: create it, flagged unverified. Nothing puts a Feature on the
       // board for it, so it stays invisible to creators until an admin works it.
-      // instagram and city are NOT NULL on this table with no default, so both
-      // are always sent. A scan does not know the handle; admin fills it in when
-      // the lead is worked.
+      // instagram and city are NOT NULL with no default, so both are always sent.
       const { data: made, error: makeErr } = await db().from("business_signups_f5961d0c").insert({
         business_name: businessName,
         instagram: "",
@@ -1245,15 +1166,12 @@ app.post("/make-server-f5961d0c/a/:code/lead", async (c) => {
         referral_source: "ambassador_scan",
         referred_by_creator: creator.id,
       }).select("id").single();
-      // Logged rather than swallowed: a failure here used to leave a lead row
-      // with a null business_id and no trace of why.
       if (makeErr) console.error("[lead] could not create business:", makeErr.message);
       business = made ?? null;
     }
 
-    // Attribution belongs to the creator whose code this is. Recorded against
-    // the business; the single-payout rule is enforced where payouts are made,
-    // not here.
+    // Attribution belongs to the creator whose code this is. The single-payout
+    // rule is enforced where payouts are made, not here.
     if (business?.id) {
       await db().from("business_signups_f5961d0c")
         .update({ referred_by_creator: creator.id })
@@ -1266,10 +1184,11 @@ app.post("/make-server-f5961d0c/a/:code/lead", async (c) => {
       card_code: code, business_id: business?.id ?? null, email,
     });
     if (error && !String(error.message || "").includes("duplicate")) throw error;
-    return thanks();
+    return c.json({ ok: true });
   } catch (e: any) {
     console.error("[lead]", e?.message ?? e);
-    return thanks();
+    // Never dead-end the person standing at the counter.
+    return c.json({ ok: true });
   }
 });
 

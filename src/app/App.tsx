@@ -19,6 +19,7 @@ import { ReferralLanding } from "./components/ReferralLanding";
 import { CreatorSubmissionPending } from "./components/CreatorSubmissionPending";
 import { BusinessPortal } from "./components/BusinessPortal";
 import { AmbassadorPrintSheet, AmbassadorQrScreen } from "./components/AmbassadorCards";
+import { ScanPage } from "./components/ScanPage";
 import { projectId, publicAnonKey } from "/utils/supabase/info";
 
 // Generate or retrieve visitor ID
@@ -65,7 +66,7 @@ export default function App() {
   // front and the effect below is hoisted above the returns that follow.
   const isRedirecting = !isAppPath && !!(creatorToken || view === "login" || view === "confirm" || view === "cards" || view === "qr");
   const isLanding = !referralCode && !adminToken && !isRedirecting && !isAppPath
-    && !bizToken && view !== "submission";
+    && !bizToken && view !== "submission" && !/^\/a\/[^/]+$/.test(path);
 
   useEffect(() => {
     // Guarded in the body rather than by placement, so the hook itself always
@@ -183,6 +184,11 @@ export default function App() {
 
     return () => window.removeEventListener("hashchange", checkHash);
   }, [isLanding]);
+
+  // Ambassador card scans. Served by the site because Supabase rewrites any HTML
+  // an Edge Function returns to text/plain, which showed the owner raw markup.
+  const scanMatch = path.match(/^\/a\/([^/]+)$/);
+  if (scanMatch) return <ScanPage code={decodeURIComponent(scanMatch[1]).toUpperCase()} />;
 
   if (referralCode) return <ReferralLanding code={referralCode} />;
   if (adminToken) return <Analytics adminToken={adminToken} />;
