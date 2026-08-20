@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { projectId, publicAnonKey } from "/utils/supabase/info";
 
 // The page a business owner lands on after scanning an Ambassador card.
@@ -36,37 +36,107 @@ function Shell({ children }: { children: React.ReactNode }) {
   );
 }
 
-// Loaded only when a key is configured. Without one the field is still a
-// required text input; the lead is captured, just without a place_id to match
-// on, and the server falls back to matching by name.
-function usePlacesAutocomplete(key: string | undefined, onPlace: (p: { placeId: string; address: string; name: string }) => void) {
+// Google closed the legacy google.maps.places.Autocomplete widget to new
+// customers on 1 March 2025: it loads without error and simply returns no
+// predictions. This uses PlaceAutocompleteElement, the supported replacement,
+// which is a web component rather than something bound to an existing input.
+//
+// Loaded only when a key is configured. Without one the plain input below is
+// used, the lead is still captured, and the server falls back to matching the
+// business by name instead of by place_id.
+function usePlacesElement(
+  key: string | undefined,
+  host: React.RefObject<HTMLDivElement | null>,
+  onPlace: (p: { placeId: string; address: string; name: string }) => void,
+  onText: (v: string) => void,
+) {
+  const [ready, setReady] = useState(false);
+
   useEffect(() => {
     if (!key) return;
-    const id = "contynt-places";
-    const attach = () => {
-      const g = (window as any).google;
-      const input = document.getElementById("bizname") as HTMLInputElement | null;
-      if (!g?.maps?.places || !input) return;
-      const ac = new g.maps.places.Autocomplete(input, {
-        fields: ["place_id", "name", "formatted_address"],
-        types: ["establishment"],
-        // Biased, not restricted: a spot just outside the box should still be
-        // findable rather than silently missing.
-        locationBias: { center: { lat: 37.7749, lng: -122.4194 }, radius: 30000 },
-      });
-      ac.addListener("place_changed", () => {
-        const p = ac.getPlace() || {};
-        onPlace({ placeId: p.place_id || "", address: p.formatted_address || "", name: p.name || "" });
-      });
-    };
-    if (document.getElementById(id)) { setTimeout(attach, 300); return; }
-    const sc = document.createElement("script");
-    sc.id = id;
-    sc.async = true;
-    sc.src = `https://maps.googleapis.com/maps/api/js?key=${encodeURIComponent(key)}&libraries=places&loading=async`;
-    sc.onload = () => setTimeout(attach, 200);
-    document.head.appendChild(sc);
+    let cancelled = false;
+
+    // With loading=async the script's onload fires before the bootstrap has
+    // attached google.maps.importLibrary, so waiting on onload alone gives
+    // "importLibrary is not a function". Google's documented answer is the
+    // callback parameter, which fires once the API is genuinely ready.
+    const ready = () => typeof (window as any).google?.maps?.importLibrary === "function";
+    const loadScript = () => new Promise<void>((resolve, reject) => {
+      if (ready()) return resolve();
+      const cbName = "__contyntMapsReady";
+      const prev = (window as any)[cbName];
+      (window as any)[cbName] = () => { prev?.(); resolve(); };
+
+      const id = "contynt-places";
+      if (document.getElementById(id)) {
+        // Already loading from an earlier mount: the callback above is chained
+        // onto the pending one, so this resolves when that finishes.
+        return;
+      }
+      const sc = document.createElement("script");
+      sc.id = id; sc.async = true;
+      sc.src = `https://maps.googleapis.com/maps/api/js?key=${encodeURIComponent(key)}`
+             + `&libraries=places&loading=async&v=weekly&callback=${cbName}`;
+      sc.onerror = () => reject(new Error("maps script failed to load"));
+      document.head.appendChild(sc);
+    });
+
+    (async () => {
+      try {
+        await loadScript();
+        const g = (window as any).google;
+        const { PlaceAutocompleteElement } = await g.maps.importLibrary("places");
+        if (cancelled) return;
+        const mount = host.current;
+        if (!mount) { console.error("[places] host element missing at mount time"); return; }
+
+        const el = new PlaceAutocompleteElement({
+          // Biased, not restricted: a spot just outside the box should still be
+          // findable rather than silently missing.
+          locationBias: { center: { lat: 37.7749, lng: -122.4194 }, radius: 30000 },
+          includedPrimaryTypes: ["establishment"],
+        });
+        el.style.width = "100%";
+        mount.innerHTML = "";
+        mount.appendChild(el);
+
+        // Free text still has to reach the form: someone may type a name that
+        // has no Places match and submit it anyway.
+        const inner = el.querySelector?.("input") as HTMLInputElement | null;
+        inner?.addEventListener("input", () => onText(inner.value));
+        el.addEventListener("input", (e: any) => {
+          const v = e?.target?.value; if (typeof v === "string") onText(v);
+        });
+
+        const handle = async (ev: any) => {
+          const pred = ev?.placePrediction ?? ev?.detail?.placePrediction;
+          if (!pred) return;
+          const place = pred.toPlace();
+          await place.fetchFields({ fields: ["id", "displayName", "formattedAddress"] });
+          onPlace({
+            placeId: place.id || "",
+            address: place.formattedAddress || "",
+            name: (place.displayName as any) || "",
+          });
+        };
+        // The event was renamed; listen for both so a version bump cannot
+        // silently stop capturing place_id.
+        el.addEventListener("gmp-select", handle);
+        el.addEventListener("gmp-placeselect", handle);
+
+        setReady(true);
+      } catch (e) {
+        // Leaves the plain input in place, which still captures the lead. Logged
+        // rather than swallowed: a silent failure here looks identical to "no
+        // key configured", and the two need different fixes.
+        console.error("[places] autocomplete unavailable:", e);
+      }
+    })();
+
+    return () => { cancelled = true; };
   }, [key]);
+
+  return ready;
 }
 
 export function ScanPage({ code }: { code: string }) {
@@ -79,10 +149,15 @@ export function ScanPage({ code }: { code: string }) {
   const [done, setDone] = useState(false);
   const [error, setError] = useState("");
 
-  usePlacesAutocomplete(data?.placesKey || undefined, (p) => {
-    setPlaceId(p.placeId); setPlaceAddress(p.address);
-    if (p.name) setBusinessName(p.name);
-  });
+  const placesHost = useRef<HTMLDivElement | null>(null);
+  const placesReady = usePlacesElement(
+    data?.placesKey || undefined,
+    placesHost,
+    (p) => { setPlaceId(p.placeId); setPlaceAddress(p.address); if (p.name) setBusinessName(p.name); },
+    // Typing after a selection means they are naming something else, so the
+    // stale place_id has to go with it.
+    (v) => { setBusinessName(v); setPlaceId(""); setPlaceAddress(""); },
+  );
 
   useEffect(() => {
     document.title = "CONTYNT";
@@ -198,9 +273,14 @@ export function ScanPage({ code }: { code: string }) {
       as soon as it goes live, and you can request more from there.
     </p>
     <form onSubmit={submit} className="flex flex-col gap-2.5 text-left">
-      <input id="bizname" value={businessName} onChange={e => { setBusinessName(e.target.value); setPlaceId(""); }}
-        placeholder="Business name" required autoComplete="off" autoCapitalize="words"
-        className="w-full px-3.5 py-3 bg-white/10 border border-white/20 rounded-xl text-white text-[15px] placeholder:text-neutral-500 focus:outline-none focus:ring-2 focus:ring-white/25" />
+      {/* The Places component mounts here when a key is configured. Until then,
+          and if it fails to load, the plain input below carries the field. */}
+      <div ref={placesHost} className={placesReady ? "contynt-places-host" : "hidden"} />
+      {!placesReady && (
+        <input id="bizname" value={businessName} onChange={e => { setBusinessName(e.target.value); setPlaceId(""); }}
+          placeholder="Business name" required autoComplete="off" autoCapitalize="words"
+          className="w-full px-3.5 py-3 bg-white/10 border border-white/20 rounded-xl text-white text-[15px] placeholder:text-neutral-500 focus:outline-none focus:ring-2 focus:ring-white/25" />
+      )}
       <input type="email" value={email} onChange={e => setEmail(e.target.value)}
         placeholder="you@yourbusiness.com" required autoComplete="email"
         className="w-full px-3.5 py-3 bg-white/10 border border-white/20 rounded-xl text-white text-[15px] placeholder:text-neutral-500 focus:outline-none focus:ring-2 focus:ring-white/25" />
