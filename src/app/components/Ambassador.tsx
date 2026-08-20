@@ -2,6 +2,7 @@ import { useEffect, useState, useCallback } from "react";
 import QRCode from "qrcode";
 import { Award, Copy, Check, Printer, Download, Share2, QrCode, Users, Clock, Building2, DollarSign, Sparkles } from "lucide-react";
 import { projectId, publicAnonKey } from "/utils/supabase/info";
+import { prettyUrl } from "../lib/prettyUrl";
 
 const BASE = `https://${projectId}.supabase.co/functions/v1/make-server-f5961d0c`;
 const AUTH = { Authorization: `Bearer ${publicAnonKey}`, "Content-Type": "application/json" };
@@ -370,8 +371,10 @@ function Dashboard({ state, instagram, token }: { state: AmbassadorState; instag
         <div className="space-y-1.5">
           <p className="text-[10px] uppercase tracking-widest text-neutral-500">Your link</p>
           <div className="flex items-center gap-2">
+            {/* Shown the way it is printed on the cards. The copy button still
+                writes the real URL, so what lands on the clipboard is a link. */}
             <code className="flex-1 min-w-0 truncate text-xs bg-black/30 border border-white/10 rounded-lg px-3 py-2 text-purple-200">
-              {shareUrl}
+              {prettyUrl(shareUrl)}
             </code>
             <button onClick={copy}
               className="shrink-0 px-3 py-2 text-xs rounded-lg bg-white/10 text-neutral-200 hover:bg-white/15 transition-all">
