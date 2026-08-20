@@ -464,6 +464,7 @@ function FeatureCard({ feature, claim, token, onClaim, onUnclaim, onAccept, onSu
   const [paymentInfo, setPaymentInfo] = useState("");
   const [claiming, setClaiming] = useState(false);
   const [handedOff, setHandedOff] = useState<boolean | null>(null);
+  const [askingHandoff, setAskingHandoff] = useState(false);
   const [handoffReason, setHandoffReason] = useState("");
   const claimStatus = claim?.status;
   const isGloballyClaimed = feature.status === "completed" || fake;
@@ -474,20 +475,7 @@ function FeatureCard({ feature, claim, token, onClaim, onUnclaim, onAccept, onSu
     setClaiming(false);
   };
 
-  const handleSubmit = () => {
-    const url = reelUrl.trim();
-    if (!url) return;
-    try { new URL(url); } catch {
-      setUrlError("Please enter a valid URL (e.g. https://www.instagram.com/reel/...)");
-      return;
-    }
-    // The server rejects a submission that omits this when a card exists, so
-    // catch it here rather than letting the creator watch a success animation
-    // and then find out it failed.
-    if (isAmbassador && handedOff === null) {
-      setUrlError("Let us know whether you handed off the card.");
-      return;
-    }
+  const send = (url: string) => {
     setUrlError("");
     setSubmitting(true);
     setShowSuccess(true);
@@ -495,7 +483,31 @@ function FeatureCard({ feature, claim, token, onClaim, onUnclaim, onAccept, onSu
       onSubmit(url, handedOff, handoffReason);
       setSubmitting(false);
       setShowSuccess(false);
+      setAskingHandoff(false);
     }, 1500);
+  };
+
+  const handleSubmit = () => {
+    const url = reelUrl.trim();
+    if (!url) return;
+    try { new URL(url); } catch {
+      setUrlError("Please enter a valid URL (e.g. https://www.instagram.com/reel/...)");
+      return;
+    }
+    // Ambassadors answer the handoff question before this goes anywhere: the
+    // server rejects a submission that omits it, so asking now beats letting
+    // them watch a success animation and then find out it failed.
+    if (isAmbassador && handedOff === null) {
+      setUrlError("");
+      setAskingHandoff(true);
+      return;
+    }
+    send(url);
+  };
+
+  const finishSubmit = () => {
+    if (handedOff === null) return;
+    send(reelUrl.trim());
   };
 
   const winner = (feature as any).winnerInstagram || claimedBy || "";
@@ -843,27 +855,41 @@ function FeatureCard({ feature, claim, token, onClaim, onUnclaim, onAccept, onSu
             {showAmbassadorUpsell && <AmbassadorUpsell onLearnMore={onLearnAmbassador!} />}
             </>}
             {expanded && <>
-            {/* Asked of ambassadors only. Was gated on a per-feature card
-                object, which no longer exists, so it would never have shown. */}
-            {isAmbassador && (
-              <HandoffQuestion value={handedOff} onChange={setHandedOff}
-                reason={handoffReason} onReason={setHandoffReason} />
-            )}
+            {/* Two stages. Submit Reel checks the URL and, for ambassadors,
+                flips to the handoff question rather than asking it up front
+                where it reads as another form field to fill before starting.
+                The Reel is not sent until the question is answered, so the two
+                still arrive in one call. */}
             <div className="space-y-2">
-              <input value={reelUrl} onChange={(e) => { setReelUrl(e.target.value); setUrlError(""); }}
-                placeholder="Paste your Instagram Reel URL"
-                disabled={submitting}
-                className={`w-full px-4 py-3 bg-white/10 border rounded-xl text-white text-sm placeholder:text-neutral-500 focus:outline-none focus:ring-2 focus:ring-white/30 transition-all disabled:opacity-50 ${urlError ? "border-red-500/50" : "border-white/20"}`} />
-              {urlError && <p className="text-xs text-red-400">{urlError}</p>}
               {showSuccess ? (
                 <div className="w-full py-3 bg-green-500/20 border border-green-500/30 rounded-xl flex items-center justify-center gap-2 text-sm font-semibold text-green-400">
                   <CheckCircle className="w-4 h-4" />Reel submitted!
                 </div>
+              ) : askingHandoff ? (
+                <>
+                  <HandoffQuestion value={handedOff} onChange={setHandedOff}
+                    reason={handoffReason} onReason={setHandoffReason} />
+                  <button onClick={finishSubmit} disabled={handedOff === null || submitting}
+                    className="w-full py-3 bg-white text-neutral-900 text-sm font-semibold rounded-xl hover:bg-neutral-100 transition-all disabled:opacity-40 disabled:cursor-not-allowed">
+                    {submitting ? "Submitting…" : "Submit Reel"}
+                  </button>
+                  <button onClick={() => setAskingHandoff(false)}
+                    className="w-full py-1.5 text-[11px] text-neutral-500 hover:text-neutral-300 transition-all">
+                    Back to the Reel link
+                  </button>
+                </>
               ) : (
-                <button onClick={handleSubmit} disabled={!reelUrl.trim() || submitting}
-                  className="w-full py-3 bg-white text-neutral-900 text-sm font-semibold rounded-xl hover:bg-neutral-100 transition-all disabled:opacity-40 disabled:cursor-not-allowed">
-                  Submit Reel
-                </button>
+                <>
+                  <input value={reelUrl} onChange={(e) => { setReelUrl(e.target.value); setUrlError(""); }}
+                    placeholder="Paste your Instagram Reel URL"
+                    disabled={submitting}
+                    className={`w-full px-4 py-3 bg-white/10 border rounded-xl text-white text-sm placeholder:text-neutral-500 focus:outline-none focus:ring-2 focus:ring-white/30 transition-all disabled:opacity-50 ${urlError ? "border-red-500/50" : "border-white/20"}`} />
+                  {urlError && <p className="text-xs text-red-400">{urlError}</p>}
+                  <button onClick={handleSubmit} disabled={!reelUrl.trim() || submitting}
+                    className="w-full py-3 bg-white text-neutral-900 text-sm font-semibold rounded-xl hover:bg-neutral-100 transition-all disabled:opacity-40 disabled:cursor-not-allowed">
+                    Submit Reel
+                  </button>
+                </>
               )}
             </div>
             </>}
