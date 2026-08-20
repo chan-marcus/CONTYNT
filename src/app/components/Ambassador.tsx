@@ -229,11 +229,10 @@ export function useCards(token: string, enabled: boolean) {
 export function AmbassadorFeatureActions({ token, onOpened }: {
   token: string; onOpened?: () => void;
 }) {
+  // Anchors, not window.open: a popup blocker will silently swallow
+  // window.open and the button just looks dead. A real link always opens.
   const q = `?t=${encodeURIComponent(token)}`;
-  const open = (path: string) => {
-    window.open(`${BASE}${path}`, "_blank", "noopener");
-    onOpened?.();
-  };
+  const linkCls = "flex items-center justify-center gap-2 py-2.5 text-xs rounded-xl bg-white/5 border border-white/10 text-neutral-200 hover:border-purple-400/40 transition-all";
 
   return (
     <div className={`${PURPLE_CARD} px-4 py-3.5 space-y-3`}>
@@ -243,14 +242,14 @@ export function AmbassadorFeatureActions({ token, onOpened }: {
       </div>
 
       <div className="grid grid-cols-2 gap-2">
-        <button onClick={() => open(`/portal/ambassador/print${q}`)}
-          className="flex items-center justify-center gap-2 py-2.5 text-xs rounded-xl bg-white/5 border border-white/10 text-neutral-200 hover:border-purple-400/40 transition-all">
+        <a href={`${BASE}/portal/ambassador/print${q}`} target="_blank" rel="noopener noreferrer"
+          onClick={() => onOpened?.()} className={linkCls}>
           <Printer className="w-3.5 h-3.5" />Print cards
-        </button>
-        <button onClick={() => open(`/portal/ambassador/screen${q}`)}
-          className="flex items-center justify-center gap-2 py-2.5 text-xs rounded-xl bg-white/5 border border-white/10 text-neutral-200 hover:border-purple-400/40 transition-all">
+        </a>
+        <a href={`${BASE}/portal/ambassador/screen${q}`} target="_blank" rel="noopener noreferrer"
+          onClick={() => onOpened?.()} className={linkCls}>
           <QrCode className="w-3.5 h-3.5" />Show QR
-        </button>
+        </a>
       </div>
 
       <p className="text-[11px] text-neutral-400 leading-relaxed">
@@ -297,8 +296,7 @@ function Dashboard({ state, instagram, token }: { state: AmbassadorState; instag
   // only a fallback for a state loaded before the server started sending this.
   const code = state.ambassadorCode || amb.referralCode;
   const shareUrl = state.cardUrl || amb.referralUrl;
-  const openServer = (path: string) =>
-    window.open(`${BASE}${path}?t=${encodeURIComponent(token)}`, "_blank", "noopener");
+  const serverLink = (path: string) => `${BASE}${path}?t=${encodeURIComponent(token)}`;
   const [qr, setQr] = useState("");
   const [copied, setCopied] = useState(false);
   const [showQr, setShowQr] = useState(false);
@@ -421,14 +419,14 @@ function Dashboard({ state, instagram, token }: { state: AmbassadorState; instag
           {/* Same two server routes the Feature view uses, so there is one
               printable and one QR per creator rather than a second pair built
               in the browser that could drift from it. */}
-          <button onClick={() => openServer("/portal/ambassador/print")}
+          <a href={serverLink("/portal/ambassador/print")} target="_blank" rel="noopener noreferrer"
             className="flex items-center justify-center gap-2 py-2.5 text-xs rounded-xl bg-white/5 border border-white/10 text-neutral-200 hover:border-purple-400/40 transition-all">
             <Printer className="w-3.5 h-3.5" />Print cards
-          </button>
-          <button onClick={() => openServer("/portal/ambassador/screen")}
+          </a>
+          <a href={serverLink("/portal/ambassador/screen")} target="_blank" rel="noopener noreferrer"
             className="flex items-center justify-center gap-2 py-2.5 text-xs rounded-xl bg-white/5 border border-white/10 text-neutral-200 hover:border-purple-400/40 transition-all">
             <QrCode className="w-3.5 h-3.5" />Show QR
-          </button>
+          </a>
           <button onClick={copy}
             className="flex items-center justify-center gap-2 py-2.5 text-xs rounded-xl bg-white/5 border border-white/10 text-neutral-200 hover:border-purple-400/40 transition-all">
             <Copy className="w-3.5 h-3.5" />Copy Link

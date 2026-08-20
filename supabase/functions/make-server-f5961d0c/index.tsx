@@ -1426,7 +1426,16 @@ async function ambassadorCodeForToken(token: string) {
   if (!creatorData?.creatorId) return { error: "Invalid or expired link", status: 401 as const };
   const { data: row } = await db().from("creator_signups_f5961d0c")
     .select("ambassador_opted_in, ambassador_code").eq("id", creatorData.creatorId).maybeSingle();
-  if (!row?.ambassador_opted_in) return { error: "Ambassador Mode is not enabled", status: 403 as const };
+  // The portal shows these buttons when ambassadors.enabled_status is set, so
+  // gating only on creator_signups.ambassador_opted_in meant a creator whose two
+  // flags disagreed saw buttons that always failed. Either one counts.
+  let allowed = !!row?.ambassador_opted_in;
+  if (!allowed) {
+    const { data: amb } = await db().from("ambassadors_f5961d0c")
+      .select("enabled_status").eq("creator_id", creatorData.creatorId).maybeSingle();
+    allowed = !!amb?.enabled_status;
+  }
+  if (!allowed) return { error: "Ambassador Mode is not enabled", status: 403 as const };
   const code = row.ambassador_code || await ensureAmbassadorCode(String(creatorData.creatorId));
   return { code, creatorId: String(creatorData.creatorId) };
 }
@@ -1434,7 +1443,13 @@ async function ambassadorCodeForToken(token: string) {
 app.get("/make-server-f5961d0c/portal/ambassador/print", async (c) => {
   try {
     const res = await ambassadorCodeForToken(c.req.query("t") || "");
-    if ("error" in res) return c.json({ error: res.error }, res.status);
+    if ("error" in res) return htmlPage({
+      title: "Contynt", noindex: true, status: res.status,
+      body: `<h1>${res.status === 403 ? "Ambassador Mode is off" : "Your session expired"}</h1>
+        <p>${res.status === 403
+          ? "Turn on Ambassador Mode in the portal, then try again."
+          : "Open the creator portal again and tap Print cards from there."}</p>`,
+    });
     const qr = await QRCode.toDataURL(cardUrlFor(res.code), { width: 640, margin: 1 });
     return new Response(buildCardSheet(res.code, qr), {
       headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store", "X-Robots-Tag": "noindex, nofollow" },
@@ -1450,7 +1465,13 @@ app.get("/make-server-f5961d0c/portal/ambassador/print", async (c) => {
 app.get("/make-server-f5961d0c/portal/ambassador/screen", async (c) => {
   try {
     const res = await ambassadorCodeForToken(c.req.query("t") || "");
-    if ("error" in res) return c.json({ error: res.error }, res.status);
+    if ("error" in res) return htmlPage({
+      title: "Contynt", noindex: true, status: res.status,
+      body: `<h1>${res.status === 403 ? "Ambassador Mode is off" : "Your session expired"}</h1>
+        <p>${res.status === 403
+          ? "Turn on Ambassador Mode in the portal, then try again."
+          : "Open the creator portal again and tap Print cards from there."}</p>`,
+    });
     const qr = await QRCode.toDataURL(cardUrlFor(res.code), { width: 1000, margin: 1 });
     return new Response(`<!doctype html><html><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
