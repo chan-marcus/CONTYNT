@@ -144,6 +144,33 @@ const TIER_STYLE: Record<string, string> = {
 const fmt = (d: string | null) =>
   d ? new Date(d).toLocaleDateString("en-US", { month: "short", day: "numeric" }) : "—";
 
+// The three answers to "How should we reach you?" on the confirm screen. All
+// three slots are always drawn rather than listing only what is on, so a
+// creator reachable by DM alone reads differently from one who answered nothing
+// -- and every channel off is called out, because that creator is unreachable
+// and no Feature offer will ever land.
+function ReachChips({ email, dm, sms }: { email: boolean; dm: boolean; sms: boolean }) {
+  const slots: [string, boolean, string][] = [
+    ["Email", email, "Email notifications"],
+    ["DM", dm, "Instagram DM notifications"],
+    ["SMS", sms, "Text notifications"],
+  ];
+  return (
+    <span className="flex items-center gap-1">
+      {slots.map(([label, on, title]) => (
+        <span key={label} title={`${title}: ${on ? "on" : "off"}`}
+          className={`px-1.5 py-0.5 rounded text-[10px] border ${
+            on ? "bg-green-500/15 border-green-500/30 text-green-300"
+               : "bg-white/[0.03] border-white/10 text-neutral-600"
+          }`}>{label}</span>
+      ))}
+      {!email && !dm && !sms && (
+        <AlertTriangle className="w-3 h-3 text-red-400 shrink-0" aria-label="No way to reach this creator" />
+      )}
+    </span>
+  );
+}
+
 export function CreatorReadiness({ data, onSend, busy, health, onTest, testing, testResult }: {
   data: ReadinessData;
   onSend: (creatorIds: string[], reminderOnly: boolean, dryRun: boolean) => void;
@@ -187,6 +214,7 @@ export function CreatorReadiness({ data, onSend, busy, health, onTest, testing, 
   // Exports what is on screen, not the whole table: the filters are the point.
   const exportCsv = () => {
     const cols = ["handle", "email", "tier", "status", "sentAt", "openedAt", "confirmedAt",
+                  "notifyEmail", "notifyDm", "notifySms",
                   "neighborhoods", "capacity", "ambassadorOptedIn", "payoutsConnected", "bounced"];
     const cell = (v: any) => {
       const s = Array.isArray(v) ? v.join("; ") : v === null || v === undefined ? "" : String(v);
@@ -281,7 +309,7 @@ export function CreatorReadiness({ data, onSend, busy, health, onTest, testing, 
               <th className="px-3 py-2.5 text-left">
                 <input type="checkbox" checked={allShown} onChange={toggleAll} aria-label="Select all shown" />
               </th>
-              {["Handle", "Tier", "Status", "Sent", "Opened", "Confirmed", "Neighborhoods", "Cap", "Amb", "Payouts"].map(h => (
+              {["Handle", "Email", "Tier", "Status", "Sent", "Opened", "Confirmed", "Reach", "Neighborhoods", "Cap", "Amb", "Payouts"].map(h => (
                 <th key={h} className="px-3 py-2.5 text-left font-medium">{h}</th>
               ))}
             </tr>
@@ -297,6 +325,9 @@ export function CreatorReadiness({ data, onSend, busy, health, onTest, testing, 
                   <span className="text-white">@{r.handle || "—"}</span>
                   {r.bounced && <span className="ml-1.5 text-[10px] text-red-400">bounced</span>}
                 </td>
+                <td className="px-3 py-2.5 text-neutral-400 max-w-[220px] truncate" title={r.email}>
+                  {r.email || "—"}
+                </td>
                 <td className="px-3 py-2.5">
                   <span className={`px-2 py-0.5 rounded-full border text-[10px] ${TIER_STYLE[r.tier]}`}>{r.tier}</span>
                 </td>
@@ -306,6 +337,9 @@ export function CreatorReadiness({ data, onSend, busy, health, onTest, testing, 
                   {fmt(r.openedAt)}{r.openCount > 1 && <span className="text-neutral-600"> ×{r.openCount}</span>}
                 </td>
                 <td className="px-3 py-2.5 text-neutral-400">{fmt(r.confirmedAt)}</td>
+                <td className="px-3 py-2.5">
+                  <ReachChips email={r.notifyEmail} dm={r.notifyDm} sms={r.notifySms} />
+                </td>
                 <td className="px-3 py-2.5 text-neutral-400 max-w-[220px] truncate"
                     title={r.neighborhoods.join(", ")}>
                   {r.neighborhoods.length ? r.neighborhoods.join(", ") : "—"}
@@ -324,7 +358,7 @@ export function CreatorReadiness({ data, onSend, busy, health, onTest, testing, 
               </tr>
             ))}
             {!rows.length && (
-              <tr><td colSpan={11} className="px-3 py-8 text-center text-neutral-500">No creators match these filters.</td></tr>
+              <tr><td colSpan={13} className="px-3 py-8 text-center text-neutral-500">No creators match these filters.</td></tr>
             )}
           </tbody>
         </table>
