@@ -251,7 +251,7 @@ export function HandoffQuestion({ value, onChange, reason, onReason }: {
 }) {
   return (
     <div className={`${PURPLE_CARD} px-4 py-3.5 space-y-2.5`}>
-      <p className="text-xs font-semibold text-white">Did you hand off the card?</p>
+      <p className="text-xs font-semibold text-white">Did you hand off or show your Ambassador card?</p>
       <div className="grid grid-cols-2 gap-2">
         <button type="button" onClick={() => onChange(true)}
           className={`py-2.5 text-xs rounded-xl border transition-all ${
