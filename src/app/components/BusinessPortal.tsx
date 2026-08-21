@@ -68,7 +68,7 @@ const PLANS = [
     tagline: "Prove it works. One local creator, one reel, real neighbourhood reach.",
     features: [
       "1 Creator/month, filmed and posted for you",
-      "Collab post — lives on your profile like organic content",
+      "Collab post that lives on your profile like organic content",
       "Location + business tagged for nearby customers",
       "Performance dashboard",
     ],
@@ -77,13 +77,13 @@ const PLANS = [
   },
   {
     icon: "⭐", name: "Growth", price: "$119", originalPrice: "$199", tag: "Most Popular",
-    perCreator: "$60 per creator — save $19/mo",
+    perCreator: "$60 per creator, save $19/mo",
     tagline: "Two creators, two separate audiences. Twice the people discovering you.",
     features: [
       "2 Different Creators/month, each with their own following",
       "Fresh content every 2 weeks instead of once a month",
-      "Two creator styles — reach foodies and lifestyle crowds",
-      "Priority matching — your features get filled first",
+      "Two creator styles, reaching foodies and lifestyle crowds",
+      "Priority matching, so your features get filled first",
       "Everything in Starter",
     ],
     cta: "Get Started",
@@ -91,13 +91,13 @@ const PLANS = [
   },
   {
     icon: "🔥", name: "Pro", price: "$199", originalPrice: "$329", tag: null,
-    perCreator: "$50 per creator — save $77/mo",
+    perCreator: "$50 per creator, save $77/mo",
     tagline: "A new creator every week. Your business stays in the feed all month.",
     features: [
-      "4 Different Creators/month — a new reel every week",
+      "4 Different Creators/month, a new reel every week",
       "Four separate local audiences seeing you each month",
       "Time content to new menu items, events, and seasons",
-      "Rotating roster — your audience keeps seeing new faces",
+      "Rotating roster, so your audience keeps seeing new faces",
       "Direct line to the CONTYNT team",
       "Everything in Starter + Growth",
     ],
@@ -268,7 +268,7 @@ function RequestSlotCard({ bizToken, reelsLeft, reelsLimit, onSubmitted }: {
               placeholder="New brunch menu launching this month"
               rows={3}
               className="w-full px-3 py-2.5 text-sm bg-neutral-800 border border-white/15 rounded-xl text-white placeholder:text-neutral-500 focus:outline-none resize-none" />
-            <p className="text-[11px] text-neutral-600">Optional — leave blank and we'll let the creator choose.</p>
+            <p className="text-[11px] text-neutral-600">Optional. Leave blank and we'll let the creator choose.</p>
           </div>
           <div className="flex justify-end">
             <button onClick={submit} disabled={submitting}
@@ -380,7 +380,7 @@ function FeatureNoteCard({ feature: f, bizPortalData: data, bizToken, onNoteSave
               placeholder="New brunch menu launching this month"
               rows={3}
               className="w-full px-3 py-2.5 text-sm bg-neutral-800 border border-white/15 rounded-xl text-white placeholder:text-neutral-500 focus:outline-none resize-none" />
-            <p className="text-[11px] text-neutral-600">Optional — leave blank and we'll let the creator choose.</p>
+            <p className="text-[11px] text-neutral-600">Optional. Leave blank and we'll let the creator choose.</p>
           </div>
           <div className="flex justify-end">
             <button onClick={e => { e.stopPropagation(); submitRequest(); }} disabled={submitting}
@@ -960,7 +960,7 @@ export function BusinessPortal({ token }: { token: string }) {
 
           {plansExpanded && (
             <div className="pt-4 space-y-6">
-              <p className="text-center text-xs text-neutral-400">🔒 Founding partner pricing — early adopters lock in 40% off for life!</p>
+              <p className="text-center text-xs text-neutral-400">🔒 Founding partner pricing. Early adopters lock in 40% off for life!</p>
               <div className="grid grid-cols-1 md:grid-cols-3 gap-4 items-stretch">
                 {PLANS.map(plan => (
                   <div key={plan.name} className="flex flex-col">
