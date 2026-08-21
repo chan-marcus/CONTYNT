@@ -1709,7 +1709,7 @@ ${emailButton(link, "Confirm your profile")}
       <p style="margin:0 0 18px 0;font-size:13px;word-break:break-all;"><a href="${esc(link)}" style="color:#525252;">${esc(link)}</a></p>
       <p style="margin:0;font-size:13px;color:#8a8a8a;">This link is good for 90 days and is just for you. Please do not forward it.</p>`,
   });
-  return { text, html, subject: "The first CONTYNT Features are live" };
+  return { text, html, subject: "Confirm your CONTYNT profile" };
 }
 
 // Postmark separates broadcast and transactional streams, and sending on the
