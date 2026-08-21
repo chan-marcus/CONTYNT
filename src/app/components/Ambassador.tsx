@@ -368,7 +368,7 @@ function Dashboard({ state, instagram, token }: { state: AmbassadorState; instag
           which card a business scans or when they scan it.
         </p>
         <p className="text-xs text-neutral-400 leading-relaxed">
-          First scan at a spot wins. One payout per business, ever — if someone else
+          First scan at a spot wins. One payout per business, ever. If someone else
           got there first, that business is already theirs.
         </p>
         <p className="text-xs text-neutral-400 leading-relaxed">
