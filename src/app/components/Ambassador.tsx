@@ -374,14 +374,18 @@ function Dashboard({ state, instagram, token }: { state: AmbassadorState; instag
         </p>
       </div>
 
-      <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+      {/* Two columns, not three. The grid was sized for five tiles, so the two
+          that remain sat in the first two of three slots with a gap beside
+          them. Centred so they read as a matched pair rather than a row that
+          ran out. */}
+      <div className="grid grid-cols-2 gap-3">
         {cards.map(c => (
-          <div key={c.label} className="bg-white/5 border border-white/10 rounded-2xl p-4">
-            <div className="flex items-center gap-1.5 mb-1">
+          <div key={c.label} className="bg-white/5 border border-white/10 rounded-2xl p-4 text-center">
+            <div className="flex items-center justify-center gap-1.5 mb-1.5">
               <c.icon className="w-3.5 h-3.5 text-purple-300" />
               <span className="text-[11px] text-neutral-400 leading-tight">{c.label}</span>
             </div>
-            <p className="text-xl font-bold text-white">{c.value}</p>
+            <p className="text-2xl font-bold text-white leading-none">{c.value}</p>
           </div>
         ))}
       </div>
