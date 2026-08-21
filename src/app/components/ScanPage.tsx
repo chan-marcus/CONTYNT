@@ -242,7 +242,12 @@ export function ScanPage({ code }: { code: string }) {
   const handle = (data.creatorInstagram || "").replace(/^@+/, "");
 
   return <Shell>
-    <h1 className="text-[22px] font-bold leading-snug text-balance">A local creator stopped by to shoot a Reel</h1>
+    <h1 className="text-[22px] font-bold leading-snug">
+      {/* The break is placed rather than balanced: left to itself the line
+          split after "stopped", and balancing picked its own point. Gluing the
+          second half keeps it whole, so the wrap lands after "by". */}
+      A local creator stopped by <span className="whitespace-nowrap">to shoot a Reel</span>
+    </h1>
     {handle && (
       <p className="text-xs text-neutral-500 mt-2">Invited by @{handle}</p>
     )}

@@ -70,7 +70,10 @@ export function ReferralLanding({ code }: { code: string }) {
           on a phone with the creator still standing there. */}
       <main className="flex-1 w-full max-w-md mx-auto px-5 py-8 space-y-5">
         <motion.div initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.4 }} className="space-y-2 text-center">
-          <h1 className="text-2xl font-bold leading-snug text-balance">A local creator stopped by to shoot a Reel</h1>
+          <h1 className="text-2xl font-bold leading-snug">
+            {/* Second half glued together so the wrap lands after "by". */}
+            A local creator stopped by <span className="whitespace-nowrap">to shoot a Reel</span>
+          </h1>
           {checked && handle && (
             <p className="text-xs text-neutral-500">Invited by @{handle}</p>
           )}
