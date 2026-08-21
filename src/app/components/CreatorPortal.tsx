@@ -271,8 +271,10 @@ function WalletModal({ stats, token, onClose, onRequested }: {
 }
 
 // ─── Stats bar ────────────────────────────────────────────────────────────────
+// "on\u2011time" carries a non-breaking hyphen: with an ordinary one the wrap
+// landed inside the word and the tip read "on-" / "time".
 const CREATOR_SCORE_HELP =
-  "Based on completion rate, on-time submissions, approval rate, and Reel performance.";
+  "Based on completion rate, on‑time submissions, approval rate, and Reel performance.";
 
 // Hover covers desktop; tap covers mobile, where hover never fires.
 const IN_PROGRESS_HELP =
@@ -318,7 +320,7 @@ function HelpTip({ label, text, align = "center" }: {
           // lone trailing word, which still leaves a stubby last line. balance
           // evens every line out, and these blocks are the few-line strings it
           // is designed for.
-          className={`absolute z-30 top-5 ${pos} w-56 max-w-[calc(100vw-1.5rem)] rounded-xl border border-white/15 bg-neutral-900 px-3 py-2 text-[11px] leading-relaxed text-neutral-300 shadow-xl text-left font-normal text-balance`}
+          className={`absolute z-30 top-5 ${pos} w-60 max-w-[calc(100vw-1.5rem)] rounded-xl border border-white/15 bg-neutral-900 px-3.5 py-2.5 text-[11px] leading-[1.5] text-neutral-300 shadow-xl text-left font-normal text-balance`}
         >
           {text}
         </span>
