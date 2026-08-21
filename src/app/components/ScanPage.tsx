@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { CheckCircle } from "lucide-react";
 import { projectId, publicAnonKey } from "/utils/supabase/info";
 
 // The page a business owner lands on after scanning an Ambassador card.
@@ -8,20 +9,21 @@ import { projectId, publicAnonKey } from "/utils/supabase/info";
 // version showed the owner raw markup. The function now answers with JSON at
 // /scan/:code and this renders it.
 //
-// Nothing here identifies the creator until their Reel is live.
+// One code covers every business a creator visits, so this page can never know
+// which business is scanning it. It therefore never shows a Reel: a live Reel
+// belongs to whichever business that creator filmed at, not to this one. What
+// it does show is who left the card, and a form to claim a dashboard.
 
 const BASE = `https://${projectId}.supabase.co/functions/v1/make-server-f5961d0c`;
 const AUTH = { Authorization: `Bearer ${publicAnonKey}`, "Content-Type": "application/json" };
 
+// The server still reports which stage the creator is at, but every active
+// code renders the same signup page, so only these fields are read.
 interface ScanState {
   state: "A" | "B" | "C" | "unknown" | "throttled" | "error";
   code?: string;
-  businessName?: string;
-  reelUrl?: string;
   creatorInstagram?: string;
-  metrics?: { thumbnail?: string };
   placesKey?: string;
-  siteOrigin?: string;
 }
 
 function Shell({ children }: { children: React.ReactNode }) {
@@ -97,6 +99,9 @@ function usePlacesElement(
           includedPrimaryTypes: ["establishment"],
         });
         el.style.width = "100%";
+        // Without this the widget renders as a bare magnifier with no prompt,
+        // which reads as a broken field next to the email input.
+        el.placeholder = "Business name";
         mount.innerHTML = "";
         mount.appendChild(el);
 
@@ -221,58 +226,42 @@ export function ScanPage({ code }: { code: string }) {
     </Shell>;
   }
 
-  // The Reel is live, so the creator is public now and can be named.
-  if (data.state === "B") {
-    return <Shell>
-      <h1 className="text-xl font-bold mb-2">The Reel is live</h1>
-      <p className="text-sm text-neutral-400 mb-4">
-        Filmed at {data.businessName} by @{(data.creatorInstagram || "").replace(/^@+/, "")}.
-      </p>
-      {data.metrics?.thumbnail && (
-        <img src={data.metrics.thumbnail} alt="" className="w-full rounded-2xl my-4" />
-      )}
-      <a href={data.reelUrl} target="_blank" rel="noopener noreferrer"
-        className="block w-full py-3 rounded-xl bg-white text-neutral-900 text-sm font-semibold">
-        Watch it on Instagram
-      </a>
-      <a href={`${data.siteOrigin || ""}/?ref=${encodeURIComponent(data.code || "")}`}
-        className="block w-full py-3 mt-2 rounded-xl bg-white/10 border border-white/20 text-sm font-semibold">
-        Create a business account
-      </a>
-    </Shell>;
-  }
-
-  if (data.state === "C") {
-    return <Shell>
-      <h1 className="text-xl font-bold mb-2">Contynt</h1>
-      <p className="text-sm text-neutral-400 mb-4">
-        Local creators film short Reels at local businesses and post them to their own audience.
-      </p>
-      <a href={`${data.siteOrigin || ""}/`}
-        className="block w-full py-3 rounded-xl bg-white text-neutral-900 text-sm font-semibold">
-        See how it works
-      </a>
-    </Shell>;
-  }
-
   if (done) {
     return <Shell>
-      <h1 className="text-xl font-bold mb-2">Thanks</h1>
+      <h1 className="text-xl font-bold mb-2">You're in</h1>
       <p className="text-sm text-neutral-400">
-        We'll email you your dashboard link, and the Reel as soon as it goes live.
+        We'll email your dashboard link, and the Reel as soon as it goes live.
       </p>
     </Shell>;
   }
 
-  // ── State A ────────────────────────────────────────────────────────────────
-  // The code no longer knows which business this is, so the owner names it.
+  // ── The signup page ────────────────────────────────────────────────────────
+  // Every active code lands here. The code no longer knows which business this
+  // is, so the owner names it, and the whole thing stays on one screen: the
+  // owner is usually standing at their own counter with a phone in one hand.
+  const handle = (data.creatorInstagram || "").replace(/^@+/, "");
+
   return <Shell>
-    <h1 className="text-xl font-bold mb-2">A creator filmed a Reel here</h1>
-    <p className="text-sm text-neutral-400 mb-5">
-      Tell us where this is and we'll set up your business dashboard. You'll get the Reel
-      as soon as it goes live, and you can request more from there.
+    <h1 className="text-[22px] font-bold leading-snug">A local creator stopped by to shoot a Reel</h1>
+    {handle && (
+      <p className="text-xs text-neutral-500 mt-2">Invited by @{handle}</p>
+    )}
+    <p className="text-sm text-neutral-400 mt-3">
+      Claim your free dashboard and we'll send you the Reel the moment it goes live.
     </p>
-    <form onSubmit={submit} className="flex flex-col gap-2.5 text-left">
+
+    <div className="mt-5 space-y-2 text-left">
+      {["Filmed and posted by a vetted local creator",
+        "Posted as a collab, so it lives on your profile too",
+        "Tagged to your location so nearby customers find you",
+        "Yours to keep, free. Request more whenever you want one."].map(b => (
+        <div key={b} className="flex items-start gap-2.5 text-[13px] text-neutral-300 leading-snug">
+          <CheckCircle className="w-4 h-4 text-green-400 shrink-0 mt-0.5" />{b}
+        </div>
+      ))}
+    </div>
+
+    <form onSubmit={submit} className="flex flex-col gap-2.5 text-left mt-5">
       {/* The Places component mounts here when a key is configured. Until then,
           and if it fails to load, the plain input below carries the field. */}
       <div ref={placesHost} className={placesReady ? "contynt-places-host" : "hidden"} />
@@ -287,8 +276,11 @@ export function ScanPage({ code }: { code: string }) {
       {error && <p className="text-xs text-red-400">{error}</p>}
       <button type="submit" disabled={busy}
         className="w-full py-3.5 rounded-xl bg-white text-neutral-900 text-sm font-semibold disabled:opacity-50">
-        {busy ? "Claiming…" : "Claim your dashboard"}
+        {busy ? "Claiming…" : "Claim your free dashboard"}
       </button>
+      <p className="text-[11px] text-neutral-600 text-center">
+        Free to start. No payment details needed.
+      </p>
     </form>
   </Shell>;
 }

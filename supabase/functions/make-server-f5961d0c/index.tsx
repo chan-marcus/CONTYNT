@@ -288,8 +288,7 @@ app.post("/make-server-f5961d0c/creator-portal/ambassador/enable", async (c) => 
 app.get("/make-server-f5961d0c/referral/:code", async (c) => {
   try {
     const code = c.req.param("code");
-    const { data } = await db().from("ambassadors_f5961d0c")
-      .select("referral_code, creator_instagram, enabled_status").eq("referral_code", code).maybeSingle();
+    const data = await ambassadorByAnyCode(code);
     if (!data || !data.enabled_status) return c.json({ valid: false });
     return c.json({ valid: true, referralCode: data.referral_code, creatorInstagram: data.creator_instagram || "" });
   } catch { return c.json({ valid: false }); }
@@ -306,9 +305,11 @@ app.post("/make-server-f5961d0c/referral/:code/business", async (c) => {
     const { businessName, businessEmail } = await c.req.json();
     if (!businessName || !businessEmail) return c.json({ error: "Business name and email are required" }, 400);
 
-    const { data: amb } = await db().from("ambassadors_f5961d0c")
-      .select("*").eq("referral_code", code).maybeSingle();
+    const amb = await ambassadorByAnyCode(code);
     if (!amb || !amb.enabled_status) return c.json({ error: "This referral link is no longer active" }, 404);
+    // Attribution is always stored under the ambassador's own referral code, so
+    // a signup that arrived by card is not filed under a second string.
+    const attribCode = amb.referral_code || code;
 
     const email = String(businessEmail).trim().toLowerCase();
     const name = String(businessName).trim();
@@ -326,14 +327,14 @@ app.post("/make-server-f5961d0c/referral/:code/business", async (c) => {
     if (!biz) {
       const { data: made, error } = await db().from("business_signups_f5961d0c").insert({
         business_name: name, email, instagram: "", city: "", address: "", preferred_contact: "",
-        referral_code: code, referral_source: "ambassador", referred_by_creator: amb.creator_id,
+        referral_code: attribCode, referral_source: "ambassador", referred_by_creator: amb.creator_id,
       }).select("*").single();
       if (error) throw error;
       biz = made; createdBusiness = true;
     } else if (!biz.referral_code) {
       // Existing business, first time attributed — do not overwrite an earlier referral.
       await db().from("business_signups_f5961d0c").update({
-        referral_code: code, referral_source: "ambassador", referred_by_creator: amb.creator_id,
+        referral_code: attribCode, referral_source: "ambassador", referred_by_creator: amb.creator_id,
       }).eq("id", biz.id);
     }
 
@@ -346,7 +347,7 @@ app.post("/make-server-f5961d0c/referral/:code/business", async (c) => {
         ambassador_id: amb.ambassador_id,
         creator_id: amb.creator_id,
         creator_instagram: amb.creator_instagram || "",
-        referral_code: code,
+        referral_code: attribCode,
         referral_url: amb.referral_url,
         business_id: biz.id, business_name: biz.business_name, business_email: biz.email,
         referral_source: "ambassador",
@@ -476,6 +477,31 @@ async function ensureCreatorPortalToken(creator: any): Promise<string> {
     city: creator.city, createdAt: new Date().toISOString(),
   });
   await kv.set(`ctokenref_${creator.id}`, { token, creatorId: creator.id, createdAt: new Date().toISOString() });
+  return token;
+}
+
+// The business-side twin of logCreatorEvent, and just as non-transactional: an
+// owner signing in must not fail because the audit write did.
+async function logBusinessEvent(businessId: string, type: string, payload: any = {}) {
+  if (!businessId) return;
+  try {
+    await db().from("business_events_f5961d0c").insert({ business_id: businessId, type, payload });
+  } catch (e: any) { console.error(`[events] ${type} failed:`, e?.message ?? e); }
+}
+
+// Same contract as ensureCreatorPortalToken: reuse the live token when there is
+// one, so signing in through the code flow does not invalidate the ?biz= link
+// already sitting in the owner's inbox. Impersonation tokens are deliberately
+// absent from biztokenref_, so an admin session can never be handed back here.
+async function ensureBusinessPortalToken(biz: any): Promise<string> {
+  const ref = await kv.get(`biztokenref_${biz.id}`).catch(() => null);
+  if (ref?.token && await kv.get(`biztoken_${ref.token}`).catch(() => null)) return ref.token;
+  const token = secureToken(24);
+  await kv.set(`biztoken_${token}`, {
+    businessId: biz.id, businessName: biz.business_name, city: biz.city || "",
+    createdAt: new Date().toISOString(),
+  });
+  await kv.set(`biztokenref_${biz.id}`, { token, businessId: biz.id, createdAt: new Date().toISOString() });
   return token;
 }
 
@@ -845,39 +871,55 @@ async function recordEmailEvent(ev: any) {
   const email = String(ev.Recipient ?? ev.Email ?? "").trim().toLowerCase();
   const occurredAt = ev.DeliveredAt ?? ev.BouncedAt ?? ev.ReceivedAt ?? new Date().toISOString();
 
+  // An address can belong to a creator, to a business, to both, or to neither.
+  // All four are real, so both lookups run and neither is required.
   let creatorId: string | null = null;
+  let businessId: string | null = null;
   if (email) {
-    const { data } = await db().from("creator_signups_f5961d0c")
-      .select("id").ilike("email", email).maybeSingle();
-    creatorId = data?.id ?? null;
+    const [creRes, bizRes] = await Promise.all([
+      db().from("creator_signups_f5961d0c").select("id").ilike("email", email).limit(1),
+      db().from("business_signups_f5961d0c").select("id").ilike("email", email).limit(1),
+    ]);
+    creatorId = creRes.data?.[0]?.id ?? null;
+    businessId = bizRes.data?.[0]?.id ?? null;
   }
 
-  // creator_id stays nullable on purpose: a bounce for an address no longer
-  // matched to a creator is still worth keeping, and dropping it would lose the
+  // Both id columns stay nullable on purpose: a bounce for an address no longer
+  // matched to anyone is still worth keeping, and dropping it would lose the
   // only signal that the address is dead.
   await db().from("email_events_f5961d0c").insert({
     creator_id: creatorId,
+    business_id: businessId,
     message_id: ev.MessageID ?? ev.MessageId ?? null,
     type,
     payload: ev,
     occurred_at: occurredAt,
   });
 
-  if (!creatorId) return { recorded: type, matched: false };
+  if (!creatorId && !businessId) return { recorded: type, matched: false };
 
-  if (type === "SpamComplaint") {
-    await db().from("creator_signups_f5961d0c")
-      .update({ email_complained_at: occurredAt }).eq("id", creatorId);
-    await logCreatorEvent(creatorId, "email_complained", { messageId: ev.MessageID ?? null });
-  } else if (type === "Bounce") {
-    // A soft bounce is a full mailbox or a temporary outage. Suppressing on that
-    // would permanently stop mailing a creator over one bad afternoon, so only
-    // hard bounces and addresses Postmark itself deactivated count.
-    const hard = ev.Inactive === true || /hard|bademail|blocked|manuallydeactivated/i.test(String(ev.Type ?? ""));
-    if (hard) {
+  // A soft bounce is a full mailbox or a temporary outage. Suppressing on that
+  // would permanently stop mailing someone over one bad afternoon, so only hard
+  // bounces and addresses Postmark itself deactivated count.
+  const hardBounce = type === "Bounce" &&
+    (ev.Inactive === true || /hard|bademail|blocked|manuallydeactivated/i.test(String(ev.Type ?? "")));
+
+  if (type === "SpamComplaint" || hardBounce) {
+    const column = type === "SpamComplaint" ? "email_complained_at" : "email_bounced_at";
+    const eventType = type === "SpamComplaint" ? "email_complained" : "email_bounced";
+    const detail = type === "SpamComplaint"
+      ? { messageId: ev.MessageID ?? null }
+      : { bounceType: ev.Type ?? null, messageId: ev.MessageID ?? null };
+
+    if (creatorId) {
       await db().from("creator_signups_f5961d0c")
-        .update({ email_bounced_at: occurredAt }).eq("id", creatorId);
-      await logCreatorEvent(creatorId, "email_bounced", { bounceType: ev.Type ?? null, messageId: ev.MessageID ?? null });
+        .update({ [column]: occurredAt }).eq("id", creatorId);
+      await logCreatorEvent(creatorId, eventType, detail);
+    }
+    if (businessId) {
+      await db().from("business_signups_f5961d0c")
+        .update({ [column]: occurredAt }).eq("id", businessId);
+      await logBusinessEvent(businessId, eventType, detail);
     }
   }
   // Delivery, Open and Click are logged and nothing more. Apple Mail Privacy
@@ -1031,6 +1073,24 @@ async function creatorScanState(creatorId: string) {
   return { state: "C" as const, businessName: "" };
 }
 
+// A business can arrive holding either code. The share link carries
+// ambassadors.referral_code, while a printed card carries the creator's
+// ambassador_code, and the two are different strings for the same creator. A
+// card scan that reached the signup form used to 404 there because only the
+// first was recognised, so both resolve here.
+async function ambassadorByAnyCode(code: string) {
+  const raw = String(code || "").trim();
+  const direct = await db().from("ambassadors_f5961d0c")
+    .select("*").eq("referral_code", raw).maybeSingle();
+  if (direct.data) return direct.data as any;
+  const creator = await db().from("creator_signups_f5961d0c")
+    .select("id").eq("ambassador_code", canonicalCode(raw)).maybeSingle();
+  if (!creator.data) return null;
+  const byCreator = await db().from("ambassadors_f5961d0c")
+    .select("*").eq("creator_id", (creator.data as any).id).maybeSingle();
+  return (byCreator.data as any) ?? null;
+}
+
 // Scans are cheap to forge, so cap them per code and per IP. Counted off the
 // scan log itself rather than a separate store: it is already written on every
 // scan and already indexed by code and time.
@@ -1066,7 +1126,7 @@ app.get("/make-server-f5961d0c/scan/:code", async (c) => {
 
     // The code identifies a CREATOR, not a card or a business.
     const { data: creator } = await db().from("creator_signups_f5961d0c")
-      .select("id, ambassador_opted_in").eq("ambassador_code", code).maybeSingle();
+      .select("id, ambassador_opted_in, instagram").eq("ambassador_code", code).maybeSingle();
 
     if (!creator || !creator.ambassador_opted_in) return c.json({ state: "unknown", code });
 
@@ -1098,7 +1158,15 @@ app.get("/make-server-f5961d0c/scan/:code", async (c) => {
     // A Places browser key is public by design and restricted by referrer, so
     // handing it to the page is how it is meant to be used.
     const placesKey = Deno.env.get("GOOGLE_PLACES_KEY") || "";
-    return c.json({ ...st, code, placesKey, siteOrigin: SITE_ORIGIN });
+    // Only the stage is taken from the scan state. The rest of it describes a
+    // Reel filmed at some other business, and this is a public endpoint that
+    // anyone holding a code can call, so none of it goes over the wire. The
+    // handle does: the page names who left the card, which is the detail that
+    // makes the scan read as a real visit rather than an ad.
+    return c.json({
+      state: st.state, code, placesKey,
+      creatorInstagram: String((creator as any).instagram || "").replace(/^@+/, ""),
+    });
   } catch (e: any) {
     console.error("[scan]", e?.message ?? e);
     return c.json({ state: "error" }, 500);
@@ -1658,13 +1726,19 @@ app.post("/make-server-f5961d0c/admin/cards/reassign-attribution", async (c) => 
   } catch (e: any) { return c.json({ error: e.message }, 500); }
 });
 
-// ─── Creator login (email code) ────────────────────────────────────────────────
-// Replaces the unique-link model. A creator enters their email, gets a 6 digit
+// ─── Email code login ─────────────────────────────────────────────────────────
+// Replaces the unique-link model. Someone enters their email, gets a 6 digit
 // code, and the verified session is what the portal runs on from then on. No
 // password, and no long lived secret sitting in an email thread forever.
+//
+// Creators and businesses differ only in the row an address resolves to and the
+// token they end up holding, so the machinery is written once here and the two
+// pairs of routes below supply just those two things.
 const LOGIN_CODE_TTL_MIN = 10;
 const LOGIN_CODE_MAX_ATTEMPTS = 5;
 const LOGIN_MAX_REQUESTS_PER_HOUR = 5;
+
+type LoginAudience = "creator" | "business";
 
 function sixDigitCode(): string {
   // 2^32 is not a multiple of 1e6, so a bare modulo would bias the low codes.
@@ -1676,11 +1750,16 @@ function sixDigitCode(): string {
 }
 
 // Codes are stored hashed. A KV dump should not hand someone a live login code.
-async function hashLoginCode(email: string, code: string): Promise<string> {
+// The audience is part of the hash input as well as the key, so a code minted
+// for a creator cannot be replayed against the business route when the same
+// person owns both addresses.
+async function hashLoginCode(audience: LoginAudience, email: string, code: string): Promise<string> {
   const salt = Deno.env.get("LOGIN_CODE_SALT") || ADMIN_SECRET || "contynt";
-  const buf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(`${salt}:${email}:${code}`));
+  const buf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(`${salt}:${audience}:${email}:${code}`));
   return [...new Uint8Array(buf)].map(b => b.toString(16).padStart(2, "0")).join("");
 }
+
+const loginCodeKey = (audience: LoginAudience, addr: string) => `logincode_${audience}_${addr}`;
 
 function loginCodeEmail(code: string) {
   return {
@@ -1694,6 +1773,74 @@ function loginCodeEmail(code: string) {
   };
 }
 
+// Issues, stores and sends a code. Returns nothing the caller can branch on:
+// every outcome has to be indistinguishable from outside, or the route becomes
+// an oracle for which addresses are on file.
+async function issueLoginCode(opts: {
+  audience: LoginAudience;
+  addr: string;            // normalised, and what the code is hashed against
+  to: string;              // the address as stored, which is what we mail
+  subjectId: string;
+  log: (type: string, payload: any) => Promise<void>;
+}): Promise<void> {
+  const key = loginCodeKey(opts.audience, opts.addr);
+  const prev = await kv.get(key).catch(() => null);
+
+  // Rate limit per address, so this cannot be used to mail-bomb anyone.
+  const windowStart = prev?.windowStart && (Date.now() - new Date(prev.windowStart).getTime() < 3600e3)
+    ? prev.windowStart : new Date().toISOString();
+  const sentInWindow = windowStart === prev?.windowStart ? (prev?.sentInWindow ?? 0) : 0;
+  if (sentInWindow >= LOGIN_MAX_REQUESTS_PER_HOUR) {
+    await opts.log("login_code_throttled", {});
+    return;
+  }
+
+  const code = sixDigitCode();
+  await kv.set(key, {
+    subjectId: opts.subjectId,
+    codeHash: await hashLoginCode(opts.audience, opts.addr, code),
+    expiresAt: new Date(Date.now() + LOGIN_CODE_TTL_MIN * 60e3).toISOString(),
+    attempts: 0,
+    windowStart, sentInWindow: sentInWindow + 1,
+  });
+
+  const mail = loginCodeEmail(code);
+  const sent = await postmarkSend({ to: opts.to, ...mail, stream: POSTMARK_TRANSACTIONAL_STREAM });
+  // Logged without the code itself. The event trail should not be a way to read
+  // someone's live login code.
+  await opts.log("login_code_sent", { delivered: sent.ok, error: sent.error || null });
+  if (!sent.ok) console.error(`[login:${opts.audience}] send failed:`, sent.error);
+}
+
+// Checks a supplied code and consumes it. The code is burned on success and on
+// running out of tries, so a 6 digit space cannot be walked.
+async function consumeLoginCode(audience: LoginAudience, addr: string, supplied: string):
+  Promise<{ subjectId: string } | { error: string; status: number }> {
+  const key = loginCodeKey(audience, addr);
+  const rec = await kv.get(key).catch(() => null);
+  if (!rec) return { error: "That code has expired. Ask for a new one.", status: 400 };
+
+  if (new Date(rec.expiresAt) <= new Date()) {
+    await kv.del(key).catch(() => {});
+    return { error: "That code has expired. Ask for a new one.", status: 400 };
+  }
+  if ((rec.attempts ?? 0) >= LOGIN_CODE_MAX_ATTEMPTS) {
+    await kv.del(key).catch(() => {});
+    return { error: "Too many attempts. Ask for a new code.", status: 429 };
+  }
+
+  const ok = timingSafeEqual(await hashLoginCode(audience, addr, supplied), String(rec.codeHash ?? ""));
+  if (!ok) {
+    await kv.set(key, { ...rec, attempts: (rec.attempts ?? 0) + 1 });
+    return { error: "That code is not right.", status: 400 };
+  }
+
+  // Single use.
+  await kv.del(key).catch(() => {});
+  return { subjectId: String(rec.subjectId ?? "") };
+}
+
+// ─── Creator login ────────────────────────────────────────────────────────────
 app.post("/make-server-f5961d0c/creator-login/request", async (c) => {
   // One response shape whatever happens. Anything that varied with whether the
   // address is on file would turn this into a creator-list oracle.
@@ -1708,33 +1855,10 @@ app.post("/make-server-f5961d0c/creator-login/request", async (c) => {
     if (!creator) return done();
     if (creator.email_bounced_at || creator.email_complained_at) return done();
 
-    const key = `logincode_${addr}`;
-    const prev = await kv.get(key).catch(() => null);
-
-    // Rate limit per address, so this cannot be used to mail-bomb a creator.
-    const windowStart = prev?.windowStart && (Date.now() - new Date(prev.windowStart).getTime() < 3600e3)
-      ? prev.windowStart : new Date().toISOString();
-    const sentInWindow = windowStart === prev?.windowStart ? (prev?.sentInWindow ?? 0) : 0;
-    if (sentInWindow >= LOGIN_MAX_REQUESTS_PER_HOUR) {
-      await logCreatorEvent(creator.id, "login_code_throttled", {});
-      return done();
-    }
-
-    const code = sixDigitCode();
-    await kv.set(key, {
-      creatorId: creator.id,
-      codeHash: await hashLoginCode(addr, code),
-      expiresAt: new Date(Date.now() + LOGIN_CODE_TTL_MIN * 60e3).toISOString(),
-      attempts: 0,
-      windowStart, sentInWindow: sentInWindow + 1,
+    await issueLoginCode({
+      audience: "creator", addr, to: creator.email, subjectId: creator.id,
+      log: (type, payload) => logCreatorEvent(creator.id, type, payload),
     });
-
-    const mail = loginCodeEmail(code);
-    const sent = await postmarkSend({ to: creator.email, ...mail, stream: POSTMARK_TRANSACTIONAL_STREAM });
-    // Logged without the code itself. The event trail should not be a way to
-    // read someone's live login code.
-    await logCreatorEvent(creator.id, "login_code_sent", { delivered: sent.ok, error: sent.error || null });
-    if (!sent.ok) console.error("[login] send failed:", sent.error);
     return done();
   } catch (e: any) {
     console.error("[login request]", e?.message ?? e);
@@ -1749,31 +1873,11 @@ app.post("/make-server-f5961d0c/creator-login/verify", async (c) => {
     const supplied = String(code ?? "").replace(/\D/g, "");
     if (!addr || !supplied) return c.json({ error: "Enter the code we emailed you." }, 400);
 
-    const key = `logincode_${addr}`;
-    const rec = await kv.get(key).catch(() => null);
-    if (!rec) return c.json({ error: "That code has expired. Ask for a new one." }, 400);
-
-    if (new Date(rec.expiresAt) <= new Date()) {
-      await kv.del(key).catch(() => {});
-      return c.json({ error: "That code has expired. Ask for a new one." }, 400);
-    }
-    // Burn the code after a handful of tries so a 6 digit space cannot be walked.
-    if ((rec.attempts ?? 0) >= LOGIN_CODE_MAX_ATTEMPTS) {
-      await kv.del(key).catch(() => {});
-      return c.json({ error: "Too many attempts. Ask for a new code." }, 429);
-    }
-
-    const ok = timingSafeEqual(await hashLoginCode(addr, supplied), String(rec.codeHash ?? ""));
-    if (!ok) {
-      await kv.set(key, { ...rec, attempts: (rec.attempts ?? 0) + 1 });
-      return c.json({ error: "That code is not right." }, 400);
-    }
-
-    // Single use.
-    await kv.del(key).catch(() => {});
+    const checked = await consumeLoginCode("creator", addr, supplied);
+    if ("error" in checked) return c.json({ error: checked.error }, checked.status as any);
 
     const { data: creator } = await db().from("creator_signups_f5961d0c")
-      .select("*").eq("id", rec.creatorId).maybeSingle();
+      .select("*").eq("id", checked.subjectId).maybeSingle();
     if (!creator) return c.json({ error: "Account not found." }, 404);
 
     // Reuses the creator's existing token when there is one. Claims and earnings
@@ -1786,6 +1890,64 @@ app.post("/make-server-f5961d0c/creator-login/verify", async (c) => {
       success: true, token,
       needsConfirm: creator.verification_status !== "confirmed",
     });
+  } catch (e: any) { return c.json({ error: "Could not sign you in", details: e.message }, 500); }
+});
+
+// ─── Business login ───────────────────────────────────────────────────────────
+// Same flow, same guarantees. The owner of a business no longer needs to keep
+// the ?biz= link we mailed them once: their email address is the credential and
+// the code proves they still read it.
+app.post("/make-server-f5961d0c/business-login/request", async (c) => {
+  const done = () => c.json({ success: true, message: "If that email is on file, a code is on its way." });
+  try {
+    const { email } = await c.req.json();
+    const addr = String(email ?? "").trim().toLowerCase();
+    if (!addr || !addr.includes("@")) return done();
+
+    // limit(1) rather than maybeSingle(): nothing stops two signups sharing an
+    // address, and maybeSingle() would throw on that instead of signing the
+    // owner in. Oldest first, so a duplicate row created later never takes over
+    // the account the owner has been using.
+    const { data: rows } = await db().from("business_signups_f5961d0c")
+      .select("id, email, business_name, city, email_bounced_at, email_complained_at")
+      .ilike("email", addr).order("created_at", { ascending: true }).limit(1);
+    const biz = rows?.[0];
+    if (!biz) return done();
+    if (biz.email_bounced_at || biz.email_complained_at) return done();
+
+    await issueLoginCode({
+      audience: "business", addr, to: biz.email, subjectId: biz.id,
+      log: (type, payload) => logBusinessEvent(biz.id, type, payload),
+    });
+    return done();
+  } catch (e: any) {
+    console.error("[biz login request]", e?.message ?? e);
+    return done();
+  }
+});
+
+app.post("/make-server-f5961d0c/business-login/verify", async (c) => {
+  try {
+    const { email, code } = await c.req.json();
+    const addr = String(email ?? "").trim().toLowerCase();
+    const supplied = String(code ?? "").replace(/\D/g, "");
+    if (!addr || !supplied) return c.json({ error: "Enter the code we emailed you." }, 400);
+
+    const checked = await consumeLoginCode("business", addr, supplied);
+    if ("error" in checked) return c.json({ error: checked.error }, checked.status as any);
+
+    const { data: biz } = await db().from("business_signups_f5961d0c")
+      .select("id, business_name, city").eq("id", checked.subjectId).maybeSingle();
+    if (!biz) return c.json({ error: "Account not found." }, 404);
+
+    // Reuses the live portal token for the same reason the creator side does:
+    // features, claims and submissions hang off the business id behind it, and
+    // a link already in the owner's inbox should keep working after they sign in
+    // here.
+    const token = await ensureBusinessPortalToken(biz);
+    await logBusinessEvent(biz.id, "login_succeeded", {});
+
+    return c.json({ success: true, token, businessName: biz.business_name || "" });
   } catch (e: any) { return c.json({ error: "Could not sign you in", details: e.message }, 500); }
 });
 

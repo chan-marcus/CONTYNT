@@ -58,62 +58,52 @@ export function ReferralLanding({ code }: { code: string }) {
   return (
     <div className="min-h-screen bg-neutral-950 text-white flex flex-col">
       <header className="border-b border-white/10 px-6 py-4">
-        <div className="max-w-lg mx-auto flex items-center justify-between">
+        <div className="max-w-md mx-auto flex items-center justify-between">
           <span className="text-sm font-semibold tracking-[0.2em]">C O N T Y N T</span>
           <span className="text-xs text-neutral-500">For Businesses</span>
         </div>
       </header>
 
-      <main className="flex-1 w-full max-w-lg mx-auto px-5 py-10 space-y-7">
-        <motion.div initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.4 }} className="space-y-3 text-center">
-          <h1 className="text-2xl font-bold leading-snug">Welcome to CONTYNT</h1>
+      {/* One screen, in the order an owner reads it: what happened, who from,
+          what they get, then the two fields. The pitch sits above the form
+          rather than in a separate step, because this link is usually opened
+          on a phone with the creator still standing there. */}
+      <main className="flex-1 w-full max-w-md mx-auto px-5 py-8 space-y-5">
+        <motion.div initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.4 }} className="space-y-2 text-center">
+          <h1 className="text-2xl font-bold leading-snug">A local creator stopped by to shoot a Reel</h1>
           {checked && handle && (
-            <div className="inline-flex items-center gap-2 bg-purple-500/15 border border-purple-400/30 px-3 py-1.5 rounded-full">
-              <span className="w-6 h-6 rounded-full bg-purple-500/30 border border-purple-400/40 flex items-center justify-center text-[10px] font-bold text-purple-100">
-                {handle.slice(0, 2).toUpperCase()}
-              </span>
-              <span className="text-xs text-purple-100">Referred by @{handle}</span>
-            </div>
+            <p className="text-xs text-neutral-500">Invited by @{handle}</p>
           )}
-          <p className="text-base text-neutral-300 leading-relaxed pt-1">
-            Grow your business with authentic local creators.
-          </p>
-          <p className="text-sm text-neutral-500 leading-relaxed">
-            Local creators visit your business, film a short Reel, and post it to their own
-            audience — tagged to your profile and your location.
+          <p className="text-sm text-neutral-400 leading-relaxed pt-1">
+            Claim your free dashboard and we'll send you the Reel the moment it goes live.
           </p>
         </motion.div>
 
-        <div className="space-y-2.5">
-          {["A vetted local creator features your business",
+        <div className="space-y-2">
+          {["Filmed and posted by a vetted local creator",
             "Posted as a collab, so it lives on your profile too",
-            "Tagged to your location so nearby customers find you"].map(b => (
-            <div key={b} className="flex items-start gap-2.5 text-sm text-neutral-300">
+            "Tagged to your location so nearby customers find you",
+            "Yours to keep, free. Request more whenever you want one."].map(b => (
+            <div key={b} className="flex items-start gap-2.5 text-[13px] text-neutral-300 leading-snug">
               <CheckCircle className="w-4 h-4 text-green-400 shrink-0 mt-0.5" />{b}
             </div>
           ))}
         </div>
 
-        <form onSubmit={submit} className="space-y-3 bg-white/5 border border-white/10 rounded-2xl p-5">
-          <div className="space-y-1.5">
-            <label className="text-xs font-medium text-neutral-300">Business name</label>
-            <input value={name} onChange={e => setName(e.target.value)} required
-              placeholder="e.g. Duboce Park Cafe"
-              className="w-full px-3 py-2.5 bg-white/10 border border-white/20 rounded-xl text-white text-sm placeholder:text-neutral-500 focus:outline-none focus:ring-2 focus:ring-white/20" />
-          </div>
-          <div className="space-y-1.5">
-            <label className="text-xs font-medium text-neutral-300">Business email</label>
-            <input value={email} onChange={e => setEmail(e.target.value)} required type="email"
-              placeholder="owner@yourbusiness.com"
-              className="w-full px-3 py-2.5 bg-white/10 border border-white/20 rounded-xl text-white text-sm placeholder:text-neutral-500 focus:outline-none focus:ring-2 focus:ring-white/20" />
-          </div>
+        <form onSubmit={submit} className="space-y-2.5 bg-white/5 border border-white/10 rounded-2xl p-4">
+          <input value={name} onChange={e => setName(e.target.value)} required
+            placeholder="Business name"
+            className="w-full px-3.5 py-3 bg-white/10 border border-white/20 rounded-xl text-white text-[15px] placeholder:text-neutral-500 focus:outline-none focus:ring-2 focus:ring-white/25" />
+          <input value={email} onChange={e => setEmail(e.target.value)} required type="email"
+            placeholder="you@yourbusiness.com"
+            className="w-full px-3.5 py-3 bg-white/10 border border-white/20 rounded-xl text-white text-[15px] placeholder:text-neutral-500 focus:outline-none focus:ring-2 focus:ring-white/25" />
           {error && <p className="text-xs text-red-400">{error}</p>}
           <button type="submit" disabled={busy || !name.trim() || !email.trim()}
-            className="w-full py-3 bg-white text-neutral-900 text-sm font-semibold rounded-xl hover:bg-neutral-100 transition-all disabled:opacity-40 flex items-center justify-center gap-2">
-            {busy ? "Setting up…" : <>Continue <ArrowRight className="w-4 h-4" /></>}
+            className="w-full py-3.5 bg-white text-neutral-900 text-sm font-semibold rounded-xl hover:bg-neutral-100 transition-all disabled:opacity-40 flex items-center justify-center gap-2">
+            {busy ? "Setting up…" : <>Claim your free dashboard <ArrowRight className="w-4 h-4" /></>}
           </button>
           <p className="text-[11px] text-neutral-600 text-center">
-            No payment required to get started.
+            Free to start. No payment details needed.
           </p>
         </form>
       </main>
