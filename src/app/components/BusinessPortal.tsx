@@ -949,7 +949,7 @@ export function BusinessPortal({ token }: { token: string }) {
                   which is not something a business wants; 40% off for life is
                   already the offer inside the panel, so it belongs on the part
                   they actually read. */}
-              <h2 className="text-lg font-bold text-white">Want a new Reel every month?</h2>
+              <h2 className="text-lg font-bold text-white">Want new Reels every month?</h2>
               <p className="text-sm text-blue-300/90 mt-1">
                 Founding partners lock in <span className="font-semibold text-white">40% off for life</span>.
                 Plans from {PLANS[0].price}/month.
