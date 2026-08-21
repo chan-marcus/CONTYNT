@@ -4,6 +4,8 @@ import { ExternalLink, CheckCircle, AlertCircle, Star, ThumbsUp, ThumbsDown, Arr
          MapPin, Mail, Instagram, CalendarDays, Clock, TrendingUp } from "lucide-react";
 import { projectId, publicAnonKey } from "/utils/supabase/info";
 import { countQuotaUsed, countOpenOffers, quotaLimit, quotaRemaining, openRequestSlots } from "../lib/featureQuota";
+import { cityLabel } from "../lib/cities";
+import { BusinessLogin, BIZ_TOKEN_KEY } from "./BusinessLogin";
 
 const BASE = `https://${projectId}.supabase.co/functions/v1/make-server-f5961d0c`;
 const AUTH = { Authorization: `Bearer ${publicAnonKey}` };
@@ -470,6 +472,7 @@ export function BusinessPortal({ token }: { token: string }) {
     try { return parseInt(localStorage.getItem(featuresSeenKey) || "0"); } catch { return 0; }
   });
   const [refreshing, setRefreshing] = useState(false);
+  const [signedOut, setSignedOut] = useState(false);
   const [resolvedBizId, setResolvedBizId] = useState<string>("");
 
   const TIER_LIMITS_BIZ: Record<string, number> = { Starter: 1, Growth: 2, Pro: 4, Scale: 8 };
@@ -479,7 +482,14 @@ export function BusinessPortal({ token }: { token: string }) {
   // longer read another business's features or creators' submissions.
   const loadFeatures = async (_currentBizId?: string) => {
     const res = await fetch(`${BASE}/business-portal?t=${token}`, { headers: AUTH });
-    if (!res.ok) throw new Error("Failed to load business portal");
+    if (!res.ok) {
+      // The status has to survive the throw: a 401 is a signed-out session and
+      // gets the login screen, while a 500 is our problem and must not quietly
+      // sign the owner out.
+      const err: any = new Error("Failed to load business portal");
+      err.status = res.status;
+      throw err;
+    }
     const json = await res.json();
     const publishedFeatures: PublishedFeature[] = (json.publishedFeatures || []).map((f: any) => ({
       id: f.id, category: f.category || "", payoutRange: f.payoutRange || "",
@@ -533,7 +543,17 @@ export function BusinessPortal({ token }: { token: string }) {
         setBizId(result.businessId);
         setData(result);
         setEmailInput(result.email || "");
-      } catch { setError("Invalid or expired link."); }
+      } catch (e: any) {
+        // An expired or revoked session should offer a way back in, not a dead
+        // end. The stored token is cleared so the login screen is not skipped
+        // straight back into this same failure on the next render.
+        if (e?.status === 401) {
+          try { localStorage.removeItem(BIZ_TOKEN_KEY); } catch { /* private mode */ }
+          setSignedOut(true);
+        } else {
+          setError("Invalid or expired link.");
+        }
+      }
       finally { setLoading(false); }
     };
     load();
@@ -632,6 +652,8 @@ export function BusinessPortal({ token }: { token: string }) {
     );
   }
 
+  if (signedOut) return <BusinessLogin />;
+
   if (error || !data) {
     return (
       <div className="min-h-screen bg-neutral-950 flex items-center justify-center px-6">
@@ -675,7 +697,19 @@ export function BusinessPortal({ token }: { token: string }) {
             <span className="text-sm font-semibold tracking-[0.2em]">C O N T Y N T</span>
             <span className="text-[10px] font-bold tracking-widest text-yellow-400 border border-yellow-400/40 px-1.5 py-0.5 rounded">BETA</span>
           </div>
-          <span className="text-xs text-neutral-500">Business Portal</span>
+          <div className="flex items-center gap-3">
+            <span className="text-xs text-neutral-500">Business Portal</span>
+            <button
+              onClick={() => {
+                try { localStorage.removeItem(BIZ_TOKEN_KEY); } catch { /* private mode */ }
+                // Replaced rather than pushed, and stripped of ?biz=, so Back
+                // does not walk straight into the session just signed out of.
+                window.location.replace(`${window.location.origin}/business`);
+              }}
+              className="text-xs text-neutral-500 hover:text-neutral-300 transition-colors">
+              Sign out
+            </button>
+          </div>
         </div>
       </header>
 
@@ -715,7 +749,7 @@ export function BusinessPortal({ token }: { token: string }) {
                   <MapPin className="w-3.5 h-3.5 shrink-0 text-neutral-500 mt-0.5" />
                   {/* Wraps rather than truncates: at 375px a truncated address
                       cut the city off, which is the part that matters most. */}
-                  <span>{[data.address, data.city].filter(Boolean).join(" · ")}</span>
+                  <span>{[data.address, cityLabel(data.city)].filter(Boolean).join(" · ")}</span>
                 </span>
                 {data.instagram && (
                   <a href={`https://instagram.com/${data.instagram.replace(/^@/, "")}`} target="_blank" rel="noopener noreferrer"

@@ -302,7 +302,8 @@ app.get("/make-server-f5961d0c/referral/:code", async (c) => {
 app.post("/make-server-f5961d0c/referral/:code/business", async (c) => {
   try {
     const code = c.req.param("code");
-    const { businessName, businessEmail } = await c.req.json();
+    const { businessName, businessEmail, city: cityRaw } = await c.req.json();
+    const city = String(cityRaw ?? "").trim().slice(0, 80);
     if (!businessName || !businessEmail) return c.json({ error: "Business name and email are required" }, 400);
 
     const amb = await ambassadorByAnyCode(code);
@@ -326,12 +327,18 @@ app.post("/make-server-f5961d0c/referral/:code/business", async (c) => {
     let createdBusiness = false;
     if (!biz) {
       const { data: made, error } = await db().from("business_signups_f5961d0c").insert({
-        business_name: name, email, instagram: "", city: "", address: "", preferred_contact: "",
+        business_name: name, email, instagram: "", city, address: "", preferred_contact: "",
         referral_code: attribCode, referral_source: "ambassador", referred_by_creator: amb.creator_id,
       }).select("*").single();
       if (error) throw error;
       biz = made; createdBusiness = true;
-    } else if (!biz.referral_code) {
+    } else if (city && !biz.city) {
+      // An existing row created without one -- a scan lead, say -- gets the
+      // city filled in, but an answer already on file is never overwritten.
+      await db().from("business_signups_f5961d0c").update({ city }).eq("id", biz.id);
+      biz = { ...biz, city };
+    }
+    if (biz && !createdBusiness && !biz.referral_code) {
       // Existing business, first time attributed — do not overwrite an earlier referral.
       await db().from("business_signups_f5961d0c").update({
         referral_code: attribCode, referral_source: "ambassador", referred_by_creator: amb.creator_id,
@@ -1184,6 +1191,7 @@ app.post("/make-server-f5961d0c/scan/:code/lead", async (c) => {
     const body = await c.req.json().catch(() => ({} as any));
     const email = String((body as any).email ?? "").trim().toLowerCase();
     const businessName = String((body as any).businessName ?? "").trim().slice(0, 120);
+    const city = String((body as any).city ?? "").trim().slice(0, 80);
     const placeId = String((body as any).placeId ?? "").trim().slice(0, 200) || null;
     const placeAddress = String((body as any).placeAddress ?? "").trim().slice(0, 300) || null;
     if (!email || !email.includes("@") || !businessName) {
@@ -1215,6 +1223,7 @@ app.post("/make-server-f5961d0c/scan/:code/lead", async (c) => {
       const patch: Record<string, unknown> = {};
       if (business.lead_status === "prospect" || business.lead_status == null) patch.lead_status = "lead";
       if (placeId && !business.place_id) { patch.place_id = placeId; patch.place_address = placeAddress; }
+      if (city && !business.city) patch.city = city;
       if (Object.keys(patch).length) {
         await db().from("business_signups_f5961d0c").update(patch).eq("id", business.id);
       }
@@ -1226,7 +1235,10 @@ app.post("/make-server-f5961d0c/scan/:code/lead", async (c) => {
         business_name: businessName,
         instagram: "",
         email,
-        city: creator.city || "",
+        // The owner's own answer, not the creator's city: a creator filming
+        // one town over would otherwise file the lead under the wrong place,
+        // and city is what feature matching runs on.
+        city: city || creator.city || "",
         address: placeAddress || "",
         place_id: placeId,
         place_address: placeAddress,
@@ -1661,6 +1673,90 @@ app.post("/make-server-f5961d0c/admin/verification/send", async (c) => {
     });
     return c.json({ success: true, ...out });
   } catch (e: any) { return c.json({ error: "Send failed", details: e.message }, 500); }
+});
+
+// ─── Email health ─────────────────────────────────────────────────────────────
+// Every send in this file fails quietly by design: the verification batch skips
+// a creator when the token is missing, and the login routes answer "a code is on
+// its way" whether or not one went. That is right for the callers but it means a
+// misconfigured Postmark looks exactly like a working one from the outside. This
+// route is the answer to "is email actually wired up", and it asks Postmark
+// rather than trusting our own env vars.
+const POSTMARK_API = "https://api.postmarkapp.com";
+
+app.get("/make-server-f5961d0c/admin/email-health", async (c) => {
+  const config = {
+    serverToken: !!POSTMARK_SERVER_TOKEN,
+    webhookSecret: !!POSTMARK_WEBHOOK_SECRET,
+    loginCodeSalt: !!Deno.env.get("LOGIN_CODE_SALT"),
+    from: POSTMARK_FROM,
+    broadcastStream: POSTMARK_STREAM,
+    transactionalStream: POSTMARK_TRANSACTIONAL_STREAM,
+    siteOrigin: SITE_ORIGIN,
+    verifyLinkOrigin: VERIFY_ORIGIN,
+    webhookUrl: `${Deno.env.get("SUPABASE_URL") || ""}/functions/v1/make-server-f5961d0c/webhooks/postmark`,
+  };
+
+  if (!POSTMARK_SERVER_TOKEN) {
+    return c.json({ ok: false, config, problem: "POSTMARK_SERVER_TOKEN is not set, so nothing can be sent." });
+  }
+
+  const headers = { "Accept": "application/json", "X-Postmark-Server-Token": POSTMARK_SERVER_TOKEN };
+  try {
+    const [srvRes, msRes] = await Promise.all([
+      fetch(`${POSTMARK_API}/server`, { headers }),
+      fetch(`${POSTMARK_API}/message-streams`, { headers }),
+    ]);
+    const srv = await srvRes.json().catch(() => ({}));
+    if (!srvRes.ok) {
+      return c.json({ ok: false, config, problem: srv?.Message || `Postmark rejected the token (${srvRes.status}).` });
+    }
+    const ms = await msRes.json().catch(() => ({}));
+    const ids: string[] = (ms?.MessageStreams ?? []).map((s: any) => String(s.ID));
+
+    // A stream name that does not exist on the server is the failure mode that
+    // looks most like success: the token is valid, the call is well formed, and
+    // every send 422s. Naming the two we use makes that obvious here instead of
+    // in a batch of 200 failures.
+    const missing = [POSTMARK_STREAM, POSTMARK_TRANSACTIONAL_STREAM].filter(s => ids.length && !ids.includes(s));
+
+    return c.json({
+      ok: missing.length === 0,
+      config,
+      server: { name: srv?.Name ?? null, id: srv?.ID ?? null },
+      streams: ids,
+      problem: missing.length ? `These message streams do not exist on the Postmark server: ${missing.join(", ")}` : null,
+    });
+  } catch (e: any) {
+    return c.json({ ok: false, config, problem: `Could not reach Postmark: ${e?.message ?? e}` });
+  }
+});
+
+// Sends one real message to an address of the admin's choosing. The point is the
+// error: "sender signature not confirmed" and "no such message stream" only ever
+// show up on an actual send, so the raw Postmark message is passed straight
+// through rather than flattened into a generic failure.
+app.post("/make-server-f5961d0c/admin/email-test", async (c) => {
+  try {
+    const { to, stream } = await c.req.json();
+    const addr = String(to ?? "").trim();
+    if (!addr.includes("@")) return c.json({ error: "A valid address is required" }, 400);
+    if (!POSTMARK_SERVER_TOKEN) return c.json({ error: "POSTMARK_SERVER_TOKEN is not set" }, 400);
+
+    const which = stream === "broadcast" ? POSTMARK_STREAM : POSTMARK_TRANSACTIONAL_STREAM;
+    const sent = await postmarkSend({
+      to: addr,
+      subject: "Contynt email test",
+      text: `This is a test from the Contynt admin panel.\n\nFrom: ${POSTMARK_FROM}\nStream: ${which}\n\nIf you are reading this, sending works.`,
+      html: `<div style="font-family:-apple-system,Segoe UI,Helvetica,Arial,sans-serif;font-size:15px;line-height:1.6;color:#111">
+<p>This is a test from the Contynt admin panel.</p>
+<p style="color:#666;font-size:13px">From: ${esc(POSTMARK_FROM)}<br>Stream: ${esc(which)}</p>
+<p>If you are reading this, sending works.</p></div>`,
+      stream: which,
+    });
+    if (!sent.ok) return c.json({ error: sent.error, postmark: sent.payload }, 502);
+    return c.json({ success: true, stream: which, from: POSTMARK_FROM, messageId: sent.payload?.MessageID ?? null });
+  } catch (e: any) { return c.json({ error: e?.message ?? String(e) }, 500); }
 });
 
 // ─── Ambassador payout hook ───────────────────────────────────────────────────
