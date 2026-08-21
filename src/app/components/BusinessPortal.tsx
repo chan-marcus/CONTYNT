@@ -952,8 +952,8 @@ export function BusinessPortal({ token }: { token: string }) {
               <h2 className="text-lg font-bold text-white">Want new Reels every month?</h2>
               <p className="text-sm text-blue-300/90 mt-1">
                 Founding partners lock in <span className="font-semibold text-white">40% off for life</span>.
-                Plans from {PLANS[0].price}/month.
               </p>
+              <p className="text-sm text-blue-300/90">Plans from {PLANS[0].price}/month.</p>
             </div>
             <ChevronDown className={`w-5 h-5 text-blue-400 shrink-0 transition-transform duration-300 ${plansExpanded ? "rotate-180" : ""}`} />
           </button>
