@@ -46,7 +46,6 @@ function Toggle({ on, onChange, label }: { on: boolean; onChange: (v: boolean) =
 }
 
 export function ConfirmProfile({ token }: { token: string }) {
-  const [data, setData] = useState<ConfirmData | null>(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
@@ -55,6 +54,7 @@ export function ConfirmProfile({ token }: { token: string }) {
   const [togglingAfter, setTogglingAfter] = useState(false);
 
   const [handle, setHandle] = useState("");
+  const [email, setEmail] = useState("");
   const [notifyEmail, setNotifyEmail] = useState(true);
   const [notifyDm, setNotifyDm] = useState(true);
   // Seeded from the stored value rather than hardcoded false: on a re-confirm
@@ -66,8 +66,8 @@ export function ConfirmProfile({ token }: { token: string }) {
       .then(r => r.json())
       .then((d: ConfirmData) => {
         if (d?.profile) {
-          setData(d);
           setHandle(d.profile.instagramHandle || "");
+          setEmail(d.profile.email || "");
           setNotifyEmail(d.profile.notifyEmail !== false);
           setNotifyDm(d.profile.notifyDm !== false);
           setAmbassador(!!d.ambassador?.optedIn);
@@ -86,7 +86,7 @@ export function ConfirmProfile({ token }: { token: string }) {
       const res = await api("/creator-portal/confirm", {
         method: "POST",
         body: JSON.stringify({
-          token, instagramHandle: handle,
+          token, instagramHandle: handle, email: email.trim(),
           notifyEmail, notifyDm, ambassadorOptIn: ambassador,
         }),
       });
@@ -188,10 +188,18 @@ export function ConfirmProfile({ token }: { token: string }) {
         </div>
 
         <div className="space-y-1.5">
-          <label className="text-xs font-medium text-neutral-300">Instagram handle</label>
+          <label className="text-xs font-medium text-neutral-300" htmlFor="confirm-email">Email address</label>
+          <input id="confirm-email" type="email" value={email} onChange={e => setEmail(e.target.value)} required
+            placeholder="you@example.com" autoCapitalize="none" autoCorrect="off" spellCheck={false}
+            autoComplete="email" inputMode="email" className={FIELD} />
+          <p className="text-xs text-neutral-500">Where your Feature offers land. Fix it here if it is wrong.</p>
+        </div>
+
+        <div className="space-y-1.5">
+          <label className="text-xs font-medium text-neutral-300" htmlFor="confirm-handle">Instagram handle</label>
           <div className="flex items-center gap-2">
             <span className="text-neutral-500 text-sm">@</span>
-            <input value={handle} onChange={e => setHandle(e.target.value)} required
+            <input id="confirm-handle" value={handle} onChange={e => setHandle(e.target.value)} required
               placeholder="yourhandle" autoCapitalize="none" autoCorrect="off" spellCheck={false}
               className={FIELD} />
           </div>
@@ -202,7 +210,7 @@ export function ConfirmProfile({ token }: { token: string }) {
           <div className="flex items-center justify-between gap-3">
             <div className="min-w-0">
               <p className="text-sm text-white">Email</p>
-              <p className="text-xs text-neutral-500 truncate">{data?.profile.email || "your address on file"}</p>
+              <p className="text-xs text-neutral-500 truncate">{email.trim() || "your address on file"}</p>
             </div>
             <Toggle on={notifyEmail} onChange={setNotifyEmail} label="Email notifications" />
           </div>
