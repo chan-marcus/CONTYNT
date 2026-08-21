@@ -15,18 +15,18 @@ const PURPLE_CARD = "bg-purple-500/10 border border-purple-400/25 rounded-2xl";
 const FIELD = "w-full px-3 py-2.5 bg-white/10 border border-white/20 rounded-xl text-white text-sm placeholder:text-neutral-500 focus:outline-none focus:ring-2 focus:ring-white/20";
 
 const AMBASSADOR_COPY =
-  "When you shoot a Feature, print a card from your portal and hand it to staff on your way out. " +
-  "The card doesn't have your name on it, just a code. If that spot signs up, you get $" +
-  REFERRAL_REWARD + ". No pitching, no follow up, no DMs to manage.";
+  "When you shoot a Feature, print a card from your portal or pull up your QR code, and hand it " +
+  "to the owner or whoever is working on your way out. If that spot comes on board, you earn an " +
+  "extra $" + REFERRAL_REWARD + "!";
 
 interface ConfirmData {
   neighborhoods: string[];
   verificationStatus: string;
   confirmedAt: string | null;
   profile: {
-    instagramHandle: string; serviceAreas: string[]; maxFeaturesPerWeek: number | null;
-    notifyEmail: boolean; notifySms: boolean; phone: string;
-    portfolioUrl: string; dietaryNotes: string; email: string;
+    instagramHandle: string;
+    notifyEmail: boolean; notifyDm: boolean;
+    email: string;
   };
   ambassador: { optedIn: boolean; optedInAt: string | null };
 }
@@ -55,13 +55,10 @@ export function ConfirmProfile({ token }: { token: string }) {
   const [togglingAfter, setTogglingAfter] = useState(false);
 
   const [handle, setHandle] = useState("");
-  const [areas, setAreas] = useState<string[]>([]);
-  const [capacity, setCapacity] = useState<number | null>(null);
   const [notifyEmail, setNotifyEmail] = useState(true);
-  const [notifySms, setNotifySms] = useState(false);
-  const [phone, setPhone] = useState("");
-  const [portfolio, setPortfolio] = useState("");
-  const [dietary, setDietary] = useState("");
+  const [notifyDm, setNotifyDm] = useState(true);
+  // Seeded from the stored value rather than hardcoded false: on a re-confirm
+  // an existing Ambassador must not be silently opted back out.
   const [ambassador, setAmbassador] = useState(false);
 
   useEffect(() => {
@@ -71,16 +68,8 @@ export function ConfirmProfile({ token }: { token: string }) {
         if (d?.profile) {
           setData(d);
           setHandle(d.profile.instagramHandle || "");
-          setAreas(d.profile.serviceAreas || []);
-          setCapacity(d.profile.maxFeaturesPerWeek ?? null);
           setNotifyEmail(d.profile.notifyEmail !== false);
-          setNotifySms(!!d.profile.notifySms);
-          setPhone(d.profile.phone || "");
-          setPortfolio(d.profile.portfolioUrl || "");
-          setDietary(d.profile.dietaryNotes || "");
-          // Default off, per the brief. Reading the stored value rather than
-          // hardcoding false matters on a re-confirm: an existing Ambassador
-          // who edits their neighborhoods must not be silently opted out.
+          setNotifyDm(d.profile.notifyDm !== false);
           setAmbassador(!!d.ambassador?.optedIn);
         } else {
           setError(d && (d as any).error ? (d as any).error : "Could not load your profile.");
@@ -90,9 +79,6 @@ export function ConfirmProfile({ token }: { token: string }) {
       .finally(() => setLoading(false));
   }, [token]);
 
-  const toggleArea = (n: string) =>
-    setAreas(prev => prev.includes(n) ? prev.filter(a => a !== n) : [...prev, n]);
-
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
     setSaving(true); setError("");
@@ -100,9 +86,8 @@ export function ConfirmProfile({ token }: { token: string }) {
       const res = await api("/creator-portal/confirm", {
         method: "POST",
         body: JSON.stringify({
-          token, instagramHandle: handle, serviceAreas: areas,
-          maxFeaturesPerWeek: capacity, notifyEmail, notifySms, phone,
-          portfolioUrl: portfolio, dietaryNotes: dietary, ambassadorOptIn: ambassador,
+          token, instagramHandle: handle,
+          notifyEmail, notifyDm, ambassadorOptIn: ambassador,
         }),
       });
       const d = await res.json().catch(() => null);
@@ -145,7 +130,7 @@ export function ConfirmProfile({ token }: { token: string }) {
           <div className="space-y-2">
             <h1 className="text-2xl font-bold">You're confirmed</h1>
             <p className="text-sm text-neutral-400 leading-relaxed">
-              You're in the first drop. We'll email you the moment Features open in your neighborhoods.
+              You're in the first drop. We'll reach out the moment Features open near you.
             </p>
           </div>
 
@@ -156,9 +141,9 @@ export function ConfirmProfile({ token }: { token: string }) {
                 <h2 className="text-base font-bold text-white">You're an Ambassador</h2>
               </div>
               <p className="text-sm text-neutral-400 leading-relaxed">
-                On every Feature you shoot, your portal will show a card to print before the
-                shoot checklist. Hand it to staff on your way out. If that spot signs up,
-                you earn ${REFERRAL_REWARD}.
+                On every Feature you shoot, your portal shows a card to print and a QR code,
+                both before the shoot checklist. Hand the card to the owner or have them scan
+                the code on your way out. If that spot comes on board, you earn ${REFERRAL_REWARD}.
               </p>
               <p className="text-xs text-neutral-500 leading-relaxed">
                 The card carries a code, not your name. You can turn this off any time in
@@ -192,15 +177,13 @@ export function ConfirmProfile({ token }: { token: string }) {
     );
   }
 
-  const capacityOptions = [1, 2, 3, 4];
-
   return (
     <Shell>
       <form onSubmit={submit} className="space-y-6">
         <div className="space-y-2">
           <h1 className="text-2xl font-bold leading-snug">Confirm your profile</h1>
           <p className="text-sm text-neutral-400 leading-relaxed">
-            This is how we match you to Features. It takes about a minute.
+            This is how we reach you about Features. It takes a few seconds.
           </p>
         </div>
 
@@ -211,42 +194,6 @@ export function ConfirmProfile({ token }: { token: string }) {
             <input value={handle} onChange={e => setHandle(e.target.value)} required
               placeholder="yourhandle" autoCapitalize="none" autoCorrect="off" spellCheck={false}
               className={FIELD} />
-          </div>
-        </div>
-
-        <div className="space-y-2">
-          <label className="text-xs font-medium text-neutral-300">
-            Neighborhoods you can shoot in
-            <span className="text-neutral-500 font-normal"> ({areas.length} selected)</span>
-          </label>
-          <div className="flex flex-wrap gap-2">
-            {(data?.neighborhoods ?? []).map(n => {
-              const on = areas.includes(n);
-              return (
-                <button key={n} type="button" onClick={() => toggleArea(n)}
-                  className={`px-3 py-1.5 text-xs rounded-full border transition-all ${
-                    on ? "bg-white text-neutral-900 border-white font-medium"
-                       : "bg-white/5 text-neutral-300 border-white/15 hover:border-white/30"
-                  }`}>
-                  {n}
-                </button>
-              );
-            })}
-          </div>
-        </div>
-
-        <div className="space-y-2">
-          <label className="text-xs font-medium text-neutral-300">Features per week</label>
-          <div className="grid grid-cols-4 gap-2">
-            {capacityOptions.map(n => (
-              <button key={n} type="button" onClick={() => setCapacity(n)}
-                className={`py-2.5 text-sm rounded-xl border transition-all ${
-                  capacity === n ? "bg-white text-neutral-900 border-white font-semibold"
-                                 : "bg-white/5 text-neutral-300 border-white/15 hover:border-white/30"
-                }`}>
-                {n === 4 ? "4+" : n}
-              </button>
-            ))}
           </div>
         </div>
 
@@ -261,35 +208,14 @@ export function ConfirmProfile({ token }: { token: string }) {
           </div>
           <div className="flex items-center justify-between gap-3">
             <div className="min-w-0">
-              <p className="text-sm text-white">Text messages</p>
-              <p className="text-xs text-neutral-500">Faster for time sensitive Features.</p>
+              <p className="text-sm text-white">Instagram DM</p>
+              <p className="text-xs text-neutral-500 truncate">
+                {handle ? `@${handle.replace(/^@+/, "")}` : "Faster for time sensitive Features."}
+              </p>
             </div>
-            <Toggle on={notifySms} onChange={setNotifySms} label="SMS notifications" />
+            <Toggle on={notifyDm} onChange={setNotifyDm} label="Instagram DM notifications" />
           </div>
-          {notifySms && (
-            <input value={phone} onChange={e => setPhone(e.target.value)} type="tel"
-              placeholder="(415) 555 0123" className={FIELD} />
-          )}
         </div>
-
-        <details className="group">
-          <summary className="text-xs text-neutral-400 cursor-pointer list-none flex items-center gap-1.5 py-1">
-            <span className="group-open:rotate-90 transition-transform">›</span>
-            Optional details
-          </summary>
-          <div className="space-y-3 pt-3">
-            <div className="space-y-1.5">
-              <label className="text-xs font-medium text-neutral-300">Portfolio link</label>
-              <input value={portfolio} onChange={e => setPortfolio(e.target.value)}
-                placeholder="yoursite.com" autoCapitalize="none" className={FIELD} />
-            </div>
-            <div className="space-y-1.5">
-              <label className="text-xs font-medium text-neutral-300">Dietary notes</label>
-              <input value={dietary} onChange={e => setDietary(e.target.value)}
-                placeholder="Anything a restaurant should know" className={FIELD} />
-            </div>
-          </div>
-        </details>
 
         {/* Separated from the form above by a rule: this is an offer, not a field. */}
         <div className="pt-5 border-t border-white/10">
