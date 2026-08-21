@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback } from "react";
 import { CheckCircle, Copy, RefreshCw, ExternalLink, ThumbsUp, ThumbsDown, Link, ChevronDown, Award, Eye } from "lucide-react";
 import { projectId, publicAnonKey } from "/utils/supabase/info";
 import { AmbassadorAdmin, type AmbassadorAdminData } from "./AmbassadorAdmin";
-import { CreatorReadiness, type ReadinessData } from "./CreatorReadiness";
+import { CreatorReadiness, type ReadinessData, type EmailHealth } from "./CreatorReadiness";
 import { countQuotaUsed, quotaLimit } from "../lib/featureQuota";
 
 const BASE = `https://${projectId}.supabase.co/functions/v1/make-server-f5961d0c`;
@@ -716,6 +716,9 @@ export function Analytics({ adminToken }: { adminToken?: string } = {}) {
   const [markingPaid, setMarkingPaid] = useState<string | null>(null);
   const [ambData, setAmbData] = useState<AmbassadorAdminData | null>(null);
   const [readyData, setReadyData] = useState<ReadinessData | null>(null);
+  const [emailHealth, setEmailHealth] = useState<EmailHealth | null>(null);
+  const [testingEmail, setTestingEmail] = useState(false);
+  const [testEmailResult, setTestEmailResult] = useState("");
   const [sendBusy, setSendBusy] = useState(false);
   const [sendResult, setSendResult] = useState("");
   const [payoutRequests, setPayoutRequests] = useState<any[]>([]);
@@ -730,6 +733,28 @@ export function Analytics({ adminToken }: { adminToken?: string } = {}) {
   const loadReadiness = useCallback(async () => {
     const res = await apiFetch("/admin/creator-readiness").catch(() => null);
     if (res?.ok) setReadyData(await res.json());
+  }, []);
+
+  // Separate from the readiness load: it round-trips to Postmark, and a slow or
+  // unreachable Postmark should not hold up the table.
+  const loadEmailHealth = useCallback(async () => {
+    const res = await apiFetch("/admin/email-health").catch(() => null);
+    if (res?.ok) setEmailHealth(await res.json());
+  }, []);
+
+  const sendTestEmail = useCallback(async (to: string) => {
+    setTestingEmail(true); setTestEmailResult("");
+    try {
+      const res = await apiFetch("/admin/email-test", { method: "POST", body: JSON.stringify({ to }) });
+      const d = await res.json().catch(() => null);
+      // Postmark's own message is the useful part -- "sender signature not
+      // confirmed" tells you exactly what to go fix, and a generic failure does
+      // not.
+      setTestEmailResult(res.ok && d?.success
+        ? `Sent to ${to} from ${d.from} on the ${d.stream} stream.`
+        : `Failed: ${d?.error || `HTTP ${res.status}`}`);
+    } catch { setTestEmailResult("Could not reach the server."); }
+    finally { setTestingEmail(false); }
   }, []);
 
   // Dry run reports back without sending, so the result is shown rather than
@@ -898,6 +923,7 @@ export function Analytics({ adminToken }: { adminToken?: string } = {}) {
   useEffect(() => { if (isAuthenticated) fetchAll(); }, [isAuthenticated, fetchAll]);
   useEffect(() => { if (isAuthenticated && tab === "ambassadors" && !ambData) loadAmbassadors(); }, [isAuthenticated, tab, ambData, loadAmbassadors]);
   useEffect(() => { if (isAuthenticated && tab === "readiness" && !readyData) loadReadiness(); }, [isAuthenticated, tab, readyData, loadReadiness]);
+  useEffect(() => { if (isAuthenticated && tab === "readiness" && !emailHealth) loadEmailHealth(); }, [isAuthenticated, tab, emailHealth, loadEmailHealth]);
 
 
   const settlePayoutRequest = async (req: any) => {
@@ -1293,7 +1319,8 @@ export function Analytics({ adminToken }: { adminToken?: string } = {}) {
                       className="text-xs text-neutral-500 hover:text-neutral-300">Dismiss</button>
                   </div>
                 )}
-                <CreatorReadiness data={readyData} onSend={sendVerification} busy={sendBusy} />
+                <CreatorReadiness data={readyData} onSend={sendVerification} busy={sendBusy}
+                  health={emailHealth} onTest={sendTestEmail} testing={testingEmail} testResult={testEmailResult} />
               </div>
             : <p className="text-neutral-400 text-sm">Loading readiness…</p>
         )}

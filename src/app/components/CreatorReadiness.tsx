@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { Download, Send, Loader2, Check, X } from "lucide-react";
+import { Download, Send, Loader2, Check, X, AlertTriangle, CheckCircle2, MailCheck } from "lucide-react";
 
 export interface ReadinessCreator {
   id: string; handle: string; email: string;
@@ -7,7 +7,7 @@ export interface ReadinessCreator {
   status: string;
   sentAt: string | null; openedAt: string | null; openCount: number; confirmedAt: string | null;
   neighborhoods: string[]; capacity: number | null;
-  notifyEmail: boolean; notifySms: boolean;
+  notifyEmail: boolean; notifyDm: boolean; notifySms: boolean;
   ambassadorOptedIn: boolean; payoutsConnected: boolean;
   delivered: boolean; bounced: boolean;
 }
@@ -16,6 +16,122 @@ export interface ReadinessData {
   funnel: { sent: number; delivered: number; linkOpened: number; confirmed: number; ambassadorOptedIn: number; bounced: number };
   neighborhoods: string[];
   creators: ReadinessCreator[];
+}
+
+// Every send on this screen fails quietly by design -- the batch skips a creator
+// when Postmark is not configured and reports "skipped", which looks a lot like
+// the 24 hour cooldown. This panel is the difference between the two, and it
+// asks Postmark rather than trusting our own environment variables.
+export interface EmailHealth {
+  ok: boolean;
+  problem: string | null;
+  config: {
+    serverToken: boolean; webhookSecret: boolean; loginCodeSalt: boolean;
+    from: string; broadcastStream: string; transactionalStream: string;
+    siteOrigin: string; verifyLinkOrigin: string; webhookUrl: string;
+  };
+  server?: { name: string | null; id: number | null };
+  streams?: string[];
+}
+
+function EmailHealthPanel({ health, onTest, testing, testResult }: {
+  health: EmailHealth | null;
+  onTest: (to: string) => void;
+  testing: boolean;
+  testResult: string;
+}) {
+  const [to, setTo] = useState("");
+  const [open, setOpen] = useState(false);
+
+  if (!health) {
+    return (
+      <div className="bg-white/5 border border-white/10 rounded-2xl px-4 py-3 text-xs text-neutral-500">
+        Checking email configuration…
+      </div>
+    );
+  }
+
+  const { config } = health;
+  // Sending is the hard requirement. The webhook only feeds the Delivered and
+  // Bounced columns, so its absence is a warning rather than a blocker, and
+  // saying so keeps the red state meaningful.
+  const canSend = config.serverToken && health.ok;
+  const tone = canSend
+    ? (config.webhookSecret ? "border-green-500/25 bg-green-500/[0.07]" : "border-yellow-500/25 bg-yellow-500/[0.06]")
+    : "border-red-500/30 bg-red-500/[0.07]";
+
+  const notes: string[] = [];
+  if (health.problem) notes.push(health.problem);
+  if (config.serverToken && !config.webhookSecret) {
+    notes.push("POSTMARK_WEBHOOK_SECRET is not set, so Delivered and Bounced below will stay at zero.");
+  }
+
+  const rows: [string, string, boolean][] = [
+    ["Sending", config.serverToken ? `Postmark${health.server?.name ? ` · ${health.server.name}` : ""}` : "POSTMARK_SERVER_TOKEN not set", config.serverToken],
+    ["From", config.from, !!config.from],
+    ["Announcement stream", config.broadcastStream, !health.streams?.length || health.streams.includes(config.broadcastStream)],
+    ["Login code stream", config.transactionalStream, !health.streams?.length || health.streams.includes(config.transactionalStream)],
+    ["Delivery webhook", config.webhookSecret ? "Secret set" : "POSTMARK_WEBHOOK_SECRET not set", config.webhookSecret],
+    ["Login code salt", config.loginCodeSalt ? "Set" : "Falling back to ADMIN_SECRET", config.loginCodeSalt],
+  ];
+
+  return (
+    <div className={`border rounded-2xl px-4 py-3.5 space-y-3 ${tone}`}>
+      <div className="flex items-start gap-2.5">
+        {canSend
+          ? <CheckCircle2 className="w-4 h-4 text-green-400 shrink-0 mt-0.5" />
+          : <AlertTriangle className="w-4 h-4 text-red-400 shrink-0 mt-0.5" />}
+        <div className="flex-1 min-w-0 space-y-1">
+          <p className="text-xs font-semibold text-white">
+            {canSend ? "Email is live" : "Email is not sending"}
+          </p>
+          {notes.map(n => <p key={n} className="text-[11px] text-neutral-300 leading-relaxed">{n}</p>)}
+          {canSend && !notes.length && (
+            <p className="text-[11px] text-neutral-400 leading-relaxed">
+              Verification emails and login codes are both going out through Postmark.
+            </p>
+          )}
+        </div>
+        <button onClick={() => setOpen(o => !o)}
+          className="text-[11px] text-neutral-400 hover:text-neutral-200 shrink-0">
+          {open ? "Hide" : "Details"}
+        </button>
+      </div>
+
+      {open && (
+        <div className="space-y-2 pt-1">
+          <div className="grid sm:grid-cols-2 gap-x-5 gap-y-1.5">
+            {rows.map(([label, value, ok]) => (
+              <div key={label} className="flex items-start gap-2 min-w-0">
+                {ok
+                  ? <Check className="w-3 h-3 text-green-400 shrink-0 mt-[3px]" />
+                  : <X className="w-3 h-3 text-red-400 shrink-0 mt-[3px]" />}
+                <span className="text-[11px] text-neutral-500 shrink-0">{label}</span>
+                <span className="text-[11px] text-neutral-300 truncate" title={value}>{value}</span>
+              </div>
+            ))}
+          </div>
+          <p className="text-[11px] text-neutral-500 break-all pt-1">
+            Webhook URL for Postmark: <span className="text-neutral-400">{config.webhookUrl}</span>
+          </p>
+
+          {/* A real send is the only thing that surfaces an unconfirmed sender
+              signature, which is the failure everyone hits first. */}
+          <div className="flex flex-wrap items-center gap-2 pt-1">
+            <input value={to} onChange={e => setTo(e.target.value)} type="email"
+              placeholder="you@example.com"
+              className="flex-1 min-w-[180px] bg-white/5 border border-white/15 rounded-lg px-2.5 py-1.5 text-xs text-neutral-200 placeholder:text-neutral-600 focus:outline-none focus:ring-1 focus:ring-white/30" />
+            <button onClick={() => onTest(to.trim())} disabled={testing || !to.includes("@")}
+              className="flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-lg bg-white/5 border border-white/15 text-neutral-200 hover:border-white/30 transition-all disabled:opacity-40">
+              {testing ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <MailCheck className="w-3.5 h-3.5" />}
+              Send test
+            </button>
+          </div>
+          {testResult && <p className="text-[11px] text-neutral-300 leading-relaxed">{testResult}</p>}
+        </div>
+      )}
+    </div>
+  );
 }
 
 const TIER_STYLE: Record<string, string> = {
@@ -28,10 +144,14 @@ const TIER_STYLE: Record<string, string> = {
 const fmt = (d: string | null) =>
   d ? new Date(d).toLocaleDateString("en-US", { month: "short", day: "numeric" }) : "—";
 
-export function CreatorReadiness({ data, onSend, busy }: {
+export function CreatorReadiness({ data, onSend, busy, health, onTest, testing, testResult }: {
   data: ReadinessData;
   onSend: (creatorIds: string[], reminderOnly: boolean, dryRun: boolean) => void;
   busy: boolean;
+  health: EmailHealth | null;
+  onTest: (to: string) => void;
+  testing: boolean;
+  testResult: string;
 }) {
   const [tier, setTier] = useState("");
   const [status, setStatus] = useState("");
@@ -84,6 +204,10 @@ export function CreatorReadiness({ data, onSend, busy }: {
   };
 
   const ids = [...selected];
+  // Dry run stays available whatever the configuration -- it sends nothing and
+  // rendering the links is exactly how you check them before Postmark is live.
+  const canSend = !health || (health.config.serverToken && health.ok);
+  const sendBlocked = canSend ? undefined : "Email is not configured, so this would send nothing.";
   const funnel: [string, number][] = [
     ["Sent", data.funnel.sent], ["Delivered", data.funnel.delivered],
     ["Link opened", data.funnel.linkOpened], ["Confirmed", data.funnel.confirmed],
@@ -94,6 +218,8 @@ export function CreatorReadiness({ data, onSend, busy }: {
 
   return (
     <div className="space-y-5">
+      <EmailHealthPanel health={health} onTest={onTest} testing={testing} testResult={testResult} />
+
       <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
         {funnel.map(([label, n]) => (
           <div key={label} className="bg-white/5 border border-white/10 rounded-2xl p-4">
@@ -134,11 +260,11 @@ export function CreatorReadiness({ data, onSend, busy }: {
           {busy ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Send className="w-3.5 h-3.5" />}
           Dry run ({ids.length})
         </button>
-        <button onClick={() => onSend(ids, false, false)} disabled={busy || !ids.length}
+        <button onClick={() => onSend(ids, false, false)} disabled={busy || !ids.length || !canSend} title={sendBlocked}
           className="flex items-center gap-1.5 px-3 py-2 text-xs rounded-xl bg-white text-neutral-900 font-semibold hover:bg-neutral-100 transition-all disabled:opacity-40">
           <Send className="w-3.5 h-3.5" />Send verification email
         </button>
-        <button onClick={() => onSend(ids, true, false)} disabled={busy || !ids.length}
+        <button onClick={() => onSend(ids, true, false)} disabled={busy || !ids.length || !canSend} title={sendBlocked}
           className="flex items-center gap-1.5 px-3 py-2 text-xs rounded-xl bg-white/5 border border-white/15 text-neutral-200 hover:border-white/30 transition-all disabled:opacity-40">
           <Send className="w-3.5 h-3.5" />Remind non-confirmers
         </button>
