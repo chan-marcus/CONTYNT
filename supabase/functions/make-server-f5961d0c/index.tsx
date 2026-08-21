@@ -1555,8 +1555,88 @@ app.get("/make-server-f5961d0c/admin/creator-readiness", async (c) => {
 // ─── Verification send ────────────────────────────────────────────────────────
 const POSTMARK_SERVER_TOKEN = Deno.env.get("POSTMARK_SERVER_TOKEN") || "";
 const POSTMARK_FROM = Deno.env.get("POSTMARK_FROM") || "team@getcontynt.com";
+// Postmark falls back to the sender signature's own name when From carries a
+// bare address, which is why these arrived from "Marcus Chan". An explicit
+// display name overrides it per message, without anyone having to remember to
+// change the signature in the Postmark UI. Quotes and backslashes are stripped
+// rather than escaped: nothing legitimate needs them, and an unbalanced quote
+// makes the whole header unparseable.
+const POSTMARK_FROM_NAME = (Deno.env.get("POSTMARK_FROM_NAME") || "CONTYNT Team").replace(/["\\]/g, "");
+// An address that already carries its own display name is left alone.
+const POSTMARK_FROM_HEADER = POSTMARK_FROM.includes("<")
+  ? POSTMARK_FROM
+  : `"${POSTMARK_FROM_NAME}" <${POSTMARK_FROM}>`;
 const POSTMARK_STREAM = Deno.env.get("POSTMARK_MESSAGE_STREAM") || "broadcast";
 const SEND_COOLDOWN_HOURS = 24;
+
+// ─── Email shell ──────────────────────────────────────────────────────────────
+// One chrome for every message we send, so the login code and the announcement
+// cannot drift apart.
+//
+// Deliberately old fashioned markup: tables with bgcolor attributes rather than
+// divs, inline styles rather than a <style> block, and no web font. Gmail strips
+// <style>, Outlook ignores background-color on a div, and a black band declared
+// only in CSS is how a header turns into white text on white.
+//
+// A light card with a black band, rather than the site's full dark treatment. A
+// dark email is at the mercy of Gmail's dark-mode inversion, and the wordmark
+// and black button already read as CONTYNT without betting the legibility of the
+// whole message on it.
+const EMAIL_FONT = "-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif";
+
+function emailShell(opts: { preheader: string; body: string; footerNote?: string }) {
+  return `<!doctype html>
+<html lang="en"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<!-- Light only. Without this, Apple Mail and Outlook invert the card and the
+     black band stops being a deliberate choice. -->
+<meta name="color-scheme" content="light">
+<meta name="supported-color-schemes" content="light">
+</head>
+<body style="margin:0;padding:0;background-color:#f4f4f5;">
+<!-- Preheader: what the inbox shows next to the subject. Without it Gmail
+     pulls the first line of the body, which is the greeting and says nothing.
+     The zero-width padding stops it pulling body text in after this. -->
+<div style="display:none;max-height:0;overflow:hidden;mso-hide:all;font-size:1px;line-height:1px;color:#f4f4f5;">
+${esc(opts.preheader)}${"&#8203;&zwnj;&nbsp;".repeat(30)}
+</div>
+<table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" bgcolor="#f4f4f5" style="background-color:#f4f4f5;">
+<tr><td align="center" style="padding:32px 16px;">
+
+  <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="600" style="width:100%;max-width:600px;background-color:#ffffff;border-radius:16px;overflow:hidden;">
+
+    <!-- Wordmark. The spaces are literal, exactly as the site sets it: real
+         letter-spacing is unreliable in Outlook, and spaces are not. -->
+    <tr><td align="center" bgcolor="#0a0a0a" style="background-color:#0a0a0a;padding:26px 24px;">
+      <span style="font-family:${EMAIL_FONT};font-size:13px;font-weight:600;color:#ffffff;letter-spacing:0.12em;">C O N T Y N T</span>
+    </td></tr>
+
+    <tr><td style="padding:34px 32px 30px 32px;font-family:${EMAIL_FONT};font-size:15px;line-height:1.65;color:#171717;">
+${opts.body}
+    </td></tr>
+
+    <tr><td style="padding:0 32px;"><div style="height:1px;background-color:#e5e5e5;line-height:1px;font-size:1px;">&nbsp;</div></td></tr>
+
+    <tr><td style="padding:20px 32px 26px 32px;font-family:${EMAIL_FONT};font-size:12px;line-height:1.6;color:#8a8a8a;">
+${opts.footerNote ? `      <p style="margin:0 0 6px 0;">${opts.footerNote}</p>\n` : ""}      <p style="margin:0;">Contynt &middot; San Francisco</p>
+    </td></tr>
+
+  </table>
+
+</td></tr>
+</table>
+</body></html>`;
+}
+
+// The bulletproof button: a table cell carries the colour so Outlook paints it,
+// and the anchor carries the padding so the whole block is clickable.
+const emailButton = (href: string, label: string) =>
+`      <table role="presentation" cellpadding="0" cellspacing="0" border="0" style="margin:26px 0;">
+        <tr><td align="center" bgcolor="#0a0a0a" style="background-color:#0a0a0a;border-radius:12px;">
+          <a href="${esc(href)}" style="display:inline-block;padding:15px 30px;font-family:${EMAIL_FONT};font-size:15px;font-weight:600;color:#ffffff;text-decoration:none;border-radius:12px;">${esc(label)}</a>
+        </td></tr>
+      </table>`;
 
 // There is no name column on creator_signups, so the handle is the only thing
 // resembling a first name we have. Better than an empty greeting, and the
@@ -1576,14 +1656,21 @@ ${link}
 
 This link is good for 90 days and is just for you. Please do not forward it.
 
-Contynt`;
-  const html =
-`<div style="font-family:-apple-system,Segoe UI,Helvetica,Arial,sans-serif;font-size:15px;line-height:1.6;color:#111">
-<p>Hi ${esc(first)},</p>
-<p>Contynt is opening up in San Francisco and you are on the list for the first drop.</p>
-<p><a href="${esc(link)}" style="display:inline-block;background:#0a0a0a;color:#fff;padding:12px 20px;border-radius:10px;text-decoration:none;font-weight:600">Confirm your profile</a></p>
-<p style="color:#666;font-size:13px">This link is good for 90 days and is just for you. Please do not forward it.</p>
-<p style="color:#666;font-size:13px">Contynt</p></div>`;
+Contynt
+San Francisco`;
+  const html = emailShell({
+    preheader: "Confirm your profile so we can match you to Features in your neighborhoods.",
+    footerNote: "You are receiving this because you signed up for Contynt early access.",
+    body:
+`      <p style="margin:0 0 16px 0;font-size:21px;line-height:1.35;font-weight:700;color:#0a0a0a;">Confirm your profile</p>
+      <p style="margin:0 0 14px 0;">Hi ${esc(first)},</p>
+      <p style="margin:0 0 14px 0;">Contynt is opening up in San Francisco and you are on the list for the first drop.</p>
+      <p style="margin:0;">Confirm your profile so we can match you to Features in your neighborhoods.</p>
+${emailButton(link, "Confirm your profile")}
+      <p style="margin:0 0 6px 0;font-size:13px;color:#8a8a8a;">Or paste this into your browser:</p>
+      <p style="margin:0 0 18px 0;font-size:13px;word-break:break-all;"><a href="${esc(link)}" style="color:#525252;">${esc(link)}</a></p>
+      <p style="margin:0;font-size:13px;color:#8a8a8a;">This link is good for 90 days and is just for you. Please do not forward it.</p>`,
+  });
   return { text, html, subject: "Confirm your Contynt profile" };
 }
 
@@ -1603,7 +1690,7 @@ async function postmarkSend(opts: { to: string; subject: string; html: string; t
         "X-Postmark-Server-Token": POSTMARK_SERVER_TOKEN,
       },
       body: JSON.stringify({
-        From: POSTMARK_FROM, To: opts.to, Subject: opts.subject,
+        From: POSTMARK_FROM_HEADER, To: opts.to, Subject: opts.subject,
         HtmlBody: opts.html, TextBody: opts.text, MessageStream: opts.stream,
       }),
     });
@@ -1716,7 +1803,7 @@ app.get("/make-server-f5961d0c/admin/email-health", async (c) => {
     serverToken: !!POSTMARK_SERVER_TOKEN,
     webhookSecret: !!POSTMARK_WEBHOOK_SECRET,
     loginCodeSalt: !!Deno.env.get("LOGIN_CODE_SALT"),
-    from: POSTMARK_FROM,
+    from: POSTMARK_FROM_HEADER,
     broadcastStream: POSTMARK_STREAM,
     transactionalStream: POSTMARK_TRANSACTIONAL_STREAM,
     siteOrigin: SITE_ORIGIN,
@@ -1771,18 +1858,27 @@ app.post("/make-server-f5961d0c/admin/email-test", async (c) => {
     if (!POSTMARK_SERVER_TOKEN) return c.json({ error: "POSTMARK_SERVER_TOKEN is not set" }, 400);
 
     const which = stream === "broadcast" ? POSTMARK_STREAM : POSTMARK_TRANSACTIONAL_STREAM;
+    // Rendered through the same shell as the real mail, so the test also answers
+    // "does our branding survive this client" and not just "did it send".
     const sent = await postmarkSend({
       to: addr,
       subject: "Contynt email test",
-      text: `This is a test from the Contynt admin panel.\n\nFrom: ${POSTMARK_FROM}\nStream: ${which}\n\nIf you are reading this, sending works.`,
-      html: `<div style="font-family:-apple-system,Segoe UI,Helvetica,Arial,sans-serif;font-size:15px;line-height:1.6;color:#111">
-<p>This is a test from the Contynt admin panel.</p>
-<p style="color:#666;font-size:13px">From: ${esc(POSTMARK_FROM)}<br>Stream: ${esc(which)}</p>
-<p>If you are reading this, sending works.</p></div>`,
+      text: `This is a test from the Contynt admin panel.\n\nFrom: ${POSTMARK_FROM_HEADER}\nStream: ${which}\n\nIf you are reading this, sending works.`,
+      html: emailShell({
+        preheader: `Test send on the ${which} stream.`,
+        body:
+`      <p style="margin:0 0 16px 0;font-size:21px;line-height:1.35;font-weight:700;color:#0a0a0a;">Sending works</p>
+      <p style="margin:0 0 22px 0;">This is a test from the Contynt admin panel. If you are reading it, the token, the sender signature and the message stream are all good.</p>
+      <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%">
+        <tr><td bgcolor="#f7f7f8" style="background-color:#f7f7f8;border-radius:14px;padding:18px 20px;font-family:${EMAIL_FONT};font-size:13px;line-height:1.8;color:#525252;">
+          From: ${esc(POSTMARK_FROM_HEADER)}<br>Stream: ${esc(which)}
+        </td></tr>
+      </table>`,
+      }),
       stream: which,
     });
     if (!sent.ok) return c.json({ error: sent.error, postmark: sent.payload }, 502);
-    return c.json({ success: true, stream: which, from: POSTMARK_FROM, messageId: sent.payload?.MessageID ?? null });
+    return c.json({ success: true, stream: which, from: POSTMARK_FROM_HEADER, messageId: sent.payload?.MessageID ?? null });
   } catch (e: any) { return c.json({ error: e?.message ?? String(e) }, 500); }
 });
 
@@ -1887,12 +1983,22 @@ const loginCodeKey = (audience: LoginAudience, addr: string) => `logincode_${aud
 function loginCodeEmail(code: string) {
   return {
     subject: `Your Contynt code: ${code}`,
-    text: `Your Contynt login code is ${code}\n\nIt expires in ${LOGIN_CODE_TTL_MIN} minutes. If you did not ask for this, you can ignore it.\n\nContynt`,
-    html: `<div style="font-family:-apple-system,Segoe UI,Helvetica,Arial,sans-serif;font-size:15px;line-height:1.6;color:#111">
-<p>Your Contynt login code is</p>
-<p style="font-size:34px;font-weight:700;letter-spacing:.18em;margin:14px 0">${esc(code)}</p>
-<p style="color:#666;font-size:13px">It expires in ${LOGIN_CODE_TTL_MIN} minutes. If you did not ask for this, you can ignore it.</p>
-<p style="color:#666;font-size:13px">Contynt</p></div>`,
+    text: `Your Contynt login code is ${code}\n\nIt expires in ${LOGIN_CODE_TTL_MIN} minutes. If you did not ask for this, you can ignore it — the code is useless without your inbox.\n\nContynt\nSan Francisco`,
+    html: emailShell({
+      preheader: `${code} is your login code. It expires in ${LOGIN_CODE_TTL_MIN} minutes.`,
+      body:
+`      <p style="margin:0 0 16px 0;font-size:21px;line-height:1.35;font-weight:700;color:#0a0a0a;">Your login code</p>
+      <p style="margin:0 0 22px 0;">Enter this to finish signing in.</p>
+      <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%">
+        <tr><td align="center" bgcolor="#f7f7f8" style="background-color:#f7f7f8;border-radius:14px;padding:22px 16px;">
+          <!-- No spaces between the digits: the code has to survive being
+               copied and pasted, which a prettier "09 73 19" would not. -->
+          <div style="font-family:${EMAIL_FONT};font-size:36px;font-weight:700;letter-spacing:0.2em;color:#0a0a0a;line-height:1.1;">${esc(code)}</div>
+        </td></tr>
+      </table>
+      <p style="margin:22px 0 0 0;font-size:13px;color:#8a8a8a;">It expires in ${LOGIN_CODE_TTL_MIN} minutes and can only be used once.</p>
+      <p style="margin:8px 0 0 0;font-size:13px;color:#8a8a8a;">If you did not ask for this, you can ignore it — the code is useless without your inbox.</p>`,
+    }),
   };
 }
 
