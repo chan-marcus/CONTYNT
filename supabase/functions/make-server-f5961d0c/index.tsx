@@ -719,6 +719,7 @@ app.get("/make-server-f5961d0c/creator-portal/confirm-data", async (c) => {
         serviceAreas: row.service_areas || [],
         maxFeaturesPerWeek: row.max_features_per_week ?? null,
         notifyEmail: row.notify_email ?? true,
+        notifyDm: row.notify_dm ?? true,
         notifySms: row.notify_sms ?? false,
         phone: row.phone || "",
         portfolioUrl: row.portfolio_url || "",
@@ -754,24 +755,53 @@ app.post("/make-server-f5961d0c/creator-portal/confirm", async (c) => {
     const handle = normalizeHandle(body.instagramHandle);
     if (!handle) return c.json({ error: "Enter a valid Instagram handle, letters, numbers, periods and underscores only." }, 400);
 
-    const areas = Array.isArray(body.serviceAreas) ? body.serviceAreas.filter((a: any) => SF_NEIGHBORHOODS.includes(a)) : [];
-    if (!areas.length) return c.json({ error: "Pick at least one neighborhood." }, 400);
+    // Everything below the handle is optional, and absent means "leave it
+    // alone". The confirm screen no longer asks for neighborhoods, capacity,
+    // portfolio or dietary notes, so treating an omitted key as an empty value
+    // would wipe whatever an earlier confirm or an admin already recorded.
+    const optional: Record<string, unknown> = {};
 
-    const capacity = Number(body.maxFeaturesPerWeek);
-    if (!Number.isInteger(capacity) || capacity < 1 || capacity > 4) {
-      return c.json({ error: "Choose how many Features you can take per week." }, 400);
+    if (body.serviceAreas !== undefined) {
+      const areas = Array.isArray(body.serviceAreas)
+        ? body.serviceAreas.filter((a: any) => SF_NEIGHBORHOODS.includes(a)) : [];
+      if (!areas.length) return c.json({ error: "Pick at least one neighborhood." }, 400);
+      optional.service_areas = areas;
+    }
+
+    if (body.maxFeaturesPerWeek !== undefined && body.maxFeaturesPerWeek !== null) {
+      const capacity = Number(body.maxFeaturesPerWeek);
+      if (!Number.isInteger(capacity) || capacity < 1 || capacity > 4) {
+        return c.json({ error: "Choose how many Features you can take per week." }, 400);
+      }
+      optional.max_features_per_week = capacity;
     }
 
     const notifyEmail = body.notifyEmail !== false;
-    const notifySms = !!body.notifySms;
-    const phone = String(body.phone ?? "").trim();
-    if (notifySms && phone.replace(/\D/g, "").length < 10) {
-      return c.json({ error: "Add a phone number to get text alerts." }, 400);
+    // Default on: the handle is the one contact detail we always have.
+    const notifyDm = body.notifyDm !== false;
+    const phone = body.phone === undefined ? String(creator.phone ?? "") : String(body.phone ?? "").trim();
+    const hasPhone = phone.replace(/\D/g, "").length >= 10;
+    // The confirm screen no longer asks about texts, so a stored opt-in rides
+    // along untouched. It can only be rejected when the screen actually asked;
+    // otherwise a creator opted in without a usable number would hit an error
+    // for a field that is not on the page, with no way to clear it.
+    let notifySms = body.notifySms === undefined ? !!creator.notify_sms : !!body.notifySms;
+    if (notifySms && !hasPhone) {
+      if (body.notifySms !== undefined) return c.json({ error: "Add a phone number to get text alerts." }, 400);
+      notifySms = false;
+    }
+    if (body.phone !== undefined) optional.phone = phone || null;
+
+    if (body.portfolioUrl !== undefined) {
+      const portfolioRaw = String(body.portfolioUrl ?? "").trim();
+      const portfolioUrl = portfolioRaw ? normalizeUrl(portfolioRaw) : null;
+      if (portfolioRaw && !portfolioUrl) return c.json({ error: "That portfolio link does not look like a URL." }, 400);
+      optional.portfolio_url = portfolioUrl;
     }
 
-    const portfolioRaw = String(body.portfolioUrl ?? "").trim();
-    const portfolioUrl = portfolioRaw ? normalizeUrl(portfolioRaw) : null;
-    if (portfolioRaw && !portfolioUrl) return c.json({ error: "That portfolio link does not look like a URL." }, 400);
+    if (body.dietaryNotes !== undefined) {
+      optional.dietary_notes = String(body.dietaryNotes).trim() || null;
+    }
 
     const now = new Date().toISOString();
     await must("confirm: save profile", db().from("creator_signups_f5961d0c").update({
@@ -780,13 +810,10 @@ app.post("/make-server-f5961d0c/creator-portal/confirm", async (c) => {
       // the creator looking at the typo they just fixed.
       instagram: handle,
       instagram_handle: handle,
-      service_areas: areas,
-      max_features_per_week: capacity,
       notify_email: notifyEmail,
+      notify_dm: notifyDm,
       notify_sms: notifySms,
-      phone: phone || null,
-      portfolio_url: portfolioUrl,
-      dietary_notes: String(body.dietaryNotes ?? "").trim() || null,
+      ...optional,
       verify_confirmed_at: now,
       verification_status: "confirmed",
     }).eq("id", creator.id));
@@ -798,9 +825,9 @@ app.post("/make-server-f5961d0c/creator-portal/confirm", async (c) => {
     }
 
     const snapshot = {
-      instagramHandle: handle, serviceAreas: areas, maxFeaturesPerWeek: capacity,
-      notifyEmail, notifySms, hasPhone: !!phone,
-      hasPortfolio: !!portfolioUrl, hasDietaryNotes: !!String(body.dietaryNotes ?? "").trim(),
+      instagramHandle: handle,
+      notifyEmail, notifyDm, notifySms, hasPhone,
+      ...optional,
     };
     await logCreatorEvent(creator.id, "profile_confirmed", snapshot);
 
@@ -1502,7 +1529,7 @@ app.get("/make-server-f5961d0c/admin/creator-readiness", async (c) => {
         confirmedAt: r.verify_confirmed_at || null,
         neighborhoods: r.service_areas || [],
         capacity: r.max_features_per_week ?? null,
-        notifyEmail: !!r.notify_email, notifySms: !!r.notify_sms,
+        notifyEmail: !!r.notify_email, notifyDm: r.notify_dm ?? true, notifySms: !!r.notify_sms,
         ambassadorOptedIn: !!r.ambassador_opted_in,
         payoutsConnected: payoutTokens.has(tokenFor[r.id]),
         delivered: delivered.has(r.id),
