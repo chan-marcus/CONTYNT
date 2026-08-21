@@ -954,9 +954,6 @@ export function BusinessPortal({ token }: { token: string }) {
                 Founding partners lock in <span className="font-semibold text-white">40% off for life</span>.
                 Plans from {PLANS[0].price}/month.
               </p>
-              <span className="inline-block mt-2 text-xs font-semibold text-blue-300 group-hover:text-blue-200">
-                {plansExpanded ? "Hide plans" : "See plans"}
-              </span>
             </div>
             <ChevronDown className={`w-5 h-5 text-blue-400 shrink-0 transition-transform duration-300 ${plansExpanded ? "rotate-180" : ""}`} />
           </button>
