@@ -1,6 +1,6 @@
 import { useEffect, useState, useCallback } from "react";
 import QRCode from "qrcode";
-import { Award, Copy, Check, Printer, Download, Share2, QrCode, Users, Clock, Building2, DollarSign, Sparkles } from "lucide-react";
+import { Award, Copy, Check, Printer, Download, Share2, QrCode, Users, Building2, DollarSign, Sparkles } from "lucide-react";
 import { projectId, publicAnonKey } from "/utils/supabase/info";
 import { prettyUrl } from "../lib/prettyUrl";
 
@@ -306,11 +306,8 @@ function Dashboard({ state, instagram, token }: { state: AmbassadorState; instag
 
   const s = state.stats!;
   const cards = [
-    { label: "Businesses Referred", value: s.businessesReferred, icon: Building2 },
-    { label: "Pending Referrals", value: s.pendingReferrals, icon: Clock },
     { label: "Active Businesses", value: s.activeBusinesses, icon: Users },
     { label: "Rewards Earned", value: `$${s.rewardsEarned}`, icon: DollarSign },
-    { label: "Rewards Pending", value: `$${s.rewardsPending}`, icon: Clock },
   ];
 
   return (
