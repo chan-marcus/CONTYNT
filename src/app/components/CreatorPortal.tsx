@@ -832,10 +832,12 @@ function FeatureCard({ feature, claim, token, onClaim, onUnclaim, onAccept, onSu
               </div>
               <ExternalLink className="w-3.5 h-3.5 text-neutral-500 group-hover:text-neutral-300 shrink-0 ml-auto" />
             </a>
-            {feature.adminNotes && (
+            {/* Trimmed, not just truthy: a note saved as whitespace would
+                otherwise render an empty bordered box. */}
+            {feature.adminNotes?.trim() && (
               <div className="bg-blue-500/10 border border-blue-500/20 rounded-xl px-4 py-3 text-xs text-blue-200 space-y-1">
                 <p className="font-semibold text-blue-300 uppercase tracking-widest text-[10px]">Instructions</p>
-                <p className="leading-relaxed">{feature.adminNotes}</p>
+                <p className="leading-relaxed">{feature.adminNotes.trim()}</p>
               </div>
             )}
             {/* Above the Ambassador block: these are the rules for the Reel
@@ -949,9 +951,9 @@ function FeatureCard({ feature, claim, token, onClaim, onUnclaim, onAccept, onSu
                     <ExternalLink className="w-3 h-3 shrink-0" />@{(feature as any).businessInstagram.replace(/^@/, "")}
                   </a>
                 )}
-                {feature.adminNotes && (
+                {feature.adminNotes?.trim() && (
                   <div className="bg-blue-500/10 border border-blue-500/20 rounded-xl px-3 py-2.5 text-xs text-blue-200">
-                    <p className="leading-relaxed">{feature.adminNotes}</p>
+                    <p className="leading-relaxed">{feature.adminNotes.trim()}</p>
                   </div>
                 )}
               </div>

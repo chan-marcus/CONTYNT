@@ -2096,7 +2096,9 @@ app.post("/make-server-f5961d0c/admin/update-feature", async (c) => {
     const patch: Record<string, any> = {};
     if (category !== undefined) patch.category = category;
     if (payoutRange !== undefined) patch.payout_range = payoutRange;
-    if (adminNotes !== undefined) patch.admin_notes = adminNotes;
+    // Trimmed on the way in, so a note of only whitespace is stored as
+    // empty and the creator portal has nothing to render.
+    if (adminNotes !== undefined) patch.admin_notes = String(adminNotes).trim();
     if (!Object.keys(patch).length) return c.json({ success: true });
     const { error } = await db().from("features_f5961d0c").update(patch).eq("id", featureId);
     if (error) throw error;
@@ -2112,7 +2114,7 @@ app.post("/make-server-f5961d0c/admin/publish-feature", async (c) => {
     const patch: Record<string, any> = { status: "available", approved_at: new Date().toISOString() };
     if (category) patch.category = category;
     if (payoutRange) patch.payout_range = payoutRange;
-    if (adminNotes) patch.admin_notes = adminNotes;
+    if (adminNotes) patch.admin_notes = String(adminNotes).trim();
     // Opt in per Feature. Confirmed creators see it now, everyone else after the
     // window. Omitting earlyAccess leaves the Feature visible to all, so this
     // stays off unless an admin asks for it.
