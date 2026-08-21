@@ -465,7 +465,6 @@ function FeatureCard({ feature, claim, token, onClaim, onUnclaim, onAccept, onSu
   const [claiming, setClaiming] = useState(false);
   const [handedOff, setHandedOff] = useState<boolean | null>(null);
   const [askingHandoff, setAskingHandoff] = useState(false);
-  const [handoffReason, setHandoffReason] = useState("");
   const claimStatus = claim?.status;
   const isGloballyClaimed = feature.status === "completed" || fake;
 
@@ -480,7 +479,7 @@ function FeatureCard({ feature, claim, token, onClaim, onUnclaim, onAccept, onSu
     setSubmitting(true);
     setShowSuccess(true);
     setTimeout(() => {
-      onSubmit(url, handedOff, handoffReason);
+      onSubmit(url, handedOff, "");
       setSubmitting(false);
       setShowSuccess(false);
       setAskingHandoff(false);
@@ -867,8 +866,7 @@ function FeatureCard({ feature, claim, token, onClaim, onUnclaim, onAccept, onSu
                 </div>
               ) : askingHandoff ? (
                 <>
-                  <HandoffQuestion value={handedOff} onChange={setHandedOff}
-                    reason={handoffReason} onReason={setHandoffReason} />
+                  <HandoffQuestion value={handedOff} onChange={setHandedOff} />
                   <button onClick={finishSubmit} disabled={handedOff === null || submitting}
                     className="w-full py-3 bg-white text-neutral-900 text-sm font-semibold rounded-xl hover:bg-neutral-100 transition-all disabled:opacity-40 disabled:cursor-not-allowed">
                     {submitting ? "Submitting…" : "Submit Reel"}

@@ -245,9 +245,8 @@ export function AmbassadorFeatureActions({ token, onOpened }: {
 }
 
 // Required on submission when a card exists for this Feature.
-export function HandoffQuestion({ value, onChange, reason, onReason }: {
+export function HandoffQuestion({ value, onChange }: {
   value: boolean | null; onChange: (v: boolean) => void;
-  reason: string; onReason: (v: string) => void;
 }) {
   return (
     <div className={`${PURPLE_CARD} px-4 py-3.5 space-y-2.5`}>
@@ -264,11 +263,6 @@ export function HandoffQuestion({ value, onChange, reason, onReason }: {
                             : "bg-white/5 text-neutral-300 border-white/15 hover:border-white/30"
           }`}>No, couldn't</button>
       </div>
-      {value === false && (
-        <input value={reason} onChange={e => onReason(e.target.value)}
-          placeholder="What got in the way?"
-          className="w-full px-3 py-2.5 bg-white/10 border border-white/20 rounded-xl text-white text-sm placeholder:text-neutral-500 focus:outline-none focus:ring-2 focus:ring-white/20" />
-      )}
     </div>
   );
 }
