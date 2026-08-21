@@ -187,40 +187,38 @@ export function ConfirmProfile({ token }: { token: string }) {
           </p>
         </div>
 
-        <div className="space-y-1.5">
-          <label className="text-xs font-medium text-neutral-300" htmlFor="confirm-email">Email address</label>
-          <input id="confirm-email" type="email" value={email} onChange={e => setEmail(e.target.value)} required
-            placeholder="you@example.com" autoCapitalize="none" autoCorrect="off" spellCheck={false}
-            autoComplete="email" inputMode="email" className={FIELD} />
-          <p className="text-xs text-neutral-500">Where your Feature offers land. Fix it here if it is wrong.</p>
-        </div>
+        {/* Both fields, one rhythm. The @ is a prefix inside the box rather than
+            a sibling beside it, so the two inputs share a left edge. */}
+        <div className="space-y-4">
+          <div className="space-y-1.5">
+            <label className="text-xs font-medium text-neutral-300" htmlFor="confirm-email">Email address</label>
+            <input id="confirm-email" type="email" value={email} onChange={e => setEmail(e.target.value)} required
+              placeholder="you@example.com" autoCapitalize="none" autoCorrect="off" spellCheck={false}
+              autoComplete="email" inputMode="email" className={FIELD} />
+          </div>
 
-        <div className="space-y-1.5">
-          <label className="text-xs font-medium text-neutral-300" htmlFor="confirm-handle">Instagram handle</label>
-          <div className="flex items-center gap-2">
-            <span className="text-neutral-500 text-sm">@</span>
-            <input id="confirm-handle" value={handle} onChange={e => setHandle(e.target.value)} required
-              placeholder="yourhandle" autoCapitalize="none" autoCorrect="off" spellCheck={false}
-              className={FIELD} />
+          <div className="space-y-1.5">
+            <label className="text-xs font-medium text-neutral-300" htmlFor="confirm-handle">Instagram handle</label>
+            <div className="relative">
+              <span aria-hidden className="absolute left-3 top-1/2 -translate-y-1/2 text-sm text-neutral-500 pointer-events-none">@</span>
+              <input id="confirm-handle" value={handle} onChange={e => setHandle(e.target.value)} required
+                placeholder="yourhandle" autoCapitalize="none" autoCorrect="off" spellCheck={false}
+                className={`${FIELD} pl-7`} />
+            </div>
           </div>
         </div>
 
+        {/* Nothing here repeats the fields above. The address and the handle are
+            already on screen, an arm's length up, so echoing them under each
+            toggle was two more places for the same value to be read. */}
         <div className="space-y-3 bg-white/5 border border-white/10 rounded-2xl p-4">
           <p className="text-xs font-medium text-neutral-300">How should we reach you?</p>
           <div className="flex items-center justify-between gap-3">
-            <div className="min-w-0">
-              <p className="text-sm text-white">Email</p>
-              <p className="text-xs text-neutral-500 truncate">{email.trim() || "your address on file"}</p>
-            </div>
+            <p className="text-sm text-white">Email</p>
             <Toggle on={notifyEmail} onChange={setNotifyEmail} label="Email notifications" />
           </div>
           <div className="flex items-center justify-between gap-3">
-            <div className="min-w-0">
-              <p className="text-sm text-white">Instagram DM</p>
-              <p className="text-xs text-neutral-500 truncate">
-                {handle ? `@${handle.replace(/^@+/, "")}` : "Faster for time sensitive Features."}
-              </p>
-            </div>
+            <p className="text-sm text-white">Instagram DM</p>
             <Toggle on={notifyDm} onChange={setNotifyDm} label="Instagram DM notifications" />
           </div>
         </div>
