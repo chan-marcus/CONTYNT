@@ -70,11 +70,11 @@ export function ReferralLanding({ code }: { code: string }) {
           on a phone with the creator still standing there. */}
       <main className="flex-1 w-full max-w-md mx-auto px-5 py-8 space-y-5">
         <motion.div initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.4 }} className="space-y-2 text-center">
-          <h1 className="text-2xl font-bold leading-snug">A local creator stopped by to shoot a Reel</h1>
+          <h1 className="text-2xl font-bold leading-snug text-balance">A local creator stopped by to shoot a Reel</h1>
           {checked && handle && (
             <p className="text-xs text-neutral-500">Invited by @{handle}</p>
           )}
-          <p className="text-sm text-neutral-400 leading-relaxed pt-1">
+          <p className="text-sm text-neutral-400 leading-relaxed pt-1 text-balance">
             Claim your free dashboard and we'll send you the Reel the moment it goes live.
           </p>
         </motion.div>
@@ -82,8 +82,8 @@ export function ReferralLanding({ code }: { code: string }) {
         <div className="space-y-2">
           {["Filmed and posted by a vetted local creator",
             "Posted as a collab, so it lives on your profile too",
-            "Tagged to your location so nearby customers find you",
-            "Yours to keep, free. Request more whenever you want one."].map(b => (
+            "Location tagged so nearby customers find you",
+            "Yours to keep, free. Request more anytime."].map(b => (
             <div key={b} className="flex items-start gap-2.5 text-[13px] text-neutral-300 leading-snug">
               <CheckCircle className="w-4 h-4 text-green-400 shrink-0 mt-0.5" />{b}
             </div>

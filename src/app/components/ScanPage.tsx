@@ -242,19 +242,19 @@ export function ScanPage({ code }: { code: string }) {
   const handle = (data.creatorInstagram || "").replace(/^@+/, "");
 
   return <Shell>
-    <h1 className="text-[22px] font-bold leading-snug">A local creator stopped by to shoot a Reel</h1>
+    <h1 className="text-[22px] font-bold leading-snug text-balance">A local creator stopped by to shoot a Reel</h1>
     {handle && (
       <p className="text-xs text-neutral-500 mt-2">Invited by @{handle}</p>
     )}
-    <p className="text-sm text-neutral-400 mt-3">
+    <p className="text-sm text-neutral-400 mt-3 text-balance">
       Claim your free dashboard and we'll send you the Reel the moment it goes live.
     </p>
 
     <div className="mt-5 space-y-2 text-left">
       {["Filmed and posted by a vetted local creator",
         "Posted as a collab, so it lives on your profile too",
-        "Tagged to your location so nearby customers find you",
-        "Yours to keep, free. Request more whenever you want one."].map(b => (
+        "Location tagged so nearby customers find you",
+        "Yours to keep, free. Request more anytime."].map(b => (
         <div key={b} className="flex items-start gap-2.5 text-[13px] text-neutral-300 leading-snug">
           <CheckCircle className="w-4 h-4 text-green-400 shrink-0 mt-0.5" />{b}
         </div>
