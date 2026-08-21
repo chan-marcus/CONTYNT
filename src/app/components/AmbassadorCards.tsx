@@ -94,8 +94,11 @@ export function AmbassadorPrintSheet({ token }: { token: string }) {
     <div className="amb-card" key={i}>
       <div className="amb-inner">
         <div className="amb-brand">C O N T Y N T</div>
-        <div className="amb-lead">A creator filmed a Reel here.</div>
-        <div className="amb-cta">Claim your business dashboard</div>
+        {/* The hook is that content about their business exists -- that is what
+            makes an owner scan. "Dashboard" is a thing nobody wants; the scan
+            page explains it once they are already interested. */}
+        <div className="amb-lead">A creator filmed a Reel at your business.</div>
+        <div className="amb-cta">See it free when it goes live</div>
         <img className="amb-qr" src={qr} alt="" />
         <div className="amb-or">Scan the code, or go to</div>
         <div className="amb-url">{prettyUrl(state.url)}</div>
@@ -120,9 +123,9 @@ export function AmbassadorPrintSheet({ token }: { token: string }) {
                    display:flex;flex-direction:column;align-items:center;justify-content:center;
                    text-align:center;padding:6mm;box-sizing:border-box}
         .amb-brand{font-size:9pt;font-weight:700;letter-spacing:.34em;color:#111}
-        .amb-lead{font-size:10pt;color:#525252;margin-top:2mm}
+        .amb-lead{font-size:11pt;color:#333;margin-top:3mm;line-height:1.35;max-width:62mm}
         /* The reason to scan, set darker than the lead so it reads as the ask. */
-        .amb-cta{font-size:10.5pt;font-weight:600;color:#111;margin-top:1.5mm}
+        .amb-cta{font-size:11.5pt;font-weight:700;color:#0a0a0a;margin-top:2mm}
         .amb-qr{width:50mm;height:50mm;margin:4mm 0 0;display:block}
         /* The URL is the fallback when a camera will not focus, and it carries
            the code inside it, so there is no separate code to print. Set large
