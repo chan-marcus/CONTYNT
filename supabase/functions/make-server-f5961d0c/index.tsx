@@ -469,6 +469,15 @@ function normalizeHandle(raw: string): string | null {
   return /^[A-Za-z0-9._]{1,30}$/.test(h) ? h : null;
 }
 
+// Stored lowercased because every lookup that matters -- the resend form, the
+// Postmark webhook, the magic link -- matches on the address case-insensitively.
+// Returns null on anything that is not a plausible address, so a typo is
+// rejected at the form rather than becoming an inbox we can never reach.
+function normalizeEmail(raw: any): string | null {
+  const e = String(raw ?? "").trim().toLowerCase();
+  return /^[^\s@]+@[^\s@.]+(\.[^\s@.]+)+$/.test(e) && e.length <= 254 ? e : null;
+}
+
 // Events are an audit trail, not part of the transaction. A creator confirming
 // their profile must not fail because the log write did.
 async function logCreatorEvent(creatorId: string, type: string, payload: any = {}) {
@@ -766,6 +775,26 @@ app.post("/make-server-f5961d0c/creator-portal/confirm", async (c) => {
     // would wipe whatever an earlier confirm or an admin already recorded.
     const optional: Record<string, unknown> = {};
 
+    // The confirm screen asks the creator to check the address we mail Features
+    // to, so it can come back changed. null means "sent, but not an address".
+    let email = String(creator.email ?? "").trim().toLowerCase();
+    const nextEmail = body.email === undefined ? email : normalizeEmail(body.email);
+    if (nextEmail === null) return c.json({ error: "Enter a valid email address." }, 400);
+    const emailChanged = nextEmail !== email;
+    if (emailChanged) {
+      // Two creator rows on one address break every lookup that resolves an
+      // address back to a creator with maybeSingle(), the resend form included.
+      const { data: taken } = await db().from("creator_signups_f5961d0c")
+        .select("id").ilike("email", nextEmail).neq("id", creator.id).limit(1);
+      if (taken?.length) return c.json({ error: "That email is already on another CONTYNT account." }, 409);
+      email = nextEmail;
+      optional.email = email;
+      // A bounce recorded against the old address suppresses every later send,
+      // which would make correcting a mistyped address pointless. A spam
+      // complaint is left standing: that one was a choice, not a typo.
+      optional.email_bounced_at = null;
+    }
+
     if (body.serviceAreas !== undefined) {
       const areas = Array.isArray(body.serviceAreas)
         ? body.serviceAreas.filter((a: any) => SF_NEIGHBORHOODS.includes(a)) : [];
@@ -823,10 +852,11 @@ app.post("/make-server-f5961d0c/creator-portal/confirm", async (c) => {
       verification_status: "confirmed",
     }).eq("id", creator.id));
 
-    // The KV session caches the handle for the portal header, so refresh it or
-    // the corrected handle will not appear until the token is regenerated.
-    if (creatorData.instagram !== handle) {
-      await kv.set(`ctoken_${token}`, { ...creatorData, instagram: handle });
+    // The KV session caches the handle for the portal header and the email for
+    // the sends that read the session, so refresh it or a correction will not
+    // take effect until the token is regenerated.
+    if (creatorData.instagram !== handle || creatorData.email !== email) {
+      await kv.set(`ctoken_${token}`, { ...creatorData, instagram: handle, email });
     }
 
     const snapshot = {
@@ -835,6 +865,9 @@ app.post("/make-server-f5961d0c/creator-portal/confirm", async (c) => {
       ...optional,
     };
     await logCreatorEvent(creator.id, "profile_confirmed", snapshot);
+    if (emailChanged) {
+      await logCreatorEvent(creator.id, "email_changed", { from: creator.email ?? "", to: email });
+    }
 
     // Only a change is an event. Re-confirming with the toggle untouched should
     // not litter the log with opt-in rows that record nothing happening.
@@ -1676,7 +1709,7 @@ ${emailButton(link, "Confirm your profile")}
       <p style="margin:0 0 18px 0;font-size:13px;word-break:break-all;"><a href="${esc(link)}" style="color:#525252;">${esc(link)}</a></p>
       <p style="margin:0;font-size:13px;color:#8a8a8a;">This link is good for 90 days and is just for you. Please do not forward it.</p>`,
   });
-  return { text, html, subject: "The first CONTYNT Features are live" };
+  return { text, html, subject: "Confirm your CONTYNT profile" };
 }
 
 // Postmark separates broadcast and transactional streams, and sending on the
