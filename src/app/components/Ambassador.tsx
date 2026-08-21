@@ -375,10 +375,6 @@ function Dashboard({ state, instagram, token }: { state: AmbassadorState; instag
           Rewards are approved by the CONTYNT team before they are paid. A scan on its
           own does not credit anything, and nothing is credited automatically.
         </p>
-        <p className="text-[11px] text-neutral-500 leading-relaxed">
-          Your cards never show your name, handle or photo. A business only learns who
-          filmed for them once the Reel is live.
-        </p>
       </div>
 
       <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
