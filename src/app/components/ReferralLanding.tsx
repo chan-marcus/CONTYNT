@@ -131,7 +131,7 @@ export function ReferralLanding({ code }: { code: string }) {
       </main>
 
       <footer className="border-t border-white/10 px-6 py-5 text-center">
-        <p className="text-xs text-neutral-600">© {new Date().getFullYear()} Contynt</p>
+        <p className="text-xs text-neutral-600">© {new Date().getFullYear()} CONTYNT</p>
       </footer>
     </div>
   );

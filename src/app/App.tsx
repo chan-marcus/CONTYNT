@@ -111,7 +111,7 @@ export default function App() {
     };
 
     const description =
-      "Contynt connects Instagram Reels creators with local businesses that pay per post. No follower minimum. Sign up for early access in San Francisco, Los Angeles, and New York City.";
+      "CONTYNT connects Instagram Reels creators with local businesses that pay per post. No follower minimum. Sign up for early access in San Francisco, Los Angeles, and New York City.";
     const siteUrl = window.location.origin;
     const ogImage = `${siteUrl}/og-image.png`;
 
@@ -123,14 +123,14 @@ export default function App() {
     // Open Graph
     setMeta({ property: "og:type", content: "website" });
     setMeta({ property: "og:url", content: siteUrl });
-    setMeta({ property: "og:title", content: "Contynt — Get Paid to Post" });
+    setMeta({ property: "og:title", content: "CONTYNT — Get Paid to Post" });
     setMeta({ property: "og:description", content: description });
     setMeta({ property: "og:image", content: ogImage });
-    setMeta({ property: "og:site_name", content: "Contynt" });
+    setMeta({ property: "og:site_name", content: "CONTYNT" });
 
     // Twitter Card
     setMeta({ name: "twitter:card", content: "summary_large_image" });
-    setMeta({ name: "twitter:title", content: "Contynt — Get Paid to Post" });
+    setMeta({ name: "twitter:title", content: "CONTYNT — Get Paid to Post" });
     setMeta({ name: "twitter:description", content: description });
     setMeta({ name: "twitter:image", content: ogImage });
 
@@ -152,7 +152,7 @@ export default function App() {
     script.text = JSON.stringify({
       "@context": "https://schema.org",
       "@type": "Organization",
-      name: "Contynt",
+      name: "CONTYNT",
       url: siteUrl,
       description,
       areaServed: ["San Francisco", "Los Angeles", "New York City"],

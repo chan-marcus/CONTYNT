@@ -25,7 +25,7 @@ export function Footer() {
 
         <div className="flex flex-col md:flex-row justify-between items-center mt-8 pt-8 border-t border-neutral-800">
           <p className="text-sm text-neutral-500" style={{ fontWeight: 400 }}>
-            © 2026 Contynt. All rights reserved.
+            © 2026 CONTYNT. All rights reserved.
           </p>
           <a href="#analytics" className="text-sm text-neutral-400 hover:text-white transition-colors mt-4 md:mt-0" style={{ fontWeight: 400 }}>
             Analytics

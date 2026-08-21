@@ -33,7 +33,7 @@ function Shell({ children }: { children: React.ReactNode }) {
       <div className="w-full max-w-sm text-center">
         <p className="text-xs font-semibold tracking-[0.2em] text-neutral-400 mb-7">C O N T Y N T</p>
         {children}
-        <p className="text-xs text-neutral-600 mt-6">Contynt connects local creators with local businesses.</p>
+        <p className="text-xs text-neutral-600 mt-6">CONTYNT connects local creators with local businesses.</p>
       </div>
     </div>
   );

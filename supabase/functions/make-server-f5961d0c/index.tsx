@@ -613,7 +613,7 @@ app.get("/make-server-f5961d0c/portal/verify", async (c) => {
 });
 
 // Deliberately identical response whether or not the address is on file, so
-// this cannot be used to enumerate who is a Contynt creator.
+// this cannot be used to enumerate who is a CONTYNT creator.
 app.post("/make-server-f5961d0c/portal/verify/resend", async (c) => {
   const done = () => htmlPage({
     title: "Check your email", noindex: true,
@@ -1331,7 +1331,7 @@ async function markReelLive(sub: any) {
 // TRIGGER POINT for the lead notification in section 8 of the brief.
 //
 // Every lead captured in state A against a card for this feature should now get
-// an email from Contynt with the live Reel, and have notified_at stamped.
+// an email from CONTYNT with the live Reel, and have notified_at stamped.
 // There is no queue, job runner or mail transport in this stack yet, so the
 // send itself is deliberately left unwired rather than faked: the rows are
 // selected and logged so the backlog is visible and nothing is lost, and the
@@ -1372,7 +1372,7 @@ const ATTRIBUTION_RULE = "First scan at a spot wins. One payout per business, ev
 // TODO(copy): placeholder handoff script. Replace with the wording you want
 // creators to actually say before this ships.
 const HANDOFF_SCRIPT =
-  "Hey, I just filmed a Reel here for Contynt. This card has a code on it. " +
+  "Hey, I just filmed a Reel here for CONTYNT. This card has a code on it. " +
   "If you scan it you can see the Reel when it goes live, and get set up if you want more.";
 
 
@@ -1398,7 +1398,7 @@ function buildCardSheet(code: string, qr: string): string {
       </div>
     </div>`;
 
-  return `<!doctype html><html><head><meta charset="utf-8"><title>Contynt cards</title>
+  return `<!doctype html><html><head><meta charset="utf-8"><title>CONTYNT cards</title>
 <meta name="robots" content="noindex,nofollow">
 <style>
   /* Margin keeps the outer cut lines inside every printer's imageable area;
@@ -1624,7 +1624,7 @@ ${opts.body}
     <tr><td style="padding:0 32px;"><div style="height:1px;background-color:#e5e5e5;line-height:1px;font-size:1px;">&nbsp;</div></td></tr>
 
     <tr><td style="padding:20px 32px 26px 32px;font-family:${EMAIL_FONT};font-size:12px;line-height:1.6;color:#8a8a8a;">
-${opts.footerNote ? `      <p style="margin:0 0 6px 0;">${opts.footerNote}</p>\n` : ""}      <p style="margin:0;">Contynt &middot; San Francisco</p>
+${opts.footerNote ? `      <p style="margin:0 0 6px 0;">${opts.footerNote}</p>\n` : ""}      <p style="margin:0;">CONTYNT &middot; San Francisco</p>
     </td></tr>
 
   </table>
@@ -1654,29 +1654,29 @@ function renderVerificationEmail(row: any, link: string) {
   const text =
 `Hi ${first},
 
-Contynt is opening up in San Francisco and you are on the list for the first drop.
+We just released a small batch of Features in San Francisco. You are on the early access list, so you get first look before they open up to everyone.
 
-Confirm your profile so we can match you to Features in your neighborhoods:
+Confirm your profile and we will match you to the ones in your area:
 ${link}
 
 This link is good for 90 days and is just for you. Please do not forward it.
 
-Contynt
+CONTYNT
 San Francisco`;
   const html = emailShell({
-    preheader: "Confirm your profile so we can match you to Features in your neighborhoods.",
-    footerNote: "You are receiving this because you signed up for Contynt early access.",
+    preheader: "A small batch of Features just went live in San Francisco. Early access gets first look.",
+    footerNote: "You are receiving this because you signed up for CONTYNT early access.",
     body:
-`      <p style="margin:0 0 16px 0;font-size:21px;line-height:1.35;font-weight:700;color:#0a0a0a;">Confirm your profile</p>
+`      <p style="margin:0 0 16px 0;font-size:21px;line-height:1.35;font-weight:700;color:#0a0a0a;">The first Features are live</p>
       <p style="margin:0 0 14px 0;">Hi ${esc(first)},</p>
-      <p style="margin:0 0 14px 0;">Contynt is opening up in San Francisco and you are on the list for the first drop.</p>
-      <p style="margin:0;">Confirm your profile so we can match you to Features in your neighborhoods.</p>
+      <p style="margin:0 0 14px 0;">We just released a small batch of Features in San Francisco. You are on the early access list, so you get first look before they open up to everyone.</p>
+      <p style="margin:0;">Confirm your profile and we will match you to the ones in your area.</p>
 ${emailButton(link, "Confirm your profile")}
       <p style="margin:0 0 6px 0;font-size:13px;color:#8a8a8a;">Or paste this into your browser:</p>
       <p style="margin:0 0 18px 0;font-size:13px;word-break:break-all;"><a href="${esc(link)}" style="color:#525252;">${esc(link)}</a></p>
       <p style="margin:0;font-size:13px;color:#8a8a8a;">This link is good for 90 days and is just for you. Please do not forward it.</p>`,
   });
-  return { text, html, subject: "Confirm your Contynt profile" };
+  return { text, html, subject: "The first CONTYNT Features are live" };
 }
 
 // Postmark separates broadcast and transactional streams, and sending on the
@@ -1867,13 +1867,13 @@ app.post("/make-server-f5961d0c/admin/email-test", async (c) => {
     // "does our branding survive this client" and not just "did it send".
     const sent = await postmarkSend({
       to: addr,
-      subject: "Contynt email test",
-      text: `This is a test from the Contynt admin panel.\n\nFrom: ${POSTMARK_FROM_HEADER}\nStream: ${which}\n\nIf you are reading this, sending works.`,
+      subject: "CONTYNT email test",
+      text: `This is a test from the CONTYNT admin panel.\n\nFrom: ${POSTMARK_FROM_HEADER}\nStream: ${which}\n\nIf you are reading this, sending works.`,
       html: emailShell({
         preheader: `Test send on the ${which} stream.`,
         body:
 `      <p style="margin:0 0 16px 0;font-size:21px;line-height:1.35;font-weight:700;color:#0a0a0a;">Sending works</p>
-      <p style="margin:0 0 22px 0;">This is a test from the Contynt admin panel. If you are reading it, the token, the sender signature and the message stream are all good.</p>
+      <p style="margin:0 0 22px 0;">This is a test from the CONTYNT admin panel. If you are reading it, the token, the sender signature and the message stream are all good.</p>
       <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%">
         <tr><td bgcolor="#f7f7f8" style="background-color:#f7f7f8;border-radius:14px;padding:18px 20px;font-family:${EMAIL_FONT};font-size:13px;line-height:1.8;color:#525252;">
           From: ${esc(POSTMARK_FROM_HEADER)}<br>Stream: ${esc(which)}
@@ -1987,8 +1987,8 @@ const loginCodeKey = (audience: LoginAudience, addr: string) => `logincode_${aud
 
 function loginCodeEmail(code: string) {
   return {
-    subject: `Your Contynt code: ${code}`,
-    text: `Your Contynt login code is ${code}\n\nIt expires in ${LOGIN_CODE_TTL_MIN} minutes. If you did not ask for this, you can ignore it — the code is useless without your inbox.\n\nContynt\nSan Francisco`,
+    subject: `Your CONTYNT code: ${code}`,
+    text: `Your CONTYNT login code is ${code}\n\nIt expires in ${LOGIN_CODE_TTL_MIN} minutes. If you did not ask for this, you can ignore it. The code is useless without your inbox.\n\nContynt\nSan Francisco`,
     html: emailShell({
       preheader: `${code} is your login code. It expires in ${LOGIN_CODE_TTL_MIN} minutes.`,
       body:
@@ -2002,7 +2002,7 @@ function loginCodeEmail(code: string) {
         </td></tr>
       </table>
       <p style="margin:22px 0 0 0;font-size:13px;color:#8a8a8a;">It expires in ${LOGIN_CODE_TTL_MIN} minutes and can only be used once.</p>
-      <p style="margin:8px 0 0 0;font-size:13px;color:#8a8a8a;">If you did not ask for this, you can ignore it — the code is useless without your inbox.</p>`,
+      <p style="margin:8px 0 0 0;font-size:13px;color:#8a8a8a;">If you did not ask for this, you can ignore it. The code is useless without your inbox.</p>`,
     }),
   };
 }

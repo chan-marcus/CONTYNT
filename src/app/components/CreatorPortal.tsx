@@ -1728,7 +1728,7 @@ export function CreatorPortal({ token, impersonating }: { token: string; imperso
               team@getcontynt.com
             </a>
           </p>
-          <p className="text-xs text-neutral-600">© {new Date().getFullYear()} Contynt</p>
+          <p className="text-xs text-neutral-600">© {new Date().getFullYear()} CONTYNT</p>
         </div>
       </footer>
     </div>
