@@ -123,6 +123,47 @@ ADMIN_SECRET='<your admin secret>' ./scripts/send-verification.sh --dry-run
 
 ---
 
+## Where the links point
+
+Verification links are `https://getcontynt.com/portal/verify?t=...`, not the
+Supabase URL. A link to `kskqipduwovvedcuhwre.supabase.co` inside a message
+signed CONTYNT reads like phishing, and the mismatch between the link domain and
+the From domain is a small deliverability drag on top of that.
+
+Three pieces hold that up, and they have to move together:
+
+1. `functions/portal/[[path]].ts` — a Cloudflare Pages Function proxying
+   `getcontynt.com/portal/*` to the edge function. It is a Function rather than
+   a `_redirects` rule because Pages will not proxy to an external origin:
+   *"Proxying will only support relative URLs on your site. You cannot proxy
+   external domains."* A 30x rule would work but would put the Supabase URL
+   straight back in the address bar.
+2. `VERIFY_LINK_ORIGIN=https://getcontynt.com` in the Supabase secrets. This is
+   the single source for both the emailed link and the action on the resend
+   form, so the two cannot disagree.
+3. The `/*  /index.html  200` catch-all in `public/_redirects` stays as it is.
+   Pages routes to Functions before it consults `_redirects`, and the
+   auto-generated `_routes.json` scopes that to `/portal/*`.
+
+**The proxy has to be deployed before the secret is set.** Setting
+`VERIFY_LINK_ORIGIN` while `getcontynt.com/portal/*` still falls through to the
+SPA would mint links that render the marketing page instead of confirming
+anything.
+
+The site is a Direct Upload Pages project (`getcontynt`, production branch
+`main`), so pushing to GitHub does **not** deploy it:
+
+```bash
+pnpm build && npx wrangler pages deploy dist --project-name=getcontynt --branch=main
+```
+
+Wrangler compiles `functions/` from the working directory into the deployment —
+look for "Compiled Worker successfully" and "Uploading Functions bundle" in the
+output. If those two lines are missing, the proxy did not ship and the links are
+broken.
+
+---
+
 ## What is deliberately not automatic
 
 - **A send is never repeated within 24 hours.** `verify_email_sent_at` is
@@ -133,8 +174,6 @@ ADMIN_SECRET='<your admin secret>' ./scripts/send-verification.sh --dry-run
 - **An Open never advances `verification_status`.** Apple Mail Privacy
   Protection prefetches images, so an open means a mail client touched the
   message, not that a person read it.
-- **The verification link points at the edge function**, not at
-  `getcontynt.com`. The site rewrites every non-asset path to the SPA, so a
-  `getcontynt.com/portal/verify` link would hit React instead of the function
-  that has to issue a real redirect. Set `VERIFY_LINK_ORIGIN` only if a rewrite
-  is added for that path.
+- **An Open never advances `verification_status`** (see above), and the same
+  goes for a link open: `verify_link_opened_at` is recorded, but only the
+  confirm form moves a creator to `confirmed`.

@@ -436,9 +436,14 @@ async function creatorIsConfirmed(creatorId: string | undefined): Promise<boolea
 
 // ─── Creator verification ─────────────────────────────────────────────────────
 const VERIFY_DAYS = 90;
-// Where the tokenized link points. Defaults to this function, which is what
-// works with no extra infrastructure. Set it to a custom domain or a rewrite
-// once one exists and every generated link follows, with no code change.
+// Where the tokenized link points, and the origin every page served under
+// /portal builds its own URLs from -- the resend form below posts back through
+// whichever of the two origins minted the link, so the two cannot disagree.
+//
+// In production this is https://getcontynt.com, proxied to this function by the
+// Pages Function in functions/portal/[[path]].ts. A link to supabase.co inside
+// an email signed CONTYNT reads like phishing. The default is the function's own
+// URL, so a deployment without that proxy still works.
 const VERIFY_ORIGIN = Deno.env.get("VERIFY_LINK_ORIGIN") || `${Deno.env.get("SUPABASE_URL") || ""}/functions/v1/make-server-f5961d0c`;
 const verifyLinkFor = (t: string) => `${VERIFY_ORIGIN}/portal/verify?t=${encodeURIComponent(t)}`;
 
@@ -549,7 +554,7 @@ function htmlPage(opts: { title: string; body: string; noindex?: boolean; status
 const resendFormPage = (title: string, message: string) => htmlPage({
   title, noindex: true, status: 400,
   body: `<h1>${title}</h1><p>${message}</p>
-    <form method="POST" action="/make-server-f5961d0c/portal/verify/resend">
+    <form method="POST" action="${VERIFY_ORIGIN}/portal/verify/resend">
       <input type="email" name="email" placeholder="you@email.com" required autocomplete="email">
       <button type="submit">Send me a new link</button>
     </form>
