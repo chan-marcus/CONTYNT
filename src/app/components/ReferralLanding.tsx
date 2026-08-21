@@ -78,7 +78,7 @@ export function ReferralLanding({ code }: { code: string }) {
             <p className="text-xs text-neutral-500">Invited by @{handle}</p>
           )}
           <p className="text-sm text-neutral-400 leading-relaxed pt-1 text-balance">
-            Claim your free dashboard and we'll send you the Reel the moment it goes live.
+            Claim your dashboard and we'll send you the Reel the moment it goes live.
           </p>
         </motion.div>
 
@@ -86,7 +86,7 @@ export function ReferralLanding({ code }: { code: string }) {
           {["Filmed and posted by a vetted local creator",
             "Posted as a collab, so it lives on your profile too",
             "Location tagged so nearby customers find you",
-            "Yours to keep, free. Request more anytime."].map(b => (
+            "Yours to keep. Request more anytime."].map(b => (
             <div key={b} className="flex items-start gap-2.5 text-[13px] text-neutral-300 leading-snug">
               <CheckCircle className="w-4 h-4 text-green-400 shrink-0 mt-0.5" />{b}
             </div>
@@ -103,10 +103,10 @@ export function ReferralLanding({ code }: { code: string }) {
           {error && <p className="text-xs text-red-400">{error}</p>}
           <button type="submit" disabled={busy || !name.trim() || !email.trim()}
             className="w-full py-3.5 bg-white text-neutral-900 text-sm font-semibold rounded-xl hover:bg-neutral-100 transition-all disabled:opacity-40 flex items-center justify-center gap-2">
-            {busy ? "Setting up…" : <>Claim your free dashboard <ArrowRight className="w-4 h-4" /></>}
+            {busy ? "Setting up…" : <>Claim your dashboard <ArrowRight className="w-4 h-4" /></>}
           </button>
           <p className="text-[11px] text-neutral-600 text-center">
-            Free to start. No payment details needed.
+            No payment details needed.
           </p>
         </form>
       </main>
