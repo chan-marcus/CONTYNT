@@ -2187,7 +2187,23 @@ app.get("/make-server-f5961d0c/admin/submissions", async (c) => {
       const prev = newest.get(key);
       if (!prev || new Date(r.submitted_at) > new Date(prev.submitted_at)) newest.set(key, r);
     }
-    const submissions = [...newest.values()].map((r: any) => ({
+    // The handoff answer lives on the ambassador card, keyed by (creator,
+    // feature), so it is joined in here rather than left for the admin panel to
+    // fetch separately.
+    const rows = [...newest.values()];
+    const handoffBy = new Map<string, { status: string; at: string | null }>();
+    const featureIds = [...new Set(rows.map(r => r.feature_id).filter(Boolean))];
+    if (featureIds.length) {
+      const { data: cards } = await db().from("ambassador_cards_f5961d0c")
+        .select("creator_id, feature_id, handoff_status, handed_off_at").in("feature_id", featureIds);
+      for (const c2 of (cards ?? [])) {
+        handoffBy.set(`${c2.creator_id}|${c2.feature_id}`, {
+          status: c2.handoff_status, at: c2.handed_off_at ?? null,
+        });
+      }
+    }
+
+    const submissions = rows.map((r: any) => ({
       id: r.id, featureId: r.feature_id, token: r.token,
       creatorInstagram: r.creator_instagram || "", reelUrl: r.reel_url || "",
       status: r.status, metrics: r.metrics || {},
@@ -2199,6 +2215,10 @@ app.get("/make-server-f5961d0c/admin/submissions", async (c) => {
       cashed_out_at: r.cashed_out_at || null, denied: r.denied ?? false,
       admin_report_note: r.admin_report_note || "",
       payment_method: r.payment_method || "", payment_info: r.payment_info || "",
+      // null when the creator is not an ambassador on this Feature, so the
+      // panel can tell "did not apply" from "has not answered yet".
+      handoffStatus: handoffBy.get(`${r.creator_id}|${r.feature_id}`)?.status ?? null,
+      handedOffAt: handoffBy.get(`${r.creator_id}|${r.feature_id}`)?.at ?? null,
     }));
     return c.json({ submissions });
   } catch (e: any) { return c.json({ error: "Failed to fetch submissions", details: e.message }, 500); }

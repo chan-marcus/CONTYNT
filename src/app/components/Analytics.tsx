@@ -568,6 +568,30 @@ function SubmissionCard({ sub, onApprove, approving, businessName, featurePayout
           <span className={`text-xs border px-2 py-0.5 rounded-full shrink-0 ${statusColor}`}>{statusLabel}</span>
         </div>
 
+        {/* Only for ambassadors: null means there was no card for this Feature,
+            which is different from "has not answered". */}
+        {sub.handoffStatus && (
+          <div className={`flex items-center gap-2 rounded-lg px-3 py-2 text-xs border ${
+            sub.handoffStatus === "handed_off"
+              ? "bg-green-500/10 border-green-500/20 text-green-300"
+              : sub.handoffStatus === "not_handed_off"
+                ? "bg-orange-500/10 border-orange-500/20 text-orange-300"
+                : "bg-white/5 border-white/10 text-neutral-400"
+          }`}>
+            <Award className="w-3.5 h-3.5 shrink-0" />
+            <span>
+              {sub.handoffStatus === "handed_off" ? "Ambassador card handed off or shown"
+                : sub.handoffStatus === "not_handed_off" ? "Could not hand off the Ambassador card"
+                : "Ambassador card — not answered yet"}
+            </span>
+            {sub.handedOffAt && (
+              <span className="ml-auto text-[10px] text-neutral-500 shrink-0">
+                {new Date(sub.handedOffAt).toLocaleDateString("en-US", { month: "short", day: "numeric" })}
+              </span>
+            )}
+          </div>
+        )}
+
         {/* Reel URL always visible */}
         {sub.reelUrl && (
           <a href={sub.reelUrl} target="_blank" rel="noopener noreferrer"
@@ -825,6 +849,8 @@ export function Analytics({ adminToken }: { adminToken?: string } = {}) {
           admin_report_note: r.admin_report_note || "",
           payment_method: r.payment_method || "",
           payment_info: r.payment_info || "",
+          handoffStatus: r.handoffStatus ?? null,
+          handedOffAt: r.handedOffAt ?? null,
         });
         const allSubs = (Array.isArray(rows) ? rows : rows.submissions || []).map(mapSub);
         // Deduplicate by reelUrl + featureId — keep the most recent submitted_at
