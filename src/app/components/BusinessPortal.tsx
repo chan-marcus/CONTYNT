@@ -944,8 +944,19 @@ export function BusinessPortal({ token }: { token: string }) {
           }}
             className="w-full flex items-center justify-center gap-4 bg-gradient-to-r from-blue-600/20 via-purple-600/20 to-blue-600/20 border border-blue-500/30 rounded-2xl px-6 py-5 hover:from-blue-600/30 hover:via-purple-600/30 hover:to-blue-600/30 hover:border-blue-500/50 transition-all text-center relative group">
             <div className="flex-1 text-center">
-              <h2 className="text-lg font-bold text-white">Consistent Reels. Simple pricing.</h2>
-              <p className="text-sm text-blue-300/80 mt-0.5">Founding partner plans start at {PLANS[0].price}/month.</p>
+              {/* Leads with the outcome and the strongest real incentive rather
+                  than with the price. "Simple pricing" described our billing,
+                  which is not something a business wants; 40% off for life is
+                  already the offer inside the panel, so it belongs on the part
+                  they actually read. */}
+              <h2 className="text-lg font-bold text-white">Want a new Reel every month?</h2>
+              <p className="text-sm text-blue-300/90 mt-1">
+                Founding partners lock in <span className="font-semibold text-white">40% off for life</span>.
+                Plans from {PLANS[0].price}/month.
+              </p>
+              <span className="inline-block mt-2 text-xs font-semibold text-blue-300 group-hover:text-blue-200">
+                {plansExpanded ? "Hide plans" : "See plans"}
+              </span>
             </div>
             <ChevronDown className={`w-5 h-5 text-blue-400 shrink-0 transition-transform duration-300 ${plansExpanded ? "rotate-180" : ""}`} />
           </button>
