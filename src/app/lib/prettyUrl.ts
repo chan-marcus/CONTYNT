@@ -9,4 +9,4 @@
 export const prettyUrl = (u: string): string =>
   (u || "")
     .replace(/^https?:\/\//, "")
-    .replace(/^getcontynt\.com/i, "GetCONTYNT.com");
+    .replace(/^getcontynt\.com/i, "GetContynt.com");
