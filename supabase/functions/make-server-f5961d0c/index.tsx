@@ -1983,7 +1983,12 @@ async function sendFeatureDropBatch(opts: { creatorIds?: string[]; dryRun?: bool
     const email = (r.email || "").trim();
     if (!email) { results.push({ id: r.id, skipped: "no email" }); continue; }
     if (r.email_bounced_at || r.email_complained_at) { results.push({ id: r.id, email, skipped: "suppressed" }); continue; }
-    if (r.verification_status !== "confirmed") { results.push({ id: r.id, email, skipped: "not confirmed" }); continue; }
+    // Confirmation is deliberately not required. It gates the profile flow, not
+    // consent: the verification email goes to unconfirmed creators too, and
+    // everyone here asked for early access. Requiring it made this button
+    // unusable until somebody had confirmed, which is the wrong dependency for
+    // an announcement. Consent is the two checks around this comment -- a
+    // suppressed address, and the creator's own email preference.
     if (r.notify_email === false) { results.push({ id: r.id, email, skipped: "email notifications off" }); continue; }
     if (r.feature_drop_sent_at && new Date(r.feature_drop_sent_at).getTime() > cutoff) {
       results.push({ id: r.id, email, skipped: "sent within 24h" });
@@ -2021,8 +2026,16 @@ async function sendFeatureDropBatch(opts: { creatorIds?: string[]; dryRun?: bool
     }
   }
 
+  const sentCount = results.filter(r => r.sent).length;
   return {
     dryRun: !!opts.dryRun,
+    // Named once, at the top, when nothing went out. A reason repeated per
+    // creator is a reason nobody reads.
+    problem: !opts.dryRun && sentCount === 0
+      ? (!POSTMARK_SERVER_TOKEN
+          ? "POSTMARK_SERVER_TOKEN is not set on the server, so nothing can be sent."
+          : rows?.length ? "Every selected creator was skipped." : "No creators were selected.")
+      : null,
     // Both are reported so the caller can say when the number that went out
     // does not match what is actually open.
     featureCount: count, liveCount, cities,

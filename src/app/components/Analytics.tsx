@@ -827,9 +827,13 @@ export function Analytics({ adminToken }: { adminToken?: string } = {}) {
       const said = `${d.featureCount} ${d.featureCount === 1 ? "Feature" : "Features"}`;
       const mismatch = d.liveCount !== undefined && d.liveCount !== d.featureCount
         ? ` (note: ${d.liveCount} actually open)` : "";
+      // A server-level problem leads, because it is the thing to act on. The
+      // per-creator tally follows it rather than replacing it.
       setSendResult(dryRun
         ? `Dry run: email would say ${said} in ${where}${mismatch}. ${results.filter(r => r.dryRun).length} would send${detail}.`
-        : `Drop sent to ${d.sent}, saying ${said} in ${where}${mismatch}${detail}.`);
+        : d.problem
+          ? `Nothing sent. ${d.problem}${detail}`
+          : `Drop sent to ${d.sent}, saying ${said} in ${where}${mismatch}${detail}.`);
       if (!dryRun) await loadReadiness();
     } catch { setSendResult("Could not reach the server."); }
     finally { setSendBusy(false); }
