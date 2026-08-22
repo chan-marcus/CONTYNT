@@ -1,6 +1,5 @@
 import { useEffect, useState } from "react";
-import { motion } from "motion/react";
-import { Check, Award, Loader2, AlertCircle, X } from "lucide-react";
+import { Award, Loader2, AlertCircle } from "lucide-react";
 import { projectId, publicAnonKey } from "/utils/supabase/info";
 import { REFERRAL_REWARD } from "./Ambassador";
 
@@ -45,6 +44,36 @@ function Toggle({ on, onChange, label }: { on: boolean; onChange: (v: boolean) =
   );
 }
 
+// Reach is one choice, not two switches. Two independent booleans allowed
+// "neither", which is a creator no Feature offer can ever arrive at -- the state
+// Creator Readiness now flags in red. A single choice cannot express it.
+type Reach = "" | "instagram" | "email" | "both";
+
+const REACH_OPTIONS: [Exclude<Reach, "">, string][] = [
+  ["instagram", "Instagram DM"],
+  ["email", "Email"],
+  ["both", "Both"],
+];
+
+function Segment({ value, onChange }: { value: Reach; onChange: (v: Reach) => void }) {
+  return (
+    <div role="radiogroup" aria-label="How should we reach you?"
+      className="flex gap-1.5 bg-white/5 border border-white/10 rounded-xl p-1">
+      {REACH_OPTIONS.map(([v, label]) => (
+        // type="button" for the same reason the toggle carries it: inside a
+        // <form> the default is submit, so choosing would fire the whole thing.
+        <button key={v} type="button" role="radio" aria-checked={value === v}
+          onClick={() => onChange(v)}
+          className={`flex-1 py-2 text-xs rounded-lg transition-all ${
+            value === v ? "bg-white text-neutral-900 font-semibold" : "text-neutral-400 hover:text-neutral-200"
+          }`}>
+          {label}
+        </button>
+      ))}
+    </div>
+  );
+}
+
 export function ConfirmProfile({ token }: { token: string }) {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -53,14 +82,13 @@ export function ConfirmProfile({ token }: { token: string }) {
   // profile that never loaded has no form to report into, and gating the form
   // on the shared field would have hidden it the first time a save failed.
   const [loadError, setLoadError] = useState<{ kind: "invalid" | "offline"; message: string } | null>(null);
-  const [done, setDone] = useState<{ optedIn: boolean } | null>(null);
-  const [dismissedOffer, setDismissedOffer] = useState(false);
-  const [togglingAfter, setTogglingAfter] = useState(false);
 
   const [handle, setHandle] = useState("");
   const [email, setEmail] = useState("");
-  const [notifyEmail, setNotifyEmail] = useState(true);
-  const [notifyDm, setNotifyDm] = useState(true);
+  // Empty until the profile loads, and deliberately still empty for a creator
+  // who had both channels off: inventing a choice for them would silently opt
+  // them back into mail they had turned off, so the form asks instead.
+  const [reach, setReach] = useState<Reach>("");
   // Seeded from the stored value rather than hardcoded false: on a re-confirm
   // an existing Ambassador must not be silently opted back out.
   const [ambassador, setAmbassador] = useState(false);
@@ -72,8 +100,8 @@ export function ConfirmProfile({ token }: { token: string }) {
         if (d?.profile) {
           setHandle(d.profile.instagramHandle || "");
           setEmail(d.profile.email || "");
-          setNotifyEmail(d.profile.notifyEmail !== false);
-          setNotifyDm(d.profile.notifyDm !== false);
+          const dm = d.profile.notifyDm !== false, mail = d.profile.notifyEmail !== false;
+          setReach(dm && mail ? "both" : dm ? "instagram" : mail ? "email" : "");
           setAmbassador(!!d.ambassador?.optedIn);
         } else {
           setLoadError({
@@ -88,32 +116,40 @@ export function ConfirmProfile({ token }: { token: string }) {
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (!reach) { setError("Pick how we should reach you."); return; }
     setSaving(true); setError("");
     try {
       const res = await api("/creator-portal/confirm", {
         method: "POST",
         body: JSON.stringify({
           token, instagramHandle: handle, email: email.trim(),
-          notifyEmail, notifyDm, ambassadorOptIn: ambassador,
+          // The server still takes two booleans, so the choice is expanded here
+          // rather than changing a contract that other callers depend on.
+          notifyEmail: reach === "email" || reach === "both",
+          notifyDm: reach === "instagram" || reach === "both",
+          ambassadorOptIn: ambassador,
         }),
       });
       const d = await res.json().catch(() => null);
       if (!res.ok || !d?.success) { setError(d?.error || "Could not save your profile."); setSaving(false); return; }
-      setDone({ optedIn: !!d.ambassador?.optedIn });
+      // Straight into the portal. setSaving stays true on purpose, so the button
+      // remains spent while the browser navigates and a second press cannot fire
+      // a second confirm.
+      window.location.replace(portalUrl());
+      return;
     } catch { setError("Could not reach the server."); }
     setSaving(false);
   };
 
-  // The success card offers the toggle without a second trip through the form.
-  const turnOnAfter = async () => {
-    setTogglingAfter(true);
-    try {
-      const res = await api("/creator-portal/ambassador/toggle", {
-        method: "POST", body: JSON.stringify({ token, optIn: true }),
-      });
-      if (res.ok) setDone({ optedIn: true });
-    } catch { /* leave the offer up so they can retry */ }
-    setTogglingAfter(false);
+  // Built from the URL that got them here rather than assembled from scratch,
+  // so imp=1 survives. Dropping it would let App persist an admin's short lived
+  // impersonation token as a real creator session. replace(), not assign(), so
+  // Back does not return to a form that has already been submitted.
+  const portalUrl = () => {
+    const url = new URL(window.location.href);
+    url.pathname = "/app";
+    url.searchParams.delete("view");
+    return url.toString();
   };
 
   if (loading) {
@@ -165,86 +201,16 @@ export function ConfirmProfile({ token }: { token: string }) {
     );
   }
 
-  if (done) {
-    return (
-      <Shell>
-        <motion.div initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.4 }}
-          className="space-y-6 text-center">
-          <div className="inline-flex items-center justify-center w-14 h-14 rounded-2xl bg-green-500/15 border border-green-400/30">
-            <Check className="w-7 h-7 text-green-400" />
-          </div>
-          <div className="space-y-2">
-            <h1 className="text-2xl font-bold">You're confirmed</h1>
-            <p className="text-sm text-neutral-400 leading-relaxed">
-              You're in the first drop. We'll reach out the moment Features open near you.
-            </p>
-          </div>
-
-          {done.optedIn ? (
-            <div className={`${PURPLE_CARD} p-5 space-y-3 text-left`}>
-              <div className="flex items-center gap-2">
-                <Award className="w-5 h-5 text-purple-300" />
-                <h2 className="text-base font-bold text-white">You're an Ambassador</h2>
-              </div>
-              <p className="text-sm text-neutral-400 leading-relaxed">
-                On every Feature you shoot, your portal shows a card to print and a QR code,
-                both before the shoot checklist. Hand the card to the owner or have them scan
-                the code on your way out. If that spot comes on board, you earn ${REFERRAL_REWARD}.
-              </p>
-              <p className="text-xs text-neutral-500 leading-relaxed">
-                The card carries a code, not your name. You can turn this off any time in
-                your profile settings.
-              </p>
-            </div>
-          ) : !dismissedOffer ? (
-            <div className={`${PURPLE_CARD} p-5 space-y-3 text-left relative`}>
-              <button type="button" onClick={() => setDismissedOffer(true)} aria-label="Dismiss"
-                className="absolute top-3 right-3 p-1 rounded-lg text-neutral-500 hover:text-neutral-300">
-                <X className="w-4 h-4" />
-              </button>
-              <div className="flex items-center gap-2">
-                <Award className="w-5 h-5 text-purple-300" />
-                <h2 className="text-base font-bold text-white">Want to earn ${REFERRAL_REWARD} more per shoot?</h2>
-              </div>
-              <p className="text-sm text-neutral-400 leading-relaxed">{AMBASSADOR_COPY}</p>
-              <button type="button" onClick={turnOnAfter} disabled={togglingAfter}
-                className="w-full py-2.5 text-sm font-semibold rounded-xl bg-purple-500 text-white hover:bg-purple-400 transition-all disabled:opacity-50">
-                {togglingAfter ? "Turning on..." : "Turn on Ambassador Mode"}
-              </button>
-            </div>
-          ) : null}
-
-          <a href={`${window.location.origin}/?creator=${encodeURIComponent(token)}`}
-            className="inline-block text-sm text-neutral-400 hover:text-white underline underline-offset-4">
-            Go to your portal
-          </a>
-        </motion.div>
-      </Shell>
-    );
-  }
-
   return (
     <Shell>
       <form onSubmit={submit} className="space-y-6">
-        <div className="space-y-2">
-          <h1 className="text-2xl font-bold leading-snug">Confirm your profile</h1>
-          <p className="text-sm text-neutral-400 leading-relaxed">
-            This is how we reach you about Features. It takes a few seconds.
-          </p>
-        </div>
+        <h1 className="text-2xl font-bold leading-snug">Confirm your profile</h1>
 
-        {/* Both fields, one rhythm. The @ is a prefix inside the box rather than
-            a sibling beside it, so the two inputs share a left edge. */}
-        <div className="space-y-4">
-          <div className="space-y-1.5">
-            <label className="text-xs font-medium text-neutral-300" htmlFor="confirm-email">Email address</label>
-            <input id="confirm-email" type="email" value={email} onChange={e => setEmail(e.target.value)} required
-              placeholder="you@example.com" autoCapitalize="none" autoCorrect="off" spellCheck={false}
-              autoComplete="email" inputMode="email" className={FIELD} />
-          </div>
-
-          <div className="space-y-1.5">
+        <div className="bg-white/5 border border-white/10 rounded-2xl divide-y divide-white/10">
+          <div className="p-4 space-y-1.5">
             <label className="text-xs font-medium text-neutral-300" htmlFor="confirm-handle">Instagram handle</label>
+            {/* The @ is a prefix inside the box, not a sibling beside it, so
+                both inputs share one left edge. */}
             <div className="relative">
               <span aria-hidden className="absolute left-3 top-1/2 -translate-y-1/2 text-sm text-neutral-500 pointer-events-none">@</span>
               <input id="confirm-handle" value={handle} onChange={e => setHandle(e.target.value)} required
@@ -252,21 +218,20 @@ export function ConfirmProfile({ token }: { token: string }) {
                 className={`${FIELD} pl-7`} />
             </div>
           </div>
+
+          <div className="p-4 space-y-1.5">
+            <label className="text-xs font-medium text-neutral-300" htmlFor="confirm-email">Email address</label>
+            <input id="confirm-email" type="email" value={email} onChange={e => setEmail(e.target.value)} required
+              placeholder="you@example.com" autoCapitalize="none" autoCorrect="off" spellCheck={false}
+              autoComplete="email" inputMode="email" className={FIELD} />
+          </div>
         </div>
 
-        {/* Nothing here repeats the fields above. The address and the handle are
-            already on screen, an arm's length up, so echoing them under each
-            toggle was two more places for the same value to be read. */}
-        <div className="space-y-3 bg-white/5 border border-white/10 rounded-2xl p-4">
+        {/* Asked after both addresses are on screen: the choice is which of the
+            two above to use, so it only reads properly once they exist. */}
+        <div className="space-y-2">
           <p className="text-xs font-medium text-neutral-300">How should we reach you?</p>
-          <div className="flex items-center justify-between gap-3">
-            <p className="text-sm text-white">Email</p>
-            <Toggle on={notifyEmail} onChange={setNotifyEmail} label="Email notifications" />
-          </div>
-          <div className="flex items-center justify-between gap-3">
-            <p className="text-sm text-white">Instagram DM</p>
-            <Toggle on={notifyDm} onChange={setNotifyDm} label="Instagram DM notifications" />
-          </div>
+          <Segment value={reach} onChange={setReach} />
         </div>
 
         {/* Separated from the form above by a rule: this is an offer, not a field. */}
@@ -291,7 +256,7 @@ export function ConfirmProfile({ token }: { token: string }) {
 
         <button type="submit" disabled={saving}
           className="w-full py-3.5 text-sm font-bold rounded-xl bg-white text-neutral-900 hover:bg-neutral-100 transition-all disabled:opacity-40">
-          {saving ? "Saving..." : "Confirm my profile"}
+          {saving ? "Saving\u2026" : "Go to my portal"}
         </button>
       </form>
     </Shell>

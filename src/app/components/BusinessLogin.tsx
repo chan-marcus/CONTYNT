@@ -82,7 +82,8 @@ export function BusinessLogin() {
               <div className="space-y-2">
                 <h1 className="text-2xl font-bold leading-snug">Sign in</h1>
                 <p className="text-sm text-neutral-400 leading-relaxed">
-                  Enter the email you signed up with. We will send you a 6 digit code. No password to remember.
+                  Enter the email you signed up with.<br />
+                  We will send you a 6 digit code.
                 </p>
               </div>
               <form onSubmit={requestCode} className="space-y-3">
