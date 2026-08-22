@@ -1,6 +1,5 @@
 import { useEffect, useRef, useState } from "react";
 import { CheckCircle } from "lucide-react";
-import { CITY_OPTIONS } from "../lib/cities";
 import { projectId, publicAnonKey } from "/utils/supabase/info";
 
 // The page a business owner lands on after scanning an Ambassador card.
@@ -151,8 +150,7 @@ export function ScanPage({ code }: { code: string }) {
   const [placeId, setPlaceId] = useState("");
   const [placeAddress, setPlaceAddress] = useState("");
   const [email, setEmail] = useState("");
-  const [city, setCity] = useState("");
-  const [otherCity, setOtherCity] = useState("");
+  const [instagram, setInstagram] = useState("");
   const [busy, setBusy] = useState(false);
   const [done, setDone] = useState(false);
   const [error, setError] = useState("");
@@ -192,13 +190,12 @@ export function ScanPage({ code }: { code: string }) {
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
-    const cityValue = city === "other" ? otherCity.trim() : city;
-    if (!businessName.trim() || !email.trim() || !cityValue) return;
+    if (!businessName.trim() || !instagram.trim() || !email.trim()) return;
     setBusy(true); setError("");
     try {
       const res = await fetch(`${BASE}/scan/${encodeURIComponent(code)}/lead`, {
         method: "POST", headers: AUTH,
-        body: JSON.stringify({ businessName, email, city: cityValue, placeId, placeAddress }),
+        body: JSON.stringify({ businessName, instagram: instagram.trim(), email, placeId, placeAddress }),
       });
       const d = await res.json().catch(() => null);
       if (!res.ok) { setError(d?.error || "Could not send that. Try again."); setBusy(false); return; }
@@ -212,7 +209,7 @@ export function ScanPage({ code }: { code: string }) {
   if (data.state === "unknown") {
     return <Shell>
       <h1 className="text-xl font-bold mb-2">This card is not active</h1>
-      <p className="text-sm text-neutral-400">Double check the code, or visit contynt.com to get started.</p>
+      <p className="text-sm text-neutral-400">Double check the code, or visit getcontynt.com to get started.</p>
     </Shell>;
   }
 
@@ -279,22 +276,15 @@ export function ScanPage({ code }: { code: string }) {
           placeholder="Business name" required autoComplete="off" autoCapitalize="words"
           className="w-full px-3.5 py-3 bg-white/10 border border-white/20 rounded-xl text-white text-[15px] placeholder:text-neutral-500 focus:outline-none focus:ring-2 focus:ring-white/25" />
       )}
-      {/* City is asked for rather than inferred. A scan lead used to inherit
-          the creator's city, which is wrong the moment a creator films outside
-          their own, and it is what feature matching runs on. */}
-      <select value={city} onChange={e => setCity(e.target.value)} required
-        className={`w-full px-3.5 py-3 bg-white/10 border border-white/20 rounded-xl text-[15px] focus:outline-none focus:ring-2 focus:ring-white/25 ${city ? "text-white" : "text-neutral-500"}`}>
-        <option value="" disabled className="bg-neutral-900 text-neutral-400">City</option>
-        {CITY_OPTIONS.map(c => (
-          <option key={c.value} value={c.value} className="bg-neutral-900 text-white">{c.label}</option>
-        ))}
-        <option value="other" className="bg-neutral-900 text-white">Other</option>
-      </select>
-      {city === "other" && (
-        <input value={otherCity} onChange={e => setOtherCity(e.target.value)} required
-          placeholder="Which city?" autoCapitalize="words"
-          className="w-full px-3.5 py-3 bg-white/10 border border-white/20 rounded-xl text-white text-[15px] placeholder:text-neutral-500 focus:outline-none focus:ring-2 focus:ring-white/25" />
-      )}
+      {/* Same three questions as the referral form, in the same order. The @ is
+          a prefix inside the box so the fields share a left edge and nobody
+          types the @ twice. */}
+      <div className="relative">
+        <span aria-hidden className="absolute left-3.5 top-1/2 -translate-y-1/2 text-[15px] text-neutral-500 pointer-events-none">@</span>
+        <input value={instagram} onChange={e => setInstagram(e.target.value)} required
+          placeholder="yourbusiness" autoCapitalize="none" autoCorrect="off" spellCheck={false}
+          className="w-full pl-8 pr-3.5 py-3 bg-white/10 border border-white/20 rounded-xl text-white text-[15px] placeholder:text-neutral-500 focus:outline-none focus:ring-2 focus:ring-white/25" />
+      </div>
       <input type="email" value={email} onChange={e => setEmail(e.target.value)}
         placeholder="you@yourbusiness.com" required autoComplete="email"
         className="w-full px-3.5 py-3 bg-white/10 border border-white/20 rounded-xl text-white text-[15px] placeholder:text-neutral-500 focus:outline-none focus:ring-2 focus:ring-white/25" />

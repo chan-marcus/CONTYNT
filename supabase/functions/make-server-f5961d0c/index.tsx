@@ -1285,6 +1285,12 @@ app.post("/make-server-f5961d0c/scan/:code/lead", async (c) => {
     const email = String((body as any).email ?? "").trim().toLowerCase();
     const businessName = String((body as any).businessName ?? "").trim().slice(0, 120);
     const city = String((body as any).city ?? "").trim().slice(0, 80);
+    // Optional on the wire so an older client still works, rejected when
+    // present and unusable rather than stored as junk.
+    const rawHandle = (body as any).instagram;
+    const handle = rawHandle === undefined || String(rawHandle).trim() === ""
+      ? "" : normalizeHandle(rawHandle);
+    if (handle === null) return c.json({ error: "Enter a valid Instagram handle." }, 400);
     const placeId = String((body as any).placeId ?? "").trim().slice(0, 200) || null;
     const placeAddress = String((body as any).placeAddress ?? "").trim().slice(0, 300) || null;
     if (!email || !email.includes("@") || !businessName) {
@@ -1304,9 +1310,21 @@ app.post("/make-server-f5961d0c/scan/:code/lead", async (c) => {
         .select("id, lead_status, place_id").eq("place_id", placeId).maybeSingle();
       business = data ?? null;
     }
+    if (!business && handle) {
+      // Above the name for the same reason the other two forms put it there:
+      // it is what the main signup keys on, so a business that signed up
+      // through it has to land on the same row. Compared normalised in memory
+      // because stored values include "@name" and full profile URLs, and
+      // handles are case insensitive -- neither matches in SQL.
+      const { data: all } = await db().from("business_signups_f5961d0c")
+        .select("id, lead_status, place_id, instagram, city");
+      const wanted = handle.toLowerCase();
+      business = (all ?? []).find((r: any) =>
+        (normalizeHandle(String(r.instagram ?? "")) ?? "").toLowerCase() === wanted) ?? null;
+    }
     if (!business) {
       const { data } = await db().from("business_signups_f5961d0c")
-        .select("id, lead_status, place_id").ilike("business_name", businessName).limit(1);
+        .select("id, lead_status, place_id, instagram, city").ilike("business_name", businessName).limit(1);
       business = (data ?? [])[0] ?? null;
     }
 
@@ -1317,6 +1335,7 @@ app.post("/make-server-f5961d0c/scan/:code/lead", async (c) => {
       if (business.lead_status === "prospect" || business.lead_status == null) patch.lead_status = "lead";
       if (placeId && !business.place_id) { patch.place_id = placeId; patch.place_address = placeAddress; }
       if (city && !business.city) patch.city = city;
+      if (handle && !String(business.instagram ?? "").trim()) patch.instagram = handle;
       if (Object.keys(patch).length) {
         await db().from("business_signups_f5961d0c").update(patch).eq("id", business.id);
       }
@@ -1326,12 +1345,14 @@ app.post("/make-server-f5961d0c/scan/:code/lead", async (c) => {
       // instagram and city are NOT NULL with no default, so both are always sent.
       const { data: made, error: makeErr } = await db().from("business_signups_f5961d0c").insert({
         business_name: businessName,
-        instagram: "",
+        instagram: handle,
         email,
-        // The owner's own answer, not the creator's city: a creator filming
-        // one town over would otherwise file the lead under the wrong place,
-        // and city is what feature matching runs on.
-        city: city || creator.city || "",
+        // The owner's own answer or nothing. The form stopped asking, and
+        // falling back to the creator's city would file every lead from a
+        // creator filming one town over under the wrong place -- worse than
+        // empty, because city is what feature matching runs on and a wrong
+        // answer is not visibly missing. The column is NOT NULL, so "".
+        city,
         address: placeAddress || "",
         place_id: placeId,
         place_address: placeAddress,
