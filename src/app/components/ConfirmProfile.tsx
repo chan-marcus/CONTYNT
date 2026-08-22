@@ -49,6 +49,10 @@ export function ConfirmProfile({ token }: { token: string }) {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
+  // Kept apart from `error`, which reports a failed save inside the form. A
+  // profile that never loaded has no form to report into, and gating the form
+  // on the shared field would have hidden it the first time a save failed.
+  const [loadError, setLoadError] = useState<{ kind: "invalid" | "offline"; message: string } | null>(null);
   const [done, setDone] = useState<{ optedIn: boolean } | null>(null);
   const [dismissedOffer, setDismissedOffer] = useState(false);
   const [togglingAfter, setTogglingAfter] = useState(false);
@@ -72,10 +76,13 @@ export function ConfirmProfile({ token }: { token: string }) {
           setNotifyDm(d.profile.notifyDm !== false);
           setAmbassador(!!d.ambassador?.optedIn);
         } else {
-          setError(d && (d as any).error ? (d as any).error : "Could not load your profile.");
+          setLoadError({
+            kind: "invalid",
+            message: (d && (d as any).error) || "We could not load your profile from this link.",
+          });
         }
       })
-      .catch(() => setError("Could not reach the server."))
+      .catch(() => setLoadError({ kind: "offline", message: "We could not reach the server." }))
       .finally(() => setLoading(false));
   }, [token]);
 
@@ -114,6 +121,45 @@ export function ConfirmProfile({ token }: { token: string }) {
       <Shell>
         <div className="flex items-center justify-center py-20 text-neutral-500">
           <Loader2 className="w-5 h-5 animate-spin" />
+        </div>
+      </Shell>
+    );
+  }
+
+  // Without this the form rendered on a dead token: every field blank, the
+  // reason buried under the Ambassador card, and a submit button that could
+  // never save. A link that cannot load a profile is the end of the road, so
+  // the page says so and hands over the one thing that helps.
+  if (loadError) {
+    const invalid = loadError.kind === "invalid";
+    return (
+      <Shell>
+        <div className="space-y-6 text-center py-6">
+          <div className="inline-flex items-center justify-center w-14 h-14 rounded-2xl bg-red-500/15 border border-red-400/30">
+            <AlertCircle className="w-7 h-7 text-red-400" />
+          </div>
+          <div className="space-y-2">
+            <h1 className="text-2xl font-bold">{invalid ? "This link is not valid" : "We could not reach the server"}</h1>
+            <p className="text-sm text-neutral-400 leading-relaxed">
+              {invalid
+                ? "It may have expired or been replaced by a newer one. We can send you a fresh link."
+                : "This is on our side, not yours. Your link is fine \u2014 try again in a moment."}
+            </p>
+          </div>
+          {invalid ? (
+            // The server already renders a resend form at this route, so the
+            // recovery path is the one creators reach from a dead email link.
+            <a href="/portal/verify"
+              className="block w-full py-3.5 text-sm font-bold rounded-xl bg-white text-neutral-900 hover:bg-neutral-100 transition-all">
+              Send me a new link
+            </a>
+          ) : (
+            <button type="button" onClick={() => window.location.reload()}
+              className="block w-full py-3.5 text-sm font-bold rounded-xl bg-white text-neutral-900 hover:bg-neutral-100 transition-all">
+              Try again
+            </button>
+          )}
+          <p className="text-xs text-neutral-600">{loadError.message}</p>
         </div>
       </Shell>
     );

@@ -76,6 +76,29 @@ export async function onRequest(context: Context): Promise<Response> {
   // redirect too.
   out.set("x-robots-tag", "noindex, nofollow");
 
+  // Supabase rewrites the content type of anything a function returns to
+  // text/plain, so the resend and expired-link pages arrived as a wall of HTML
+  // source in the browser -- which is what a creator with a dead link saw. The
+  // upstream only ever answers /portal/* with an HTML page or a bodiless
+  // redirect, so anything carrying a body here is HTML and is labelled as such.
+  // Narrow on purpose: a real content type from upstream is left alone.
+  const upstreamType = upstream.headers.get("content-type") ?? "";
+  const isRedirect = upstream.status >= 300 && upstream.status < 400;
+  if (!isRedirect && (!upstreamType || upstreamType.startsWith("text/plain"))) {
+    out.set("content-type", "text/html; charset=utf-8");
+
+    // Supabase also sends "default-src 'none'; sandbox" on every function
+    // response. Copied through, it blocked the page's inline <style>, and the
+    // bare `sandbox` -- no allow-forms -- stopped the resend form submitting at
+    // all, so the one recovery a creator with a dead link has did nothing when
+    // pressed. Replaced rather than deleted, and no looser than the page needs:
+    // these sheets have no scripts, no images and one form that posts home.
+    out.set(
+      "content-security-policy",
+      "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'",
+    );
+  }
+
   return new Response(upstream.body, {
     status: upstream.status,
     statusText: upstream.statusText,
