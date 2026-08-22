@@ -1741,11 +1741,19 @@ function cityLabel(raw: any): string {
 // The Feature drop announcement. Unlike the verification email this one goes to
 // creators who are already confirmed, so it does not carry a token: it points at
 // the portal they can already reach.
+//
+// The count is of everything currently open, not of what was released in some
+// window: a Feature published through approve-business gets neither approved_at
+// nor offered_at, so "released in the last N days" cannot be computed for every
+// Feature and a number claimed on that basis would sometimes be wrong. The
+// recency lives in the framing, which the admin makes true by sending this when
+// they have just dropped something; the number is the one fact that is checked
+// at send time.
 function renderFeatureDropEmail(row: any, link: string, count: number, cities: string[]) {
   const first = firstNameFor(row);
-  const many = count === 1 ? "a new Feature" : `${count} new Features`;
-  const headline = count === 1 ? "A new Feature is live" : "New Features are live";
-  // Two cities read as a list, more than two would run long in a subject line.
+  const isAre = count === 1 ? "is" : "are";
+  const plural = count === 1 ? "Feature" : "Features";
+  // Two cities read as a list; more than two would run long in a subject line.
   const where = cities.length === 0 ? "your area"
     : cities.length <= 2 ? cities.join(" and ")
     : `${cities[0]}, ${cities[1]} and more`;
@@ -1753,28 +1761,30 @@ function renderFeatureDropEmail(row: any, link: string, count: number, cities: s
   const text =
 `Hi ${first},
 
-There ${count === 1 ? "is" : "are"} ${many} open in ${where} right now. Features are first come, first served, so the sooner you look the more there are to pick from.
+We just released new Features in ${where}. There ${isAre} ${count} ${plural} open in your portal right now.
 
-See what is open:
+Features go first come, first served, so it is worth a look sooner rather than later.
+
+Open your portal:
 ${link}
 
 CONTYNT
 San Francisco`;
 
   const html = emailShell({
-    preheader: `${many.charAt(0).toUpperCase()}${many.slice(1)} open in ${where} right now.`,
+    preheader: `${count} ${plural} ${isAre} open in your portal right now.`,
     footerNote: "You are receiving this because you asked to hear about Features by email.",
     body:
-`      <p style="margin:0 0 16px 0;font-size:21px;line-height:1.35;font-weight:700;color:#0a0a0a;">${esc(headline)}</p>
+`      <p style="margin:0 0 16px 0;font-size:21px;line-height:1.35;font-weight:700;color:#0a0a0a;">New Features just dropped</p>
       <p style="margin:0 0 14px 0;">Hi ${esc(first)},</p>
-      <p style="margin:0 0 14px 0;">There ${count === 1 ? "is" : "are"} ${esc(many)} open in ${esc(where)} right now.</p>
-      <p style="margin:0;">Features are first come, first served, so the sooner you look the more there are to pick from.</p>
-${emailButton(link, "See what is open")}
+      <p style="margin:0 0 14px 0;">We just released new Features in ${esc(where)}. There ${isAre} <strong>${count} ${plural}</strong> open in your portal right now.</p>
+      <p style="margin:0;">Features go first come, first served, so it is worth a look sooner rather than later.</p>
+${emailButton(link, "Open your portal")}
       <p style="margin:0 0 6px 0;font-size:13px;color:#8a8a8a;">Or paste this into your browser:</p>
       <p style="margin:0;font-size:13px;word-break:break-all;"><a href="${esc(link)}" style="color:#525252;">${esc(link)}</a></p>`,
   });
 
-  return { text, html, subject: `${headline} in ${where}` };
+  return { text, html, subject: `New Features just dropped in ${where}` };
 }
 
 // Postmark separates broadcast and transactional streams, and sending on the

@@ -4,6 +4,9 @@ dist/
 # Supabase CLI local state (contains project linkage, not meant for git)
 supabase/.temp/
 
+# Wrangler's build scratch and local state, written on every `pages deploy`.
+.wrangler/
+
 # Never commit secrets — ADMIN_SECRET and the service role key live in
 # Supabase Edge Function secrets, not in this repo.
 .env
