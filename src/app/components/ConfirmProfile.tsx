@@ -50,7 +50,7 @@ function Toggle({ on, onChange, label }: { on: boolean; onChange: (v: boolean) =
 type Reach = "" | "instagram" | "email" | "both";
 
 const REACH_OPTIONS: [Exclude<Reach, "">, string][] = [
-  ["instagram", "Instagram DM"],
+  ["instagram", "Instagram"],
   ["email", "Email"],
   ["both", "Both"],
 ];

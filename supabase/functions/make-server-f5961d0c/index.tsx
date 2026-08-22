@@ -1559,6 +1559,9 @@ app.get("/make-server-f5961d0c/admin/creator-readiness", async (c) => {
         id: r.id,
         handle: r.instagram_handle || (r.instagram || "").replace(/^@+/, ""),
         email: r.email || "",
+        // Captured at signup and never asked for again, so it is the one
+        // location every creator has, confirmed or not.
+        city: r.city || "",
         tier,
         status: r.verification_status || "pending",
         sentAt: r.verify_email_sent_at || null,
@@ -1712,6 +1715,62 @@ ${emailButton(link, "Confirm your profile")}
   return { text, html, subject: "Confirm your CONTYNT profile" };
 }
 
+// City is stored two ways: the creator signup form saves its dropdown as a slug
+// ("san-francisco") plus free text from its Other field, while the business form
+// saves proper names. A subject line reading "live in san-francisco" is the
+// visible cost, so the raw value is titled before it reaches a creator.
+const CITY_LABELS: Record<string, string> = {
+  "san francisco": "San Francisco",
+  "los angeles": "Los Angeles",
+  "new york": "New York City",
+  "new york city": "New York City",
+};
+
+function cityLabel(raw: any): string {
+  const k = String(raw ?? "").trim().toLowerCase().replace(/[-_]+/g, " ").replace(/\s+/g, " ");
+  if (!k) return "";
+  return CITY_LABELS[k] ?? k.replace(/(^|\s)\p{L}/gu, m => m.toUpperCase());
+}
+
+// The Feature drop announcement. Unlike the verification email this one goes to
+// creators who are already confirmed, so it does not carry a token: it points at
+// the portal they can already reach.
+function renderFeatureDropEmail(row: any, link: string, count: number, cities: string[]) {
+  const first = firstNameFor(row);
+  const many = count === 1 ? "a new Feature" : `${count} new Features`;
+  const headline = count === 1 ? "A new Feature is live" : "New Features are live";
+  // Two cities read as a list, more than two would run long in a subject line.
+  const where = cities.length === 0 ? "your area"
+    : cities.length <= 2 ? cities.join(" and ")
+    : `${cities[0]}, ${cities[1]} and more`;
+
+  const text =
+`Hi ${first},
+
+There ${count === 1 ? "is" : "are"} ${many} open in ${where} right now. Features are first come, first served, so the sooner you look the more there are to pick from.
+
+See what is open:
+${link}
+
+CONTYNT
+San Francisco`;
+
+  const html = emailShell({
+    preheader: `${many.charAt(0).toUpperCase()}${many.slice(1)} open in ${where} right now.`,
+    footerNote: "You are receiving this because you asked to hear about Features by email.",
+    body:
+`      <p style="margin:0 0 16px 0;font-size:21px;line-height:1.35;font-weight:700;color:#0a0a0a;">${esc(headline)}</p>
+      <p style="margin:0 0 14px 0;">Hi ${esc(first)},</p>
+      <p style="margin:0 0 14px 0;">There ${count === 1 ? "is" : "are"} ${esc(many)} open in ${esc(where)} right now.</p>
+      <p style="margin:0;">Features are first come, first served, so the sooner you look the more there are to pick from.</p>
+${emailButton(link, "See what is open")}
+      <p style="margin:0 0 6px 0;font-size:13px;color:#8a8a8a;">Or paste this into your browser:</p>
+      <p style="margin:0;font-size:13px;word-break:break-all;"><a href="${esc(link)}" style="color:#525252;">${esc(link)}</a></p>`,
+  });
+
+  return { text, html, subject: `${headline} in ${where}` };
+}
+
 // Postmark separates broadcast and transactional streams, and sending on the
 // wrong one is not cosmetic: broadcast messages carry unsubscribe headers and
 // are rate shaped for bulk. A login code is transactional and must not go out
@@ -1823,6 +1882,98 @@ app.post("/make-server-f5961d0c/admin/verification/send", async (c) => {
       dryRun: !!body.dryRun,
       limit: Number(body.limit) || undefined,
     });
+    return c.json({ success: true, ...out });
+  } catch (e: any) { return c.json({ error: "Send failed", details: e.message }, 500); }
+});
+
+// Feature drop announcement. Deliberately narrower than the verification batch:
+// that one is how a stranger becomes a creator, this one is a broadcast to
+// people already on board, so it only ever goes to a confirmed creator who
+// asked for email. Sending it to anyone else would be marketing to someone who
+// never agreed to hear from us this way.
+async function sendFeatureDropBatch(opts: { creatorIds?: string[]; dryRun?: boolean; limit?: number }) {
+  const supabase = db();
+
+  // What the email claims has to be true at the moment it is sent, so the count
+  // is read here rather than passed in by the caller.
+  const { data: openFeatures } = await supabase.from("features_f5961d0c")
+    .select("id, city, status, early_access_until").eq("status", "available");
+  const count = (openFeatures ?? []).length;
+  const cities = [...new Set((openFeatures ?? []).map((f: any) => cityLabel(f.city)).filter(Boolean))].sort();
+  // Announcing a drop with nothing in it is the one failure this send cannot
+  // walk back, so it refuses rather than mailing a claim that is not true.
+  if (!count) return { refused: "No Features are open, so there is nothing to announce.", considered: 0, sent: 0, skipped: 0, failed: 0, results: [] };
+
+  let q = supabase.from("creator_signups_f5961d0c").select("*");
+  if (opts.creatorIds?.length) q = q.in("id", opts.creatorIds);
+  const { data: rows, error } = await q;
+  if (error) throw error;
+
+  const results: any[] = [];
+  const cutoff = Date.now() - SEND_COOLDOWN_HOURS * 3600e3;
+
+  for (const r of (rows ?? []).slice(0, opts.limit ?? 500)) {
+    const email = (r.email || "").trim();
+    if (!email) { results.push({ id: r.id, skipped: "no email" }); continue; }
+    if (r.email_bounced_at || r.email_complained_at) { results.push({ id: r.id, email, skipped: "suppressed" }); continue; }
+    if (r.verification_status !== "confirmed") { results.push({ id: r.id, email, skipped: "not confirmed" }); continue; }
+    if (r.notify_email === false) { results.push({ id: r.id, email, skipped: "email notifications off" }); continue; }
+    if (r.feature_drop_sent_at && new Date(r.feature_drop_sent_at).getTime() > cutoff) {
+      results.push({ id: r.id, email, skipped: "sent within 24h" });
+      continue;
+    }
+
+    // Reuses their live portal token, so this link does not invalidate the one
+    // already sitting in their inbox.
+    const portalToken = await ensureCreatorPortalToken(r);
+    const link = `${SITE_ORIGIN}/app?creator=${encodeURIComponent(portalToken)}`;
+    const rendered = renderFeatureDropEmail(r, link, count, cities);
+
+    if (opts.dryRun) {
+      results.push({ id: r.id, email, link, subject: rendered.subject, dryRun: true });
+      continue;
+    }
+    if (!POSTMARK_SERVER_TOKEN) {
+      results.push({ id: r.id, email, link, skipped: "POSTMARK_SERVER_TOKEN not set" });
+      continue;
+    }
+
+    try {
+      const sent = await postmarkSend({ to: email, ...rendered, stream: POSTMARK_STREAM });
+      if (!sent.ok) { results.push({ id: r.id, email, error: sent.error }); continue; }
+      // Stamped only after Postmark accepted, so a failed send does not burn the
+      // cooldown and the batch can simply be re-run.
+      await supabase.from("creator_signups_f5961d0c")
+        .update({ feature_drop_sent_at: new Date().toISOString() }).eq("id", r.id);
+      await logCreatorEvent(r.id, "feature_drop_sent", {
+        messageId: sent.payload?.MessageID ?? null, featureCount: count, cities,
+      });
+      results.push({ id: r.id, email, sent: true, messageId: sent.payload?.MessageID ?? null });
+    } catch (e: any) {
+      results.push({ id: r.id, email, error: e?.message ?? String(e) });
+    }
+  }
+
+  return {
+    dryRun: !!opts.dryRun,
+    featureCount: count, cities,
+    considered: rows?.length ?? 0,
+    sent: results.filter(r => r.sent).length,
+    skipped: results.filter(r => r.skipped).length,
+    failed: results.filter(r => r.error).length,
+    results,
+  };
+}
+
+app.post("/make-server-f5961d0c/admin/feature-drop/send", async (c) => {
+  try {
+    const body = await c.req.json().catch(() => ({}));
+    const out = await sendFeatureDropBatch({
+      creatorIds: Array.isArray(body.creatorIds) ? body.creatorIds : undefined,
+      dryRun: !!body.dryRun,
+      limit: Number(body.limit) || undefined,
+    });
+    if ((out as any).refused) return c.json({ error: (out as any).refused }, 409);
     return c.json({ success: true, ...out });
   } catch (e: any) { return c.json({ error: "Send failed", details: e.message }, 500); }
 });

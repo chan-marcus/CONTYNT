@@ -774,6 +774,27 @@ export function Analytics({ adminToken }: { adminToken?: string } = {}) {
     } catch { setSendResult("Could not reach the server."); }
     finally { setSendBusy(false); }
   }, [loadReadiness]);
+  // The drop announcement is a broadcast to creators already on board, so it
+  // gets its own handler rather than a flag on sendVerification: different
+  // audience, different cooldown, and a 409 of its own when there is nothing
+  // open to announce.
+  const sendFeatureDrop = useCallback(async (creatorIds: string[], dryRun: boolean) => {
+    setSendBusy(true);
+    try {
+      const res = await apiFetch("/admin/feature-drop/send", {
+        method: "POST", body: JSON.stringify({ creatorIds, dryRun }),
+      });
+      const d = await res.json().catch(() => null);
+      if (!res.ok || !d?.success) { setSendResult(d?.error || "Send failed."); return; }
+      const where = d.cities?.length ? d.cities.join(", ") : "no city set";
+      setSendResult(dryRun
+        ? `Dry run: ${d.featureCount} open Features (${where}) — ${d.results.filter((r: any) => r.dryRun).length} would send, ${d.skipped} skipped.`
+        : `Announced ${d.featureCount} Features to ${d.sent}, skipped ${d.skipped}, failed ${d.failed}.`);
+      if (!dryRun) await loadReadiness();
+    } catch { setSendResult("Could not reach the server."); }
+    finally { setSendBusy(false); }
+  }, [loadReadiness]);
+
   const ambAction = async (id: string, path: string, body: object) => {
     setAmbBusy(id);
     await apiFetch(path, { method: "POST", body: JSON.stringify(body) }).catch(() => {});
@@ -1319,7 +1340,7 @@ export function Analytics({ adminToken }: { adminToken?: string } = {}) {
                       className="text-xs text-neutral-500 hover:text-neutral-300">Dismiss</button>
                   </div>
                 )}
-                <CreatorReadiness data={readyData} onSend={sendVerification} busy={sendBusy}
+                <CreatorReadiness data={readyData} onSend={sendVerification} onSendFeatureDrop={sendFeatureDrop} busy={sendBusy}
                   health={emailHealth} onTest={sendTestEmail} testing={testingEmail} testResult={testEmailResult} />
               </div>
             : <p className="text-neutral-400 text-sm">Loading readiness…</p>

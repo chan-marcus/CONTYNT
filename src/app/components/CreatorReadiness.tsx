@@ -1,8 +1,8 @@
-import { useMemo, useState } from "react";
-import { Download, Send, Loader2, Check, X, AlertTriangle, CheckCircle2, MailCheck } from "lucide-react";
+import { Fragment, useMemo, useState } from "react";
+import { Download, Send, Loader2, Check, X, AlertTriangle, CheckCircle2, MailCheck, Megaphone } from "lucide-react";
 
 export interface ReadinessCreator {
-  id: string; handle: string; email: string;
+  id: string; handle: string; email: string; city: string;
   tier: "Ready+" | "Ready" | "Warm" | "Cold";
   status: string;
   sentAt: string | null; openedAt: string | null; openCount: number; confirmedAt: string | null;
@@ -141,19 +141,43 @@ const TIER_STYLE: Record<string, string> = {
   "Cold":   "bg-white/5 text-neutral-400 border-white/15",
 };
 
+const NO_CITY = "No location on file";
+
+// The creator signup form stores its dropdown as a slug -- "san-francisco",
+// "los-angeles", "new-york" -- and whatever was typed into its Other field,
+// "Ludhiana", in whatever casing. The business form stores proper names for the
+// same places. All of it has to collapse into one group per city, so the key is
+// normalised and the label is rebuilt from the key rather than from the raw
+// value, which would otherwise show a slug on screen.
+const CITY_LABELS: Record<string, string> = {
+  "san francisco": "San Francisco",
+  "los angeles": "Los Angeles",
+  "new york": "New York City",
+  "new york city": "New York City",
+};
+
+const cityKey = (c: string) =>
+  (c || "").trim().toLowerCase().replace(/[-_]+/g, " ").replace(/\s+/g, " ");
+
+const cityLabel = (c: string) => {
+  const k = cityKey(c);
+  if (!k) return NO_CITY;
+  // Unicode-aware, so a non-ASCII city name is not left lowercased.
+  return CITY_LABELS[k] ?? k.replace(/(^|\s)\p{L}/gu, m => m.toUpperCase());
+};
+
 const fmt = (d: string | null) =>
   d ? new Date(d).toLocaleDateString("en-US", { month: "short", day: "numeric" }) : "—";
 
-// The three answers to "How should we reach you?" on the confirm screen. All
-// three slots are always drawn rather than listing only what is on, so a
-// creator reachable by DM alone reads differently from one who answered nothing
-// -- and every channel off is called out, because that creator is unreachable
-// and no Feature offer will ever land.
-function ReachChips({ email, dm, sms }: { email: boolean; dm: boolean; sms: boolean }) {
+// The two answers to "How should we reach you?" on the confirm screen. Both
+// slots are always drawn rather than listing only what is on, so a creator
+// reachable by DM alone reads differently from one who answered nothing -- and
+// neither channel on is called out, because that creator is unreachable and no
+// Feature offer will ever land.
+function ReachChips({ email, dm }: { email: boolean; dm: boolean }) {
   const slots: [string, boolean, string][] = [
     ["Email", email, "Email notifications"],
     ["DM", dm, "Instagram DM notifications"],
-    ["SMS", sms, "Text notifications"],
   ];
   return (
     <span className="flex items-center gap-1">
@@ -164,16 +188,17 @@ function ReachChips({ email, dm, sms }: { email: boolean; dm: boolean; sms: bool
                : "bg-white/[0.03] border-white/10 text-neutral-600"
           }`}>{label}</span>
       ))}
-      {!email && !dm && !sms && (
+      {!email && !dm && (
         <AlertTriangle className="w-3 h-3 text-red-400 shrink-0" aria-label="No way to reach this creator" />
       )}
     </span>
   );
 }
 
-export function CreatorReadiness({ data, onSend, busy, health, onTest, testing, testResult }: {
+export function CreatorReadiness({ data, onSend, onSendFeatureDrop, busy, health, onTest, testing, testResult }: {
   data: ReadinessData;
   onSend: (creatorIds: string[], reminderOnly: boolean, dryRun: boolean) => void;
+  onSendFeatureDrop: (creatorIds: string[], dryRun: boolean) => void;
   busy: boolean;
   health: EmailHealth | null;
   onTest: (to: string) => void;
@@ -182,7 +207,6 @@ export function CreatorReadiness({ data, onSend, busy, health, onTest, testing, 
 }) {
   const [tier, setTier] = useState("");
   const [status, setStatus] = useState("");
-  const [hood, setHood] = useState("");
   const [amb, setAmb] = useState("");
   const [days, setDays] = useState("");
   const [selected, setSelected] = useState<Set<string>>(new Set());
@@ -190,7 +214,6 @@ export function CreatorReadiness({ data, onSend, busy, health, onTest, testing, 
   const rows = useMemo(() => data.creators.filter(c => {
     if (tier && c.tier !== tier) return false;
     if (status && c.status !== status) return false;
-    if (hood && !c.neighborhoods.includes(hood)) return false;
     if (amb === "on" && !c.ambassadorOptedIn) return false;
     if (amb === "off" && c.ambassadorOptedIn) return false;
     if (days) {
@@ -199,7 +222,24 @@ export function CreatorReadiness({ data, onSend, busy, health, onTest, testing, 
       if (ageDays > Number(days)) return false;
     }
     return true;
-  }), [data.creators, tier, status, hood, amb, days]);
+  }), [data.creators, tier, status, amb, days]);
+
+  // Grouped off `rows`, not `data.creators`, so the groups reflect the filters
+  // rather than the whole table. A creator with no city signed up before the
+  // field existed or skipped it, and is grouped rather than hidden.
+  const groups = useMemo(() => {
+    const by = new Map<string, ReadinessCreator[]>();
+    for (const r of rows) {
+      // Keyed on the normalised city so "san-francisco" and "San Francisco"
+      // are one group, then labelled once at render.
+      const key = cityLabel(r.city);
+      const list = by.get(key);
+      list ? list.push(r) : by.set(key, [r]);
+    }
+    // Alphabetical, with the unknowns last however they sort.
+    return [...by.entries()].sort(([a], [b]) =>
+      a === NO_CITY ? 1 : b === NO_CITY ? -1 : a.localeCompare(b));
+  }, [rows]);
 
   const allShown = rows.length > 0 && rows.every(r => selected.has(r.id));
   const toggleAll = () =>
@@ -213,7 +253,7 @@ export function CreatorReadiness({ data, onSend, busy, health, onTest, testing, 
 
   // Exports what is on screen, not the whole table: the filters are the point.
   const exportCsv = () => {
-    const cols = ["handle", "email", "tier", "status", "sentAt", "openedAt", "confirmedAt",
+    const cols = ["handle", "email", "city", "tier", "status", "sentAt", "openedAt", "confirmedAt",
                   "notifyEmail", "notifyDm", "notifySms",
                   "neighborhoods", "capacity", "ambassadorOptedIn", "payoutsConnected", "bounced"];
     const cell = (v: any) => {
@@ -266,10 +306,6 @@ export function CreatorReadiness({ data, onSend, busy, health, onTest, testing, 
           <option value="">All statuses</option>
           {["pending", "opened", "confirmed", "expired"].map(s => <option key={s} value={s}>{s}</option>)}
         </select>
-        <select value={hood} onChange={e => setHood(e.target.value)} className={SELECT}>
-          <option value="">All neighborhoods</option>
-          {data.neighborhoods.map(n => <option key={n} value={n}>{n}</option>)}
-        </select>
         <select value={amb} onChange={e => setAmb(e.target.value)} className={SELECT}>
           <option value="">Ambassador: any</option>
           <option value="on">Ambassador: on</option>
@@ -296,6 +332,25 @@ export function CreatorReadiness({ data, onSend, busy, health, onTest, testing, 
           className="flex items-center gap-1.5 px-3 py-2 text-xs rounded-xl bg-white/5 border border-white/15 text-neutral-200 hover:border-white/30 transition-all disabled:opacity-40">
           <Send className="w-3.5 h-3.5" />Remind non-confirmers
         </button>
+        {/* Preview first, then send. The confirm is not ceremony: this is the one
+            button here that mails people who are already on board, and it
+            cannot be recalled. */}
+        <button onClick={() => onSendFeatureDrop(ids, true)} disabled={busy || !ids.length}
+          title="Show what would go out, without sending"
+          className="flex items-center gap-1.5 px-3 py-2 text-xs rounded-xl bg-white/5 border border-white/15 text-neutral-200 hover:border-white/30 transition-all disabled:opacity-40">
+          <Megaphone className="w-3.5 h-3.5" />Preview drop ({ids.length})
+        </button>
+        <button
+          onClick={() => {
+            if (window.confirm(`Announce the open Features to ${ids.length} selected creator${ids.length === 1 ? "" : "s"}? This sends real email and cannot be undone.`)) {
+              onSendFeatureDrop(ids, false);
+            }
+          }}
+          disabled={busy || !ids.length || !canSend} title={sendBlocked}
+          className="flex items-center gap-1.5 px-3 py-2 text-xs rounded-xl bg-purple-500 text-white font-semibold hover:bg-purple-400 transition-all disabled:opacity-40">
+          <Megaphone className="w-3.5 h-3.5" />Send Feature drop
+        </button>
+
         <button onClick={exportCsv} disabled={!rows.length}
           className="flex items-center gap-1.5 px-3 py-2 text-xs rounded-xl bg-white/5 border border-white/15 text-neutral-200 hover:border-white/30 transition-all disabled:opacity-40 ml-auto">
           <Download className="w-3.5 h-3.5" />Export CSV
@@ -309,13 +364,23 @@ export function CreatorReadiness({ data, onSend, busy, health, onTest, testing, 
               <th className="px-3 py-2.5 text-left">
                 <input type="checkbox" checked={allShown} onChange={toggleAll} aria-label="Select all shown" />
               </th>
-              {["Handle", "Email", "Tier", "Status", "Sent", "Opened", "Confirmed", "Reach", "Neighborhoods", "Cap", "Amb", "Payouts"].map(h => (
+              {["Handle", "Email", "Tier", "Status", "Sent", "Opened", "Confirmed", "Reach", "Amb"].map(h => (
                 <th key={h} className="px-3 py-2.5 text-left font-medium">{h}</th>
               ))}
             </tr>
           </thead>
           <tbody>
-            {rows.map(r => (
+            {groups.map(([city, members]) => (
+              <Fragment key={city}>
+                <tr className="border-t border-white/10 bg-white/[0.04]">
+                  <td colSpan={10} className="px-3 py-2">
+                    <span className="text-[10px] font-semibold uppercase tracking-widest text-neutral-400">
+                      {city}
+                    </span>
+                    <span className="ml-2 text-[10px] text-neutral-600">{members.length}</span>
+                  </td>
+                </tr>
+                {members.map(r => (
               <tr key={r.id} className="border-t border-white/5 hover:bg-white/[0.03]">
                 <td className="px-3 py-2.5">
                   <input type="checkbox" checked={selected.has(r.id)} onChange={() => toggle(r.id)}
@@ -338,27 +403,19 @@ export function CreatorReadiness({ data, onSend, busy, health, onTest, testing, 
                 </td>
                 <td className="px-3 py-2.5 text-neutral-400">{fmt(r.confirmedAt)}</td>
                 <td className="px-3 py-2.5">
-                  <ReachChips email={r.notifyEmail} dm={r.notifyDm} sms={r.notifySms} />
+                  <ReachChips email={r.notifyEmail} dm={r.notifyDm} />
                 </td>
-                <td className="px-3 py-2.5 text-neutral-400 max-w-[220px] truncate"
-                    title={r.neighborhoods.join(", ")}>
-                  {r.neighborhoods.length ? r.neighborhoods.join(", ") : "—"}
-                </td>
-                <td className="px-3 py-2.5 text-neutral-400">{r.capacity ?? "—"}</td>
                 <td className="px-3 py-2.5">
                   {r.ambassadorOptedIn
                     ? <Check className="w-3.5 h-3.5 text-purple-300" />
                     : <X className="w-3.5 h-3.5 text-neutral-700" />}
                 </td>
-                <td className="px-3 py-2.5">
-                  {r.payoutsConnected
-                    ? <Check className="w-3.5 h-3.5 text-green-400" />
-                    : <X className="w-3.5 h-3.5 text-neutral-700" />}
-                </td>
               </tr>
+                ))}
+              </Fragment>
             ))}
             {!rows.length && (
-              <tr><td colSpan={13} className="px-3 py-8 text-center text-neutral-500">No creators match these filters.</td></tr>
+              <tr><td colSpan={10} className="px-3 py-8 text-center text-neutral-500">No creators match these filters.</td></tr>
             )}
           </tbody>
         </table>
