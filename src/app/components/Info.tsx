@@ -3,7 +3,6 @@ import { motion, AnimatePresence } from "motion/react";
 import { projectId, publicAnonKey } from "/utils/supabase/info";
 
 export function Info() {
-  const [businessName, setBusinessName] = useState("");
   const [instagram, setInstagram] = useState("");
   const [email, setEmail] = useState("");
   const [city, setCity] = useState("");
@@ -37,7 +36,6 @@ export function Info() {
             Authorization: `Bearer ${publicAnonKey}`,
           },
           body: JSON.stringify({
-            businessName,
             instagram,
             email,
             city,
@@ -51,7 +49,6 @@ export function Info() {
 
       if (response.ok) {
         setSuccessMessage(data.message || "Thank you! We'll be in touch.");
-        setBusinessName("");
         setInstagram("");
         setEmail("");
         setCity("");
@@ -106,10 +103,13 @@ export function Info() {
             <form onSubmit={handleSubmit} className="space-y-3">
               <input
                 type="text"
-                value={businessName}
-                onChange={(e) => setBusinessName(e.target.value)}
+                value={instagram}
+                onChange={(e) => setInstagram(e.target.value)}
                 className="w-full px-4 py-3 border border-neutral-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-neutral-900 focus:border-transparent bg-white"
-                placeholder="Business Name"
+                placeholder="Instagram Handle"
+                autoCapitalize="none"
+                autoCorrect="off"
+                spellCheck={false}
                 required
               />
               <input
@@ -118,14 +118,6 @@ export function Info() {
                 onChange={(e) => setAddress(e.target.value)}
                 className="w-full px-4 py-3 border border-neutral-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-neutral-900 focus:border-transparent bg-white"
                 placeholder="Business Address"
-                required
-              />
-              <input
-                type="text"
-                value={instagram}
-                onChange={(e) => setInstagram(e.target.value)}
-                className="w-full px-4 py-3 border border-neutral-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-neutral-900 focus:border-transparent bg-white"
-                placeholder="Instagram Handle"
                 required
               />
               <input

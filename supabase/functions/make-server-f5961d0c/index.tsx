@@ -2462,13 +2462,58 @@ app.post("/make-server-f5961d0c/signup", async (c) => {
 });
 
 // ─── Business signup ──────────────────────────────────────────────────────────
+// The form no longer asks for a business name: the Instagram handle is the one
+// identifier a business always has and the one already shown beside every row in
+// the Businesses tab. A handle that is already there attaches to that business
+// rather than minting a twin, so signing up twice updates the details on file
+// instead of splitting a business across two rows -- which would split its
+// Features, its quota and its portal with it.
 app.post("/make-server-f5961d0c/business-signup", async (c) => {
   try {
     const { businessName, instagram, email, city, address, preferredContact } = await c.req.json();
-    if (!businessName || !instagram || !email || !city) return c.json({ error: "All fields are required" }, 400);
-    const { data, error } = await db().from("business_signups_f5961d0c").insert({ business_name: businessName, instagram, email, city, address: address || "", preferred_contact: preferredContact || "" }).select("id").single();
+    const handle = normalizeHandle(instagram);
+    if (!handle) return c.json({ error: "Enter a valid Instagram handle." }, 400);
+    if (!email || !city) return c.json({ error: "Email and city are required." }, 400);
+
+    // Compared normalised in memory rather than with ilike: rows predating this
+    // hold "@name" and full profile URLs as well as bare handles, and none of
+    // those match a bare handle in SQL. The table is small enough that reading
+    // it is cheaper than the migration that would make an index correct.
+    const { data: existingRows } = await db().from("business_signups_f5961d0c")
+      .select("id, instagram, business_name, address");
+    // Lowercased for the comparison only. Instagram handles are case
+    // insensitive, so "JoesDiner" and "joesdiner" are one account and must not
+    // become two rows -- but the casing a business typed is still what gets
+    // stored and shown back to them.
+    const key = (v: any) => (normalizeHandle(String(v ?? "")) ?? "").toLowerCase();
+    const wanted = handle.toLowerCase();
+    const match = (existingRows ?? []).find((r: any) => key(r.instagram) === wanted);
+
+    if (match) {
+      // Only what the form actually carried, so a re-signup cannot blank a
+      // detail an admin filled in. business_name is left alone when the row
+      // already has one: a real name beats a handle.
+      const patch: Record<string, unknown> = { instagram: handle, email, city };
+      if (address) patch.address = address;
+      if (preferredContact) patch.preferred_contact = preferredContact;
+      if (!String(match.business_name ?? "").trim()) patch.business_name = `@${handle}`;
+      await must("business signup: attach to existing", db()
+        .from("business_signups_f5961d0c").update(patch).eq("id", match.id));
+      await logBusinessEvent(match.id, "signup_reattached", { handle });
+      return c.json({ success: true, message: "Thank you! We'll be in touch.", id: match.id, matched: true });
+    }
+
+    const { data, error } = await db().from("business_signups_f5961d0c").insert({
+      // The handle stands in for the name everywhere downstream -- the admin
+      // card heading, the Features creators see, the portal -- so it is written
+      // to both columns rather than leaving business_name empty and letting
+      // every one of those read blank.
+      business_name: businessName?.trim() || `@${handle}`,
+      instagram: handle,
+      email, city, address: address || "", preferred_contact: preferredContact || "",
+    }).select("id").single();
     if (error) throw error;
-    return c.json({ success: true, message: "Thank you! We'll be in touch.", id: data.id });
+    return c.json({ success: true, message: "Thank you! We'll be in touch.", id: data.id, matched: false });
   } catch (e: any) { return c.json({ error: "Failed to process signup.", details: e.message }, 500); }
 });
 
