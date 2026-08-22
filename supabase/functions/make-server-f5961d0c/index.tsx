@@ -308,9 +308,14 @@ app.get("/make-server-f5961d0c/referral/:code", async (c) => {
 app.post("/make-server-f5961d0c/referral/:code/business", async (c) => {
   try {
     const code = c.req.param("code");
-    const { businessName, businessEmail, city: cityRaw } = await c.req.json();
+    const { businessName, businessEmail, instagram: instagramRaw, city: cityRaw } = await c.req.json();
     const city = String(cityRaw ?? "").trim().slice(0, 80);
     if (!businessName || !businessEmail) return c.json({ error: "Business name and email are required" }, 400);
+    // Optional on the wire so an older client still works, but rejected when
+    // present and unusable rather than stored as junk.
+    const handle = instagramRaw === undefined || String(instagramRaw).trim() === ""
+      ? "" : normalizeHandle(instagramRaw);
+    if (handle === null) return c.json({ error: "Enter a valid Instagram handle." }, 400);
 
     const amb = await ambassadorByAnyCode(code);
     if (!amb || !amb.enabled_status) return c.json({ error: "This referral link is no longer active" }, 404);
@@ -321,10 +326,22 @@ app.post("/make-server-f5961d0c/referral/:code/business", async (c) => {
     const email = String(businessEmail).trim().toLowerCase();
     const name = String(businessName).trim();
 
-    // Match on email first (the stronger key), then on name.
+    // Match on email first (the stronger key), then on the handle, then on the
+    // name. The handle sits above the name because it is what the main signup
+    // form keys on: a business that signed up there and is now being referred
+    // has to land on the same row, or its Features and quota split in two.
     let biz: any = null;
     const byEmail = await db().from("business_signups_f5961d0c").select("*").ilike("email", email).limit(1);
     biz = byEmail.data?.[0] ?? null;
+    if (!biz && handle) {
+      // Compared normalised in memory for the same reason the signup form does
+      // it: stored values include "@name" and full profile URLs, and Instagram
+      // handles are case insensitive, so neither matches in SQL.
+      const { data: all } = await db().from("business_signups_f5961d0c").select("*");
+      const wanted = handle.toLowerCase();
+      biz = (all ?? []).find((r: any) =>
+        (normalizeHandle(String(r.instagram ?? "")) ?? "").toLowerCase() === wanted) ?? null;
+    }
     if (!biz) {
       const byName = await db().from("business_signups_f5961d0c").select("*").ilike("business_name", name).limit(1);
       biz = byName.data?.[0] ?? null;
@@ -333,12 +350,17 @@ app.post("/make-server-f5961d0c/referral/:code/business", async (c) => {
     let createdBusiness = false;
     if (!biz) {
       const { data: made, error } = await db().from("business_signups_f5961d0c").insert({
-        business_name: name, email, instagram: "", city, address: "", preferred_contact: "",
+        business_name: name, email, instagram: handle, city, address: "", preferred_contact: "",
         referral_code: attribCode, referral_source: "ambassador", referred_by_creator: amb.creator_id,
       }).select("*").single();
       if (error) throw error;
       biz = made; createdBusiness = true;
-    } else if (city && !biz.city) {
+    } else if (handle && !String(biz.instagram ?? "").trim()) {
+      // Same rule as the city below: fill a gap, never overwrite an answer.
+      await db().from("business_signups_f5961d0c").update({ instagram: handle }).eq("id", biz.id);
+      biz = { ...biz, instagram: handle };
+    }
+    if (biz && !createdBusiness && city && !biz.city) {
       // An existing row created without one -- a scan lead, say -- gets the
       // city filled in, but an answer already on file is never overwritten.
       await db().from("business_signups_f5961d0c").update({ city }).eq("id", biz.id);
@@ -1758,10 +1780,15 @@ function renderFeatureDropEmail(row: any, link: string, count: number, cities: s
     : cities.length <= 2 ? cities.join(" and ")
     : `${cities[0]}, ${cities[1]} and more`;
 
+  // With nothing open the count sentence is dropped rather than printed as a
+  // zero: the send no longer depends on the number, so the number has to be
+  // able to be absent.
+  const openLine = count > 0 ? ` There ${isAre} ${count} ${plural} open in your portal right now.` : "";
+
   const text =
 `Hi ${first},
 
-We just released new Features in ${where}! There ${isAre} ${count} ${plural} open in your portal right now.
+We just released new Features in ${where}!${openLine}
 
 Features go first come, first served!
 
@@ -1772,12 +1799,14 @@ CONTYNT
 San Francisco`;
 
   const html = emailShell({
-    preheader: `${count} ${plural} ${isAre} open in your portal right now.`,
+    preheader: count > 0
+      ? `${count} ${plural} ${isAre} open in your portal right now.`
+      : `New Features just landed in ${where}.`,
     footerNote: "You are receiving this because you asked to hear about Features by email.",
     body:
 `      <p style="margin:0 0 16px 0;font-size:21px;line-height:1.35;font-weight:700;color:#0a0a0a;">New Features just dropped</p>
       <p style="margin:0 0 14px 0;">Hi ${esc(first)},</p>
-      <p style="margin:0 0 14px 0;">We just released new Features in ${esc(where)}! There ${isAre} <strong>${count} ${plural}</strong> open in your portal right now.</p>
+      <p style="margin:0 0 14px 0;">We just released new Features in ${esc(where)}!${count > 0 ? ` There ${isAre} <strong>${count} ${plural}</strong> open in your portal right now.` : ""}</p>
       <p style="margin:0;">Features go first come, first served!</p>
 ${emailButton(link, "Open your portal")}
       <p style="margin:0 0 6px 0;font-size:13px;color:#8a8a8a;">Or paste this into your browser:</p>
@@ -1907,18 +1936,19 @@ app.post("/make-server-f5961d0c/admin/verification/send", async (c) => {
 // people already on board, so it only ever goes to a confirmed creator who
 // asked for email. Sending it to anyone else would be marketing to someone who
 // never agreed to hear from us this way.
-async function sendFeatureDropBatch(opts: { creatorIds?: string[]; dryRun?: boolean; limit?: number }) {
+async function sendFeatureDropBatch(opts: { creatorIds?: string[]; dryRun?: boolean; limit?: number; featureCount?: number }) {
   const supabase = db();
 
-  // What the email claims has to be true at the moment it is sent, so the count
-  // is read here rather than passed in by the caller.
+  // The number in the email is the admin's to state. A Feature can be published
+  // moments after this goes out, or live somewhere this query does not see, so
+  // the row count is read only as a cross check and to name the cities -- it
+  // neither gates the send nor overrides what was typed.
   const { data: openFeatures } = await supabase.from("features_f5961d0c")
     .select("id, city, status, early_access_until").eq("status", "available");
-  const count = (openFeatures ?? []).length;
+  const liveCount = (openFeatures ?? []).length;
+  const supplied = Number(opts.featureCount);
+  const count = Number.isInteger(supplied) && supplied >= 0 ? supplied : liveCount;
   const cities = [...new Set((openFeatures ?? []).map((f: any) => cityLabel(f.city)).filter(Boolean))].sort();
-  // Announcing a drop with nothing in it is the one failure this send cannot
-  // walk back, so it refuses rather than mailing a claim that is not true.
-  if (!count) return { refused: "No Features are open, so there is nothing to announce.", considered: 0, sent: 0, skipped: 0, failed: 0, results: [] };
 
   let q = supabase.from("creator_signups_f5961d0c").select("*");
   if (opts.creatorIds?.length) q = q.in("id", opts.creatorIds);
@@ -1972,7 +2002,9 @@ async function sendFeatureDropBatch(opts: { creatorIds?: string[]; dryRun?: bool
 
   return {
     dryRun: !!opts.dryRun,
-    featureCount: count, cities,
+    // Both are reported so the caller can say when the number that went out
+    // does not match what is actually open.
+    featureCount: count, liveCount, cities,
     considered: rows?.length ?? 0,
     sent: results.filter(r => r.sent).length,
     skipped: results.filter(r => r.skipped).length,
@@ -1988,8 +2020,8 @@ app.post("/make-server-f5961d0c/admin/feature-drop/send", async (c) => {
       creatorIds: Array.isArray(body.creatorIds) ? body.creatorIds : undefined,
       dryRun: !!body.dryRun,
       limit: Number(body.limit) || undefined,
+      featureCount: body.featureCount === undefined ? undefined : Number(body.featureCount),
     });
-    if ((out as any).refused) return c.json({ error: (out as any).refused }, 409);
     return c.json({ success: true, ...out });
   } catch (e: any) { return c.json({ error: "Send failed", details: e.message }, 500); }
 });
