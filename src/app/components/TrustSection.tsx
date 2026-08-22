@@ -9,7 +9,7 @@ const trustFeatures = [
   },
   {
     icon: Clock,
-    title: "48-Hour Minimum",
+    title: "72-Hour Minimum",
     description: "Keep content live for visibility period",
   },
   {
