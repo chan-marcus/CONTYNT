@@ -807,10 +807,23 @@ export function Analytics({ adminToken }: { adminToken?: string } = {}) {
       });
       const d = await res.json().catch(() => null);
       if (!res.ok || !d?.success) { setSendResult(d?.error || "Send failed."); return; }
+
+      // Every creator the batch passes over records why. Reporting only the
+      // count made a fully skipped run look identical to a broken one -- you
+      // clicked, nothing arrived, and "skipped 5" did not say what to change.
+      const results: any[] = d.results || [];
+      const tally = (key: string) => {
+        const counts = new Map<string, number>();
+        for (const r of results) if (r[key]) counts.set(r[key], (counts.get(r[key]) ?? 0) + 1);
+        return [...counts.entries()].map(([reason, n]) => `${n} ${reason}`);
+      };
+      const why = [...tally("skipped"), ...tally("error")];
+      const detail = why.length ? ` — ${why.join(", ")}` : "";
       const where = d.cities?.length ? d.cities.join(", ") : "no city set";
+
       setSendResult(dryRun
-        ? `Dry run: ${d.featureCount} open Features (${where}) — ${d.results.filter((r: any) => r.dryRun).length} would send, ${d.skipped} skipped.`
-        : `Announced ${d.featureCount} Features to ${d.sent}, skipped ${d.skipped}, failed ${d.failed}.`);
+        ? `Dry run: ${d.featureCount} open Features in ${where}. ${results.filter(r => r.dryRun).length} would send${detail}.`
+        : `Announced ${d.featureCount} Features to ${d.sent}${detail}.`);
       if (!dryRun) await loadReadiness();
     } catch { setSendResult("Could not reach the server."); }
     finally { setSendBusy(false); }
