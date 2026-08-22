@@ -3,6 +3,7 @@ import { motion, AnimatePresence } from "motion/react";
 import { projectId, publicAnonKey } from "/utils/supabase/info";
 
 export function Info() {
+  const [businessName, setBusinessName] = useState("");
   const [instagram, setInstagram] = useState("");
   const [email, setEmail] = useState("");
   const [city, setCity] = useState("");
@@ -36,6 +37,7 @@ export function Info() {
             Authorization: `Bearer ${publicAnonKey}`,
           },
           body: JSON.stringify({
+            businessName,
             instagram,
             email,
             city,
@@ -49,6 +51,7 @@ export function Info() {
 
       if (response.ok) {
         setSuccessMessage(data.message || "Thank you! We'll be in touch.");
+        setBusinessName("");
         setInstagram("");
         setEmail("");
         setCity("");
@@ -101,6 +104,14 @@ export function Info() {
               We're onboarding a small group of businesses
             </p>
             <form onSubmit={handleSubmit} className="space-y-3">
+              <input
+                type="text"
+                value={businessName}
+                onChange={(e) => setBusinessName(e.target.value)}
+                className="w-full px-4 py-3 border border-neutral-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-neutral-900 focus:border-transparent bg-white"
+                placeholder="Business Name"
+                required
+              />
               <input
                 type="text"
                 value={instagram}
