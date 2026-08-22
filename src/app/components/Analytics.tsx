@@ -10,11 +10,29 @@ const AUTH = { Authorization: `Bearer ${publicAnonKey}` };
 // Admin session token from /admin/login (or an admin private link). Read per
 // call so it picks up a fresh login without a reload.
 const adminSession = () => sessionStorage.getItem("analytics_token") || "";
-const apiFetch = (path: string, opts?: RequestInit) =>
-  fetch(`${BASE}${path}`, {
+
+// Set by the component below. Sessions last 12 hours and nothing was watching
+// them expire: isAuthenticated only ever asked whether a token exists, never
+// whether it still works, so every guarded call 401'd into an `if (res.ok)`
+// that quietly skipped its setState. The dashboard then showed empty tables
+// beside a header still reporting counts, because /analytics/stats needs no
+// token -- an empty table reads as "no data", which is a different and much
+// worse thing than "signed out".
+let onUnauthorized: (() => void) | null = null;
+
+// The handshake routes answer 401 for a wrong password, which is not an expired
+// session and must not bounce the operator out of a login they are mid-way
+// through.
+const HANDSHAKE = ["/admin/login", "/admin/verify"];
+
+const apiFetch = async (path: string, opts?: RequestInit) => {
+  const res = await fetch(`${BASE}${path}`, {
     ...opts,
     headers: { ...AUTH, "Content-Type": "application/json", "x-admin-token": adminSession(), ...(opts?.headers ?? {}) },
   });
+  if (res.status === 401 && !HANDSHAKE.some(h => path.startsWith(h))) onUnauthorized?.();
+  return res;
+};
 
 type Tab = "creators" | "businesses" | "reels" | "pageviews" | "ambassadors" | "readiness";
 
@@ -690,6 +708,7 @@ export function Analytics({ adminToken }: { adminToken?: string } = {}) {
   const [isAuthenticated, setIsAuthenticated] = useState(!!adminToken);
   const [password, setPassword] = useState("");
   const [passwordError, setPasswordError] = useState("");
+  const [sessionExpired, setSessionExpired] = useState(false);
   const [adminTokenVerified, setAdminTokenVerified] = useState(false);
   const [tab, setTab] = useState<Tab>("creators");
   const [signups, setSignups] = useState<Signup[]>([]);
@@ -806,7 +825,7 @@ export function Analytics({ adminToken }: { adminToken?: string } = {}) {
   // server hands back a session token that authorizes every later admin call.
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
-    setPasswordError("");
+    setPasswordError(""); setSessionExpired(false);
     try {
       const res = await apiFetch("/admin/login", { method: "POST", body: JSON.stringify({ password }) });
       // A 404 here means the function hasn't been deployed with /admin/login yet,
@@ -825,6 +844,17 @@ export function Analytics({ adminToken }: { adminToken?: string } = {}) {
       setPasswordError("Could not reach the server. Try again.");
     }
   };
+
+  // Registered once, so a 401 from any admin call -- not just the ones on this
+  // screen -- lands on the login sheet with a reason.
+  useEffect(() => {
+    onUnauthorized = () => {
+      sessionStorage.removeItem("analytics_token");
+      setIsAuthenticated(false);
+      setSessionExpired(true);
+    };
+    return () => { onUnauthorized = null; };
+  }, []);
 
   useEffect(() => {
     if (adminToken) {
@@ -1088,6 +1118,9 @@ export function Analytics({ adminToken }: { adminToken?: string } = {}) {
             <input type="password" value={password} onChange={(e) => setPassword(e.target.value)}
               className="w-full px-4 py-3 bg-neutral-800 border border-white/20 text-white placeholder:text-neutral-500 rounded-lg focus:outline-none focus:ring-2 focus:ring-white/30"
               placeholder="Password" required />
+            {sessionExpired && !passwordError && (
+              <p className="text-yellow-400 text-sm">Your session expired. Sign in again.</p>
+            )}
             {passwordError && <p className="text-red-400 text-sm">{passwordError}</p>}
             <button type="submit" className="w-full px-4 py-3 bg-white text-neutral-900 rounded-lg hover:bg-neutral-100 transition-all">Login</button>
           </form>

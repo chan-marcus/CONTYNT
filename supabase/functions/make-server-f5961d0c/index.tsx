@@ -171,6 +171,12 @@ const adminGuard = async (c: any, next: any) => {
 // Registered before the routes below so it actually wraps them.
 app.use("/make-server-f5961d0c/admin/*", adminGuard);
 app.use("/make-server-f5961d0c/signups", adminGuard);
+// Was reachable with nothing but the anon key, which ships inside the client
+// bundle: it returns signup and visitor totals plus the last 50 pageviews with
+// visitor id, user agent, referrer and geo. Its only caller is the admin
+// dashboard. Guarded by exact path, not /analytics/*, because the pageview
+// write beside it is posted by every visitor and must stay open.
+app.use("/make-server-f5961d0c/analytics/stats", adminGuard);
 app.use("/make-server-f5961d0c/business-signups", adminGuard);
 // These mint creator/business portal tokens — admin-only.
 app.use("/make-server-f5961d0c/creator-links", adminGuard);
