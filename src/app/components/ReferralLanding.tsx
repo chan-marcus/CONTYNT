@@ -2,7 +2,6 @@ import { useEffect, useState } from "react";
 import { motion } from "motion/react";
 import { CheckCircle, ArrowRight } from "lucide-react";
 import { projectId, publicAnonKey } from "/utils/supabase/info";
-import { CITY_OPTIONS } from "../lib/cities";
 
 const BASE = `https://${projectId}.supabase.co/functions/v1/make-server-f5961d0c`;
 const AUTH = { Authorization: `Bearer ${publicAnonKey}`, "Content-Type": "application/json" };
@@ -19,9 +18,8 @@ export function ReferralLanding({ code }: { code: string }) {
   const [creator, setCreator] = useState<string | null>(null);
   const [checked, setChecked] = useState(false);
   const [name, setName] = useState("");
+  const [instagram, setInstagram] = useState("");
   const [email, setEmail] = useState("");
-  const [city, setCity] = useState("");
-  const [otherCity, setOtherCity] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
 
@@ -35,13 +33,15 @@ export function ReferralLanding({ code }: { code: string }) {
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
-    const cityValue = city === "other" ? otherCity.trim() : city;
-    if (!name.trim() || !email.trim() || !cityValue) return;
+    if (!name.trim() || !instagram.trim() || !email.trim()) return;
     setBusy(true); setError("");
     try {
       const res = await api(`/referral/${encodeURIComponent(code)}/business`, {
         method: "POST",
-        body: JSON.stringify({ businessName: name.trim(), businessEmail: email.trim(), city: cityValue }),
+        body: JSON.stringify({
+          businessName: name.trim(), instagram: instagram.trim(),
+          businessEmail: email.trim(),
+        }),
       });
       const d = await res.json().catch(() => null);
       if (!res.ok || !d?.portalToken) {
@@ -101,26 +101,20 @@ export function ReferralLanding({ code }: { code: string }) {
           <input value={name} onChange={e => setName(e.target.value)} required
             placeholder="Business name"
             className="w-full px-3.5 py-3 bg-white/10 border border-white/20 rounded-xl text-white text-[15px] placeholder:text-neutral-500 focus:outline-none focus:ring-2 focus:ring-white/25" />
-          {/* Businesses were created with an empty city, which is the field
-              feature matching runs on. */}
-          <select value={city} onChange={e => setCity(e.target.value)} required
-            className={`w-full px-3.5 py-3 bg-white/10 border border-white/20 rounded-xl text-[15px] focus:outline-none focus:ring-2 focus:ring-white/25 ${city ? "text-white" : "text-neutral-500"}`}>
-            <option value="" disabled className="bg-neutral-900 text-neutral-400">City</option>
-            {CITY_OPTIONS.map(c => (
-              <option key={c.value} value={c.value} className="bg-neutral-900 text-white">{c.label}</option>
-            ))}
-            <option value="other" className="bg-neutral-900 text-white">Other</option>
-          </select>
-          {city === "other" && (
-            <input value={otherCity} onChange={e => setOtherCity(e.target.value)} required
-              placeholder="Which city?" autoCapitalize="words"
-              className="w-full px-3.5 py-3 bg-white/10 border border-white/20 rounded-xl text-white text-[15px] placeholder:text-neutral-500 focus:outline-none focus:ring-2 focus:ring-white/25" />
-          )}
+
+          {/* The @ is a prefix inside the box so this field shares a left edge
+              with the others, and so nobody types the @ twice. */}
+          <div className="relative">
+            <span aria-hidden className="absolute left-3.5 top-1/2 -translate-y-1/2 text-[15px] text-neutral-500 pointer-events-none">@</span>
+            <input value={instagram} onChange={e => setInstagram(e.target.value)} required
+              placeholder="yourbusiness" autoCapitalize="none" autoCorrect="off" spellCheck={false}
+              className="w-full pl-8 pr-3.5 py-3 bg-white/10 border border-white/20 rounded-xl text-white text-[15px] placeholder:text-neutral-500 focus:outline-none focus:ring-2 focus:ring-white/25" />
+          </div>
           <input value={email} onChange={e => setEmail(e.target.value)} required type="email"
             placeholder="you@yourbusiness.com"
             className="w-full px-3.5 py-3 bg-white/10 border border-white/20 rounded-xl text-white text-[15px] placeholder:text-neutral-500 focus:outline-none focus:ring-2 focus:ring-white/25" />
           {error && <p className="text-xs text-red-400">{error}</p>}
-          <button type="submit" disabled={busy || !name.trim() || !email.trim() || !city || (city === "other" && !otherCity.trim())}
+          <button type="submit" disabled={busy || !name.trim() || !instagram.trim() || !email.trim()}
             className="w-full py-3.5 bg-white text-neutral-900 text-sm font-semibold rounded-xl hover:bg-neutral-100 transition-all disabled:opacity-40 flex items-center justify-center gap-2">
             {busy ? "Setting up…" : <>Claim your dashboard <ArrowRight className="w-4 h-4" /></>}
           </button>

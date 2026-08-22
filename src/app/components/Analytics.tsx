@@ -799,11 +799,11 @@ export function Analytics({ adminToken }: { adminToken?: string } = {}) {
   // gets its own handler rather than a flag on sendVerification: different
   // audience, different cooldown, and a 409 of its own when there is nothing
   // open to announce.
-  const sendFeatureDrop = useCallback(async (creatorIds: string[], dryRun: boolean) => {
+  const sendFeatureDrop = useCallback(async (creatorIds: string[], dryRun: boolean, featureCount: number) => {
     setSendBusy(true);
     try {
       const res = await apiFetch("/admin/feature-drop/send", {
-        method: "POST", body: JSON.stringify({ creatorIds, dryRun }),
+        method: "POST", body: JSON.stringify({ creatorIds, dryRun, featureCount }),
       });
       const d = await res.json().catch(() => null);
       if (!res.ok || !d?.success) { setSendResult(d?.error || "Send failed."); return; }
@@ -821,9 +821,15 @@ export function Analytics({ adminToken }: { adminToken?: string } = {}) {
       const detail = why.length ? ` — ${why.join(", ")}` : "";
       const where = d.cities?.length ? d.cities.join(", ") : "no city set";
 
+      // The number in the email is whatever was typed. Flagged when it does not
+      // match what is actually published, so a slip is visible straight away
+      // rather than only to the creator who opens an empty portal.
+      const said = `${d.featureCount} ${d.featureCount === 1 ? "Feature" : "Features"}`;
+      const mismatch = d.liveCount !== undefined && d.liveCount !== d.featureCount
+        ? ` (note: ${d.liveCount} actually open)` : "";
       setSendResult(dryRun
-        ? `Dry run: ${d.featureCount} open Features in ${where}. ${results.filter(r => r.dryRun).length} would send${detail}.`
-        : `Announced ${d.featureCount} Features to ${d.sent}${detail}.`);
+        ? `Dry run: email would say ${said} in ${where}${mismatch}. ${results.filter(r => r.dryRun).length} would send${detail}.`
+        : `Drop sent to ${d.sent}, saying ${said} in ${where}${mismatch}${detail}.`);
       if (!dryRun) await loadReadiness();
     } catch { setSendResult("Could not reach the server."); }
     finally { setSendBusy(false); }
