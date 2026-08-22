@@ -1744,9 +1744,9 @@ function renderVerificationEmail(row: any, link: string) {
   const text =
 `Hi ${first},
 
-We just released a small batch of Features in San Francisco. You are on the early access list, so you get first look before they open up to everyone.
+The first Features in San Francisco are dropping soon. You are on the early access list, so you get first look before they open up to everyone.
 
-Confirm your profile and we will match you to the ones in your area:
+Confirm your profile now and we will match you to the ones in your area the moment they go live:
 ${link}
 
 This link is good for 90 days and is just for you. Please do not forward it.
@@ -1754,13 +1754,13 @@ This link is good for 90 days and is just for you. Please do not forward it.
 CONTYNT
 San Francisco`;
   const html = emailShell({
-    preheader: "A small batch of Features just went live in San Francisco. Early access gets first look.",
+    preheader: "The first Features in San Francisco are dropping soon. Early access gets first look.",
     footerNote: "You are receiving this because you signed up for CONTYNT early access.",
     body:
-`      <p style="margin:0 0 16px 0;font-size:21px;line-height:1.35;font-weight:700;color:#0a0a0a;">The first Features are live</p>
+`      <p style="margin:0 0 16px 0;font-size:21px;line-height:1.35;font-weight:700;color:#0a0a0a;">Features are dropping soon</p>
       <p style="margin:0 0 14px 0;">Hi ${esc(first)},</p>
-      <p style="margin:0 0 14px 0;">We just released a small batch of Features in San Francisco. You are on the early access list, so you get first look before they open up to everyone.</p>
-      <p style="margin:0;">Confirm your profile and we will match you to the ones in your area.</p>
+      <p style="margin:0 0 14px 0;">The first Features in San Francisco are dropping soon. You are on the early access list, so you get first look before they open up to everyone.</p>
+      <p style="margin:0;">Confirm your profile now and we will match you to the ones in your area the moment they go live.</p>
 ${emailButton(link, "Confirm your profile")}
       <p style="margin:0 0 6px 0;font-size:13px;color:#8a8a8a;">Or paste this into your browser:</p>
       <p style="margin:0 0 18px 0;font-size:13px;word-break:break-all;"><a href="${esc(link)}" style="color:#525252;">${esc(link)}</a></p>
