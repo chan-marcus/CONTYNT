@@ -253,7 +253,7 @@ export function CreatorSubmissionPending() {
         </motion.div>
 
         <p className="text-xs text-neutral-700 text-center pb-4">
-          Questions? Reach out to the CONTYNT team.
+          Questions? Reach out to the Contynt team.
         </p>
       </main>
     </div>

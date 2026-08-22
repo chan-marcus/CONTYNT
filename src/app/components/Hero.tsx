@@ -31,7 +31,7 @@ export function Hero() {
 
           {/* Subheadline */}
           <p className="text-lg md:text-xl text-neutral-300 mb-12 max-w-2xl mx-auto" style={{ fontWeight: 400, lineHeight: 1.6 }}>
-            CONTYNT connects creators with local spots that want to be featured through short-form content.
+            Contynt connects creators with local spots that want to be featured through short-form content.
           </p>
           
           {/* CTAs */}

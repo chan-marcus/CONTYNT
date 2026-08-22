@@ -111,7 +111,7 @@ export default function App() {
     };
 
     const description =
-      "CONTYNT connects Instagram Reels creators with local businesses that pay per post. No follower minimum. Sign up for early access in San Francisco, Los Angeles, and New York City.";
+      "Contynt connects Instagram Reels creators with local businesses that pay per post. No follower minimum. Sign up for early access in San Francisco, Los Angeles, and New York City.";
     const siteUrl = window.location.origin;
     const ogImage = `${siteUrl}/og-image.png`;
 

@@ -46,7 +46,7 @@ export function Features() {
             Preview of Available Features
           </h2>
           <p className="text-base md:text-lg text-neutral-500 max-w-2xl mx-auto" style={{ fontWeight: 400 }}>
-            See how Features appear on CONTYNT
+            See how Features appear on Contynt
           </p>
         </motion.div>
 

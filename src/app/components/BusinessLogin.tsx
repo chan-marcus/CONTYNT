@@ -103,7 +103,7 @@ export function BusinessLogin() {
               <p className="text-xs text-neutral-500 leading-relaxed">
                 Not set up yet?{" "}
                 <a href="/#businesses" className="text-neutral-300 underline underline-offset-2 hover:text-white">
-                  See how CONTYNT works for businesses
+                  See how Contynt works for businesses
                 </a>.
               </p>
             </>

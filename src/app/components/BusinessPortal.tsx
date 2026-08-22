@@ -100,7 +100,7 @@ const PLANS = [
       "Four separate local audiences seeing you each month",
       "Time content to new menu items, events, and seasons",
       "Rotating roster, so your audience keeps seeing new faces",
-      "Direct line to the CONTYNT team",
+      "Direct line to the Contynt team",
       "Everything in Starter + Growth",
     ],
     cta: "Get Started",
@@ -112,7 +112,7 @@ const PLANS = [
 const ONE_OFF = {
   name: "One-Time Feature",
   price: "$89",
-  description: "Receive one professionally created Reel from a local CONTYNT creator.",
+  description: "Receive one professionally created Reel from a local Contynt creator.",
   note: "No subscription. Starter gets you the same reel every month for $69.",
   cta: "Buy One Feature",
 };
