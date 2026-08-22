@@ -39,7 +39,7 @@ export function LoginChooser() {
           <div className="space-y-2">
             <h1 className="text-2xl font-bold leading-snug">Welcome back</h1>
             <p className="text-sm text-neutral-400 leading-relaxed">
-              We will email you a 6 digit code. No password to remember.
+              We will email you a 6 digit code.
             </p>
           </div>
 
