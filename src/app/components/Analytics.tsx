@@ -343,7 +343,9 @@ function BusinessCard({ signup, approved, onApprove, onImpersonate, impersonatin
     <div className={`bg-neutral-900 border rounded-xl p-4 space-y-3 ${approved ? "border-green-500/20 bg-green-500/10" : "border-white/10"}`}>
       <div className="flex items-start justify-between gap-2">
         <div>
-          <p className="font-semibold text-white">{signup.businessName}</p>
+          {/* Signups no longer carry a business name, so the handle stands in.
+              Rows from before that still show whatever name they were given. */}
+          <p className="font-semibold text-white">{signup.businessName || igHandle(signup.instagram)}</p>
           <p className="text-xs text-neutral-500">{new Date(signup.createdAt).toLocaleDateString()}</p>
         </div>
         {approved && <span className="text-xs bg-green-500/10 text-green-400 border border-green-500/20 px-2 py-0.5 rounded-full shrink-0">Approved</span>}
