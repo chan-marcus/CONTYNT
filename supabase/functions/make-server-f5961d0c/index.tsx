@@ -1761,9 +1761,9 @@ function renderFeatureDropEmail(row: any, link: string, count: number, cities: s
   const text =
 `Hi ${first},
 
-We just released new Features in ${where}. There ${isAre} ${count} ${plural} open in your portal right now.
+We just released new Features in ${where}! There ${isAre} ${count} ${plural} open in your portal right now.
 
-Features go first come, first served, so it is worth a look sooner rather than later.
+Features go first come, first served!
 
 Open your portal:
 ${link}
@@ -1777,8 +1777,8 @@ San Francisco`;
     body:
 `      <p style="margin:0 0 16px 0;font-size:21px;line-height:1.35;font-weight:700;color:#0a0a0a;">New Features just dropped</p>
       <p style="margin:0 0 14px 0;">Hi ${esc(first)},</p>
-      <p style="margin:0 0 14px 0;">We just released new Features in ${esc(where)}. There ${isAre} <strong>${count} ${plural}</strong> open in your portal right now.</p>
-      <p style="margin:0;">Features go first come, first served, so it is worth a look sooner rather than later.</p>
+      <p style="margin:0 0 14px 0;">We just released new Features in ${esc(where)}! There ${isAre} <strong>${count} ${plural}</strong> open in your portal right now.</p>
+      <p style="margin:0;">Features go first come, first served!</p>
 ${emailButton(link, "Open your portal")}
       <p style="margin:0 0 6px 0;font-size:13px;color:#8a8a8a;">Or paste this into your browser:</p>
       <p style="margin:0;font-size:13px;word-break:break-all;"><a href="${esc(link)}" style="color:#525252;">${esc(link)}</a></p>`,
