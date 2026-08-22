@@ -639,9 +639,14 @@ app.get("/make-server-f5961d0c/portal/verify", async (c) => {
       userAgent: c.req.header("user-agent") || "",
     });
 
-    // Land them signed in on the confirm screen, no password.
+    // Land them signed in, no password. A creator who has already confirmed
+    // goes straight to the portal: the link is the same one in an email that
+    // may be months old, and re-opening it should not send them back through a
+    // form they have already filled in. The confirm screen stays reachable at
+    // ?view=confirm for anyone who wants to change an answer.
     const portalToken = await ensureCreatorPortalToken(row);
-    const dest = `${SITE_ORIGIN}/app?creator=${encodeURIComponent(portalToken)}&view=confirm`;
+    const confirmed = row.verification_status === "confirmed";
+    const dest = `${SITE_ORIGIN}/app?creator=${encodeURIComponent(portalToken)}${confirmed ? "" : "&view=confirm"}`;
     return c.redirect(dest, 302);
   } catch (e: any) {
     console.error("[verify]", e?.message ?? e);
