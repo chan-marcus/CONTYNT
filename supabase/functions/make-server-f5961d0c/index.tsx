@@ -819,7 +819,7 @@ app.post("/make-server-f5961d0c/creator-portal/confirm", async (c) => {
       // address back to a creator with maybeSingle(), the resend form included.
       const { data: taken } = await db().from("creator_signups_f5961d0c")
         .select("id").ilike("email", nextEmail).neq("id", creator.id).limit(1);
-      if (taken?.length) return c.json({ error: "That email is already on another CONTYNT account." }, 409);
+      if (taken?.length) return c.json({ error: "That email is already on another Contynt account." }, 409);
       email = nextEmail;
       optional.email = email;
       // A bounce recorded against the old address suppresses every later send,
@@ -1459,7 +1459,7 @@ const ATTRIBUTION_RULE = "First scan at a spot wins. One payout per business, ev
 // TODO(copy): placeholder handoff script. Replace with the wording you want
 // creators to actually say before this ships.
 const HANDOFF_SCRIPT =
-  "Hey, I just filmed a Reel here for CONTYNT. This card has a code on it. " +
+  "Hey, I just filmed a Reel here for Contynt. This card has a code on it. " +
   "If you scan it you can see the Reel when it goes live, and get set up if you want more.";
 
 
@@ -1733,6 +1733,13 @@ const emailButton = (href: string, label: string) =>
         </td></tr>
       </table>`;
 
+// How a link is shown in an email, as opposed to how it is followed. Hosts are
+// case insensitive, so capitalising the brand costs nothing and reads better in
+// a paste-this-in line. Only the origin is touched: the path and query carry the
+// token, which is very much case sensitive.
+const prettyLink = (u: string) =>
+  String(u ?? "").replace(/^https:\/\/getcontynt\.com/i, "https://GetContynt.com");
+
 // There is no name column on creator_signups, so the handle is the only thing
 // resembling a first name we have. Better than an empty greeting, and the
 // template degrades to "there" when even that is missing.
@@ -1744,29 +1751,29 @@ function renderVerificationEmail(row: any, link: string) {
   const text =
 `Hi ${first},
 
-The first Features in San Francisco are dropping soon. You are on the early access list, so you get first look before they open up to everyone.
+The first wave of features in San Francisco is dropping soon. You are on the early access list, so you get first look before they open up to everyone.
 
 Confirm your profile now and we will match you to the ones in your area the moment they go live:
-${link}
+${prettyLink(link)}
 
 This link is good for 90 days and is just for you. Please do not forward it.
 
 CONTYNT
 San Francisco`;
   const html = emailShell({
-    preheader: "The first Features in San Francisco are dropping soon. Early access gets first look.",
-    footerNote: "You are receiving this because you signed up for CONTYNT early access.",
+    preheader: "The first wave of features in San Francisco is dropping soon. Early access gets first look.",
+    footerNote: "You are receiving this because you signed up for Contynt early access.",
     body:
-`      <p style="margin:0 0 16px 0;font-size:21px;line-height:1.35;font-weight:700;color:#0a0a0a;">Features are dropping soon</p>
+`      <p style="margin:0 0 16px 0;font-size:21px;line-height:1.35;font-weight:700;color:#0a0a0a;">The first wave of features is dropping soon</p>
       <p style="margin:0 0 14px 0;">Hi ${esc(first)},</p>
-      <p style="margin:0 0 14px 0;">The first Features in San Francisco are dropping soon. You are on the early access list, so you get first look before they open up to everyone.</p>
+      <p style="margin:0 0 14px 0;">The first wave of features in San Francisco is dropping soon. You are on the early access list, so you get first look before they open up to everyone.</p>
       <p style="margin:0;">Confirm your profile now and we will match you to the ones in your area the moment they go live.</p>
 ${emailButton(link, "Confirm your profile")}
       <p style="margin:0 0 6px 0;font-size:13px;color:#8a8a8a;">Or paste this into your browser:</p>
-      <p style="margin:0 0 18px 0;font-size:13px;word-break:break-all;"><a href="${esc(link)}" style="color:#525252;">${esc(link)}</a></p>
+      <p style="margin:0 0 18px 0;font-size:13px;word-break:break-all;"><a href="${esc(link)}" style="color:#525252;">${esc(prettyLink(link))}</a></p>
       <p style="margin:0;font-size:13px;color:#8a8a8a;">This link is good for 90 days and is just for you. Please do not forward it.</p>`,
   });
-  return { text, html, subject: "Confirm your CONTYNT profile" };
+  return { text, html, subject: "Confirm your Contynt profile" };
 }
 
 // City is stored two ways: the creator signup form saves its dropdown as a slug
@@ -1819,7 +1826,7 @@ We just released new Features in ${where}!${openLine}
 Features go first come, first served!
 
 Open your portal:
-${link}
+${prettyLink(link)}
 
 CONTYNT
 San Francisco`;
@@ -1836,7 +1843,7 @@ San Francisco`;
       <p style="margin:0;">Features go first come, first served!</p>
 ${emailButton(link, "Open your portal")}
       <p style="margin:0 0 6px 0;font-size:13px;color:#8a8a8a;">Or paste this into your browser:</p>
-      <p style="margin:0;font-size:13px;word-break:break-all;"><a href="${esc(link)}" style="color:#525252;">${esc(link)}</a></p>`,
+      <p style="margin:0;font-size:13px;word-break:break-all;"><a href="${esc(link)}" style="color:#525252;">${esc(prettyLink(link))}</a></p>`,
   });
 
   return { text, html, subject: `New Features just dropped in ${where}` };
@@ -2138,13 +2145,13 @@ app.post("/make-server-f5961d0c/admin/email-test", async (c) => {
     // "does our branding survive this client" and not just "did it send".
     const sent = await postmarkSend({
       to: addr,
-      subject: "CONTYNT email test",
-      text: `This is a test from the CONTYNT admin panel.\n\nFrom: ${POSTMARK_FROM_HEADER}\nStream: ${which}\n\nIf you are reading this, sending works.`,
+      subject: "Contynt email test",
+      text: `This is a test from the Contynt admin panel.\n\nFrom: ${POSTMARK_FROM_HEADER}\nStream: ${which}\n\nIf you are reading this, sending works.`,
       html: emailShell({
         preheader: `Test send on the ${which} stream.`,
         body:
 `      <p style="margin:0 0 16px 0;font-size:21px;line-height:1.35;font-weight:700;color:#0a0a0a;">Sending works</p>
-      <p style="margin:0 0 22px 0;">This is a test from the CONTYNT admin panel. If you are reading it, the token, the sender signature and the message stream are all good.</p>
+      <p style="margin:0 0 22px 0;">This is a test from the Contynt admin panel. If you are reading it, the token, the sender signature and the message stream are all good.</p>
       <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%">
         <tr><td bgcolor="#f7f7f8" style="background-color:#f7f7f8;border-radius:14px;padding:18px 20px;font-family:${EMAIL_FONT};font-size:13px;line-height:1.8;color:#525252;">
           From: ${esc(POSTMARK_FROM_HEADER)}<br>Stream: ${esc(which)}
@@ -2258,8 +2265,8 @@ const loginCodeKey = (audience: LoginAudience, addr: string) => `logincode_${aud
 
 function loginCodeEmail(code: string) {
   return {
-    subject: `Your CONTYNT code: ${code}`,
-    text: `Your CONTYNT login code is ${code}\n\nIt expires in ${LOGIN_CODE_TTL_MIN} minutes. If you did not ask for this, you can ignore it. The code is useless without your inbox.\n\nContynt\nSan Francisco`,
+    subject: `Your Contynt code: ${code}`,
+    text: `Your Contynt login code is ${code}\n\nIt expires in ${LOGIN_CODE_TTL_MIN} minutes. If you did not ask for this, you can ignore it. The code is useless without your inbox.\n\nCONTYNT\nSan Francisco`,
     html: emailShell({
       preheader: `${code} is your login code. It expires in ${LOGIN_CODE_TTL_MIN} minutes.`,
       body:
@@ -3542,7 +3549,7 @@ app.post("/make-server-f5961d0c/admin/mark-paid", async (c) => {
         creator_instagram: creatorData?.instagram || "",
         amount: before.availableEarnings,
         method: method || "Manual",
-        handle: handle || "paid outside CONTYNT",
+        handle: handle || "paid outside Contynt",
         status: "paid",
         paid_at: now,
       }));

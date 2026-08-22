@@ -14,13 +14,11 @@ export function LoginChooser() {
       href: "/app",
       icon: Video,
       title: "I'm a creator",
-      body: "Claim Features, submit Reels, and track what you have earned.",
     },
     {
       href: "/business",
       icon: Store,
       title: "I'm a business",
-      body: "See your Reels, request creators, and manage your plan.",
     },
   ];
 
@@ -36,25 +34,17 @@ export function LoginChooser() {
       <main className="flex-1 w-full max-w-sm mx-auto px-5 py-12">
         <motion.div initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.35 }}
           className="space-y-6">
-          <div className="space-y-2">
-            <h1 className="text-2xl font-bold leading-snug">Welcome back</h1>
-            <p className="text-sm text-neutral-400 leading-relaxed">
-              We will email you a 6 digit code.
-            </p>
-          </div>
+          <h1 className="text-2xl font-bold leading-snug">Welcome back</h1>
 
           <div className="space-y-3">
-            {OPTIONS.map(({ href, icon: Icon, title, body }) => (
+            {OPTIONS.map(({ href, icon: Icon, title }) => (
               <a key={href} href={href}
-                className="group flex items-start gap-3.5 w-full text-left px-4 py-4 rounded-2xl bg-white/5 border border-white/10 hover:border-white/30 hover:bg-white/[0.07] transition-all">
+                className="group flex items-center gap-3.5 w-full text-left px-4 py-4 rounded-2xl bg-white/5 border border-white/10 hover:border-white/30 hover:bg-white/[0.07] transition-all">
                 <span className="inline-flex items-center justify-center w-10 h-10 shrink-0 rounded-xl bg-white/5 border border-white/10">
                   <Icon className="w-4.5 h-4.5 text-neutral-300" />
                 </span>
-                <span className="flex-1 min-w-0">
-                  <span className="block text-sm font-semibold">{title}</span>
-                  <span className="block text-xs text-neutral-400 leading-relaxed mt-0.5">{body}</span>
-                </span>
-                <ArrowRight className="w-4 h-4 text-neutral-600 shrink-0 mt-3 group-hover:text-neutral-300 group-hover:translate-x-0.5 transition-all" />
+                <span className="flex-1 min-w-0 text-sm font-semibold">{title}</span>
+                <ArrowRight className="w-4 h-4 text-neutral-600 shrink-0 group-hover:text-neutral-300 group-hover:translate-x-0.5 transition-all" />
               </a>
             ))}
           </div>

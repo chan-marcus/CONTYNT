@@ -204,9 +204,6 @@ export function AmbassadorQrScreen({ token }: { token: string }) {
                     whiteSpace: "nowrap" }}>
         {prettyUrl(state.url)}
       </div>
-      <p style={{ marginTop: 10, fontSize: 13, color: "#6b7280", textAlign: "center", maxWidth: "34ch", lineHeight: 1.5 }}>
-        Turn your screen brightness all the way up, then have them scan it.
-      </p>
     </div>
   );
 }

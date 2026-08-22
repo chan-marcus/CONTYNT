@@ -32,7 +32,7 @@ function Shell({ children }: { children: React.ReactNode }) {
       <div className="w-full max-w-sm text-center">
         <p className="text-xs font-semibold tracking-[0.2em] text-neutral-400 mb-7">C O N T Y N T</p>
         {children}
-        <p className="text-xs text-neutral-600 mt-6">CONTYNT connects local creators with local businesses.</p>
+        <p className="text-xs text-neutral-600 mt-6">Contynt connects local creators with local businesses.</p>
       </div>
     </div>
   );
@@ -209,7 +209,7 @@ export function ScanPage({ code }: { code: string }) {
   if (data.state === "unknown") {
     return <Shell>
       <h1 className="text-xl font-bold mb-2">This card is not active</h1>
-      <p className="text-sm text-neutral-400">Double check the code, or visit getcontynt.com to get started.</p>
+      <p className="text-sm text-neutral-400">Double check the code, or visit GetContynt.com to get started.</p>
     </Shell>;
   }
 

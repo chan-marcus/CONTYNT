@@ -68,7 +68,7 @@ export function FinalCTA() {
           <h2 className="text-3xl md:text-4xl lg:text-5xl mb-6 text-white text-center" style={{ fontWeight: 600, lineHeight: 1.2 }}>
             Join Early Access
             <br />
-            to CONTYNT
+            to Contynt
           </h2>
           <p className="text-base md:text-lg text-neutral-300 mb-12 max-w-2xl mx-auto text-center" style={{ fontWeight: 400, lineHeight: 1.6 }}>
             Be among the first creators

@@ -49,7 +49,7 @@ export function AmbassadorUpsell({ onLearnMore }: { onLearnMore: () => void }) {
       <div className="min-w-0 flex-1">
         <p className="text-sm font-semibold text-white">Want to earn more?</p>
         <p className="text-xs text-neutral-400 mt-1 leading-relaxed">
-          Become a CONTYNT Ambassador and earn ${REFERRAL_REWARD} for every successful business
+          Become a Contynt Ambassador and earn ${REFERRAL_REWARD} for every successful business
           referral, plus unlock exclusive creator opportunities.
         </p>
       </div>
@@ -67,16 +67,16 @@ export function AmbassadorEmptyState({ onLearnMore }: { onLearnMore: () => void 
     <div className={`${PURPLE_CARD} p-6 space-y-4`}>
       <div className="flex items-center gap-2">
         <Award className="w-5 h-5 text-purple-300" />
-        <h3 className="text-base font-bold text-white">Become a CONTYNT Ambassador</h3>
+        <h3 className="text-base font-bold text-white">Become a Contynt Ambassador</h3>
       </div>
       <p className="text-sm text-neutral-400 leading-relaxed">
-        Help local businesses discover CONTYNT and earn referral rewards by introducing
+        Help local businesses discover Contynt and earn referral rewards by introducing
         businesses to the platform.
       </p>
       <ul className="space-y-2">
         {[`Earn $${REFERRAL_REWARD} per successful referral`,
           "Unlock exclusive creator opportunities",
-          "Grow your creator profile within CONTYNT"].map(b => (
+          "Grow your creator profile within Contynt"].map(b => (
           <li key={b} className="flex items-start gap-2 text-sm text-neutral-300">
             <Check className="w-4 h-4 text-purple-300 shrink-0 mt-0.5" />{b}
           </li>
@@ -93,12 +93,12 @@ export function AmbassadorEmptyState({ onLearnMore }: { onLearnMore: () => void 
 // ─── Instructions shown on in-progress features for ambassadors ──────────────
 const AMBASSADOR_STEPS = [
   "Visit the business location.",
-  "Introduce yourself as a CONTYNT Ambassador.",
+  "Introduce yourself as a Contynt Ambassador.",
   "Show the owner your Ambassador printable.",
   "Have the owner scan your QR code.",
-  "Help them complete CONTYNT signup.",
+  "Help them complete Contynt signup.",
   "If the owner is unavailable, leave the printable with an employee or manager.",
-  "Submit referral confirmation inside CONTYNT.",
+  "Submit referral confirmation inside Contynt.",
 ];
 
 
@@ -139,7 +139,7 @@ function Onboarding({ token, onEnabled }: { token: string; onEnabled: () => void
         </div>
         <h2 className="text-xl font-bold text-white">Become an Ambassador</h2>
         <p className="text-sm text-neutral-400 leading-relaxed max-w-md mx-auto">
-          Ambassador Mode gives selected creators the ability to represent CONTYNT, help local
+          Ambassador Mode gives selected creators the ability to represent Contynt, help local
           businesses discover the platform, and earn additional rewards by onboarding new businesses.
         </p>
       </div>
@@ -292,7 +292,7 @@ function Dashboard({ state, instagram, token }: { state: AmbassadorState; instag
   };
 
   const share = async () => {
-    const data = { title: "Join CONTYNT", text: "Grow your business with authentic local creators.", url: shareUrl };
+    const data = { title: "Join Contynt", text: "Grow your business with authentic local creators.", url: shareUrl };
     // Web Share only exists on most mobile browsers; fall back to copying.
     if (navigator.share) { try { await navigator.share(data); return; } catch { /* cancelled */ } }
     copy();
@@ -369,7 +369,7 @@ function Dashboard({ state, instagram, token }: { state: AmbassadorState; instag
           got there first, that business is already theirs.
         </p>
         <p className="text-xs text-neutral-400 leading-relaxed">
-          Rewards are approved by the CONTYNT team before they are paid. A scan on its
+          Rewards are approved by the Contynt team before they are paid. A scan on its
           own does not credit anything, and nothing is credited automatically.
         </p>
       </div>

@@ -10,11 +10,11 @@ const faqs = [
     answer: "You're paid per approved Feature posted.",
   },
   {
-    question: "Which platforms does CONTYNT support?",
+    question: "Which platforms does Contynt support?",
     answer: "Instagram Reels.",
   },
   {
-    question: "Is CONTYNT available in my city?",
+    question: "Is Contynt available in my city?",
     answer: "We're launching city by city. Join early access to get notified.",
   },
 ];

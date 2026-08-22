@@ -4,7 +4,7 @@ import { motion } from "motion/react";
 const steps = [
   {
     number: "01",
-    title: "Join CONTYNT",
+    title: "Join Contynt",
     description: "Sign up with your Instagram. No follower minimum required.",
     icon: UserPlus,
   },
