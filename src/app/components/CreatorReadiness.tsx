@@ -142,6 +142,8 @@ const TIER_STYLE: Record<string, string> = {
 };
 
 const NO_CITY = "No location on file";
+// Pinned to the top of the grouping below.
+const HOME_CITY = "San Francisco";
 
 // The creator signup form stores its dropdown as a slug -- "san-francisco",
 // "los-angeles", "new-york" -- and whatever was typed into its Other field,
@@ -236,9 +238,12 @@ export function CreatorReadiness({ data, onSend, onSendFeatureDrop, busy, health
       const list = by.get(key);
       list ? list.push(r) : by.set(key, [r]);
     }
-    // Alphabetical, with the unknowns last however they sort.
+    // San Francisco first because it is the market being run, then alphabetical,
+    // with the unknowns last however they sort. The Creators tab already pins SF
+    // the same way, so the two screens agree on what the first group is.
+    const rank = (c: string) => c === HOME_CITY ? 0 : c === NO_CITY ? 2 : 1;
     return [...by.entries()].sort(([a], [b]) =>
-      a === NO_CITY ? 1 : b === NO_CITY ? -1 : a.localeCompare(b));
+      rank(a) - rank(b) || a.localeCompare(b));
   }, [rows]);
 
   const allShown = rows.length > 0 && rows.every(r => selected.has(r.id));
