@@ -921,7 +921,16 @@ export function Analytics({ adminToken }: { adminToken?: string } = {}) {
         : r.existed ? `${r.plan}: already in Stripe (${r.priceId})`
         : r.created ? `${r.plan}: created (${r.priceId})`
         : `${r.plan}: would create at $${((r.amount ?? 0) / 100).toFixed(2)}`);
-      window.alert(`${dryRun ? "Preview" : "Stripe prices"}\n\n${lines.join("\n")}`);
+
+      // Stated up front, because a test key and a pending live account fail in
+      // different ways and the fix for one is not the fix for the other.
+      const a = d.account || {};
+      const mode = d.livemode === null ? "no prices yet, so mode unknown"
+        : d.livemode ? "LIVE mode" : "TEST mode";
+      const status = a.error ? `Stripe key rejected: ${a.error}`
+        : `${mode} · charges ${a.chargesEnabled ? "enabled" : "NOT enabled"} · payouts ${a.payoutsEnabled ? "enabled" : "NOT enabled"}`;
+
+      window.alert(`${dryRun ? "Preview" : "Stripe prices"}\n\n${status}\n\n${lines.join("\n")}`);
     } catch { window.alert("Could not reach the server."); }
     finally { setSendBusy(false); }
   }, []);

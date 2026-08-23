@@ -1123,7 +1123,7 @@ async function ensureStripePrice(plan: typeof STRIPE_PLANS[number], dryRun: bool
   const found = await stripeCall("GET", "prices", { lookup_keys: [plan.lookupKey], limit: 1, active: true });
   if (!found.ok) return { plan: plan.label, error: found.error };
   const existing = found.data?.data?.[0];
-  if (existing) return { plan: plan.label, priceId: existing.id, lookupKey: plan.lookupKey, existed: true };
+  if (existing) return { plan: plan.label, priceId: existing.id, lookupKey: plan.lookupKey, existed: true, livemode: !!existing.livemode };
   if (dryRun) return { plan: plan.label, lookupKey: plan.lookupKey, wouldCreate: true, amount: plan.amount };
 
   const product = await stripeCall("POST", "products", {
@@ -1141,7 +1141,7 @@ async function ensureStripePrice(plan: typeof STRIPE_PLANS[number], dryRun: bool
     metadata: { contynt_tier: plan.tier ?? "one_off" },
   });
   if (!price.ok) return { plan: plan.label, error: price.error };
-  return { plan: plan.label, priceId: price.data.id, lookupKey: plan.lookupKey, created: true };
+  return { plan: plan.label, priceId: price.data.id, lookupKey: plan.lookupKey, created: true, livemode: !!price.data.livemode };
 }
 
 app.post("/make-server-f5961d0c/admin/stripe/sync-prices", async (c) => {
@@ -1149,10 +1149,24 @@ app.post("/make-server-f5961d0c/admin/stripe/sync-prices", async (c) => {
     const body = await c.req.json().catch(() => ({}));
     const dryRun = !!body.dryRun;
     if (!STRIPE_SECRET_KEY) return c.json({ error: "STRIPE_SECRET_KEY is not set on the server." }, 400);
+    // Which account this key belongs to, and what it can do. A pending account
+    // and a test key look identical from in here otherwise, and the two need
+    // opposite responses: one is waiting on Stripe, the other on a key swap.
+    const acct = await stripeCall("GET", "account");
+    const account = acct.ok ? {
+      chargesEnabled: !!acct.data?.charges_enabled,
+      payoutsEnabled: !!acct.data?.payouts_enabled,
+      detailsSubmitted: !!acct.data?.details_submitted,
+      country: acct.data?.country ?? null,
+    } : { error: acct.error };
+
     const results = [];
     for (const plan of STRIPE_PLANS) results.push(await ensureStripePrice(plan, dryRun));
+    // livemode comes off a Stripe object rather than being guessed from the key
+    // prefix, which changed format and is not something to parse.
+    const livemode = results.map((r: any) => r.livemode).find((v: any) => v !== undefined) ?? null;
     return c.json({
-      success: true, dryRun,
+      success: true, dryRun, account, livemode,
       created: results.filter(r => (r as any).created).length,
       existed: results.filter(r => (r as any).existed).length,
       wouldCreate: results.filter(r => (r as any).wouldCreate).length,
