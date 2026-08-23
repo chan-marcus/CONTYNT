@@ -1,0 +1,92 @@
+{
+  // There was no tsconfig in this project at all, and no typecheck in the
+  // build: `vite build` compiles through esbuild, which strips types without
+  // ever checking them. A type error therefore shipped silently -- the build
+  // stayed green and the mistake surfaced in the browser, or didn't surface at
+  // all until someone hit the path. For a codebase handling payouts and
+  // subscriptions that was the largest quality gap in it.
+  //
+  // Run it with `pnpm typecheck`. `pnpm build` runs it first and refuses to
+  // emit if it fails.
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "jsx": "react-jsx",
+    "types": ["vite/client"],
+
+    // Vite owns emitting. This config exists purely to check.
+    "noEmit": true,
+    "isolatedModules": true,
+    "allowImportingTsExtensions": true,
+    "resolveJsonModule": true,
+    "esModuleInterop": true,
+    "allowSyntheticDefaultImports": true,
+    "forceConsistentCasingInFileNames": true,
+    "skipLibCheck": true,
+
+    // Deliberately not `strict`. Turning it on against a codebase written
+    // without it produces hundreds of pre-existing errors at once, which is how
+    // a typecheck gets switched off again a week later. Tighten when there is
+    // appetite to fix the fallout in one go; `strictNullChecks` is the next one
+    // worth having and the most work.
+    "strict": false,
+
+    // Catches a real bug and costs nothing -- the code already passes it.
+    "noFallthroughCasesInSwitch": true,
+
+    // `noImplicitReturns` is deliberately OFF. It was tried and it flagged six
+    // sites, every one of them correct code:
+    //
+    //   useEffect(() => {
+    //     if (!ready) return;           // <- flagged
+    //     ...
+    //     return () => cleanup();
+    //   });
+    //
+    // React types an effect as `void | Destructor`, so returning nothing on the
+    // early path is the documented pattern, not an oversight. The sixth was
+    // vite.config.ts's resolveId hook, where returning undefined is how a
+    // Rollup resolver says "not mine, ask the next one".
+    //
+    // Satisfying it would mean sprinkling `return undefined;` through five
+    // effects to silence a rule that had found nothing -- and a typecheck whose
+    // output you learn to wave through is worse than none.
+    "noImplicitReturns": false,
+
+    "baseUrl": ".",
+    "paths": {
+      // `@/…` is the alias vite.config.ts defines.
+      "@/*": ["src/*"],
+      // main.tsx imports "/utils/supabase/info" — a root-absolute path Vite
+      // resolves from the project directory. TypeScript needs telling.
+      "/utils/*": ["utils/*"]
+    }
+  },
+
+  // The app, and only the app.
+  "include": ["src", "utils", "vite.config.ts"],
+
+  "exclude": [
+    "node_modules",
+    "dist",
+    // The edge function is Deno, not browser TypeScript: it imports from
+    // `npm:` and `jsr:` specifiers and uses the Deno global, none of which
+    // resolve here. Checking it needs Deno itself:
+    //     deno check supabase/functions/make-server-f5961d0c/index.tsx
+    // Worth wiring up if Deno ever gets installed on this machine; until then
+    // it is checked by `vite build`-adjacent parsing only, which is weaker.
+    "supabase",
+    // 46 unused shadcn components, imported by nothing (verified: no app file
+    // references components/ui, and no Radix reaches the bundle). They are
+    // vendored boilerplate, so their errors are not this project's bugs -- and
+    // a typecheck that reports hundreds of failures in dead code is one that
+    // gets ignored, which defeats the point of adding it.
+    //
+    // The honest fix is deleting the folder. Until that happens this keeps the
+    // signal clean. If any of them is ever actually imported, remove this line
+    // and fix what it reports.
+    "src/app/components/ui"
+  ]
+}
