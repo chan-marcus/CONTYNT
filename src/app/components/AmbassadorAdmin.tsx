@@ -53,6 +53,15 @@ export function AmbassadorAdmin({ data, onAdvance, onPayReward, onToggle, busy }
     () => [...new Set(data.referrals.map(r => r.status))].sort(),
     [data.referrals]);
 
+  // The referrals list below is filterable and can be scrolled past; the row
+  // itself should say who this creator actually brought in without making an
+  // admin go looking for it.
+  const byAmbassador = useMemo(() => {
+    const by: Record<string, AmbassadorAdminData["referrals"]> = {};
+    for (const r of data.referrals) (by[r.ambassadorId] ??= []).push(r);
+    return by;
+  }, [data.referrals]);
+
   const referrals = useMemo(() => data.referrals.filter(r =>
     (!creatorFilter || r.creatorInstagram === creatorFilter) &&
     (!rewardFilter || r.rewardStatus === rewardFilter) &&
@@ -109,6 +118,22 @@ export function AmbassadorAdmin({ data, onAdvance, onPayReward, onToggle, busy }
                   {copied === a.ambassadorId ? <Check className="w-3 h-3" /> : <Copy className="w-3 h-3" />}
                 </button>
               </div>
+              {(byAmbassador[a.ambassadorId] ?? []).length > 0 && (
+                <div className="flex flex-wrap items-center gap-1.5 mt-2">
+                  {(byAmbassador[a.ambassadorId] ?? []).map(r => (
+                    // Paid is the only state worth colouring: it is the one that
+                    // has cost money and cannot be undone.
+                    <span key={r.id} title={`${pretty(r.status)} · reward ${r.rewardStatus}`}
+                      className={`text-[10px] px-2 py-0.5 rounded-md border ${
+                        r.rewardStatus === "paid"
+                          ? "bg-green-500/10 text-green-300 border-green-500/25"
+                          : "bg-white/5 text-neutral-300 border-white/15"
+                      }`}>
+                      {r.businessName || r.businessEmail || "Unnamed business"}
+                    </span>
+                  ))}
+                </div>
+              )}
             </div>
             <div className="flex items-center gap-4 text-xs shrink-0">
               <span className="text-neutral-500">Referred <span className="text-white font-semibold">{a.businessesReferred}</span></span>

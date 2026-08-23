@@ -37,7 +37,7 @@ const apiFetch = async (path: string, opts?: RequestInit) => {
 type Tab = "creators" | "businesses" | "reels" | "pageviews" | "ambassadors" | "readiness";
 
 interface Signup { id: string; instagram: string; email: string; city: string; createdAt: string; totalEarned?: number; pendingEarnings?: number; availableEarnings?: number; }
-interface BusinessSignup { id: string; businessName: string; instagram: string; email: string; city: string; address: string; preferredContact: string; createdAt: string; }
+interface BusinessSignup { id: string; businessName: string; instagram: string; email: string; city: string; address: string; preferredContact: string; createdAt: string; referralSource?: string | null; referralCode?: string | null; referredByHandle?: string | null; }
 interface Submission { id: string; featureId: string; creatorInstagram: string; reelUrl: string; status: string; submittedAt: string; reportNote?: string; metrics?: any; businessFeedback?: { reaction: "approve" | "report"; note?: string; submittedAt: string; businessName?: string }; }
 interface PageView { visitorId: string; referrer: string; timestamp: string; country?: string; city?: string; }
 interface Feature { id: string; businessId: string; businessName: string; category: string; payoutRange: string; status: string; total_payout?: string; claimed_by?: string; winner_instagram?: string; claimed_at?: string; isTrial?: boolean; isOneOff?: boolean; requestNotes?: string; submittedByBusiness?: boolean; }
@@ -356,6 +356,18 @@ function BusinessCard({ signup, approved, onApprove, onImpersonate, impersonatin
         <p>{signup.email}</p>
         <a href={`https://instagram.com/${signup.instagram.replace(/^@/, "")}`} target="_blank" rel="noopener noreferrer"
           className="text-blue-400 hover:text-blue-300 transition-colors">{igHandle(signup.instagram)}</a>
+        {/* Who brought them in. Only shown when there is an attribution, so a
+            business that walked in on its own does not carry an empty row --
+            and a referral whose creator record has gone still says so rather
+            than silently reading as unreferred. */}
+        {(signup.referralSource || signup.referredByHandle) && (
+          <p className="text-xs text-purple-300 flex items-center gap-1.5">
+            <Award className="w-3 h-3 shrink-0" />
+            {signup.referredByHandle
+              ? <>Referred by {igHandle(signup.referredByHandle)}</>
+              : <>Referred by an Ambassador{signup.referralCode ? ` \u00b7 ${signup.referralCode}` : ""}</>}
+          </p>
+        )}
         {signup.preferredContact && (
           <p className="text-xs">
             <span className="text-neutral-500">Preferred contact: </span>
