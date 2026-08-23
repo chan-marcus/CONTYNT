@@ -243,7 +243,12 @@ app.get("/make-server-f5961d0c/creator-portal/ambassador", async (c) => {
     const rows = refs ?? [];
     const stats = {
       businessesReferred: rows.length,
-      pendingReferrals: rows.filter((r: any) => r.reward_status === "pending").length,
+      // Anything not yet paid is pending, rather than matching the literal
+      // "pending": the referral insert leaves reward_status to the column
+      // default, so a business that just signed up under the link would drop
+      // out of this count if the default is ever null or renamed -- and the
+      // creator would see nothing for a referral they had just made.
+      pendingReferrals: rows.filter((r: any) => r.reward_status !== "paid").length,
       activeBusinesses: rows.filter((r: any) => !!r.subscription_active_at).length,
       rewardsEarned: rows.filter((r: any) => r.reward_status === "paid").reduce((s: number, r: any) => s + parseAmount(r.reward_amount), 0),
       rewardsPending: rows.filter((r: any) => r.reward_status !== "paid").reduce((s: number, r: any) => s + parseAmount(r.reward_amount), 0),
@@ -308,7 +313,9 @@ app.get("/make-server-f5961d0c/referral/:code", async (c) => {
 app.post("/make-server-f5961d0c/referral/:code/business", async (c) => {
   try {
     const code = c.req.param("code");
-    const { businessName, businessEmail, instagram: instagramRaw, city: cityRaw } = await c.req.json();
+    const { businessName, businessEmail, instagram: instagramRaw, city: cityRaw,
+            preferredContact: contactRaw } = await c.req.json();
+    const preferredContact = String(contactRaw ?? "").trim().slice(0, 40);
     const city = String(cityRaw ?? "").trim().slice(0, 80);
     if (!businessName || !businessEmail) return c.json({ error: "Business name and email are required" }, 400);
     // Optional on the wire so an older client still works, but rejected when
@@ -350,12 +357,20 @@ app.post("/make-server-f5961d0c/referral/:code/business", async (c) => {
     let createdBusiness = false;
     if (!biz) {
       const { data: made, error } = await db().from("business_signups_f5961d0c").insert({
-        business_name: name, email, instagram: handle, city, address: "", preferred_contact: "",
+        business_name: name, email, instagram: handle, city, address: "",
+        preferred_contact: preferredContact,
         referral_code: attribCode, referral_source: "ambassador", referred_by_creator: amb.creator_id,
       }).select("*").single();
       if (error) throw error;
       biz = made; createdBusiness = true;
-    } else if (handle && !String(biz.instagram ?? "").trim()) {
+    } else if (preferredContact && !String(biz.preferred_contact ?? "").trim()) {
+      // Gap filled, answer never overwritten -- the same rule the handle and
+      // the city below follow.
+      await db().from("business_signups_f5961d0c")
+        .update({ preferred_contact: preferredContact }).eq("id", biz.id);
+      biz = { ...biz, preferred_contact: preferredContact };
+    }
+    if (biz && !createdBusiness && handle && !String(biz.instagram ?? "").trim()) {
       // Same rule as the city below: fill a gap, never overwrite an answer.
       await db().from("business_signups_f5961d0c").update({ instagram: handle }).eq("id", biz.id);
       biz = { ...biz, instagram: handle };
@@ -366,11 +381,23 @@ app.post("/make-server-f5961d0c/referral/:code/business", async (c) => {
       await db().from("business_signups_f5961d0c").update({ city }).eq("id", biz.id);
       biz = { ...biz, city };
     }
-    if (biz && !createdBusiness && !biz.referral_code) {
-      // Existing business, first time attributed — do not overwrite an earlier referral.
-      await db().from("business_signups_f5961d0c").update({
+    // Attribution already on file comes in two shapes: a referral link sets a
+    // code and a creator, a card scan sets a creator and no code at all. This
+    // used to guard on the code alone, so a scanned lead read as unattributed
+    // and the next link click reassigned it to a different creator -- the exact
+    // thing the comment said it would not do.
+    //
+    // Any of the three fields counts as attributed, and they are written
+    // together or not at all: filling a missing code from a second creator
+    // while the first creator stays in referred_by_creator would leave a pair
+    // that disagrees about who earned it.
+    const alreadyAttributed = !!(biz.referral_code || biz.referred_by_creator || biz.referral_source);
+    if (biz && !createdBusiness && !alreadyAttributed) {
+      const attribution = {
         referral_code: attribCode, referral_source: "ambassador", referred_by_creator: amb.creator_id,
-      }).eq("id", biz.id);
+      };
+      await db().from("business_signups_f5961d0c").update(attribution).eq("id", biz.id);
+      biz = { ...biz, ...attribution };
     }
 
     // One referral row per (ambassador, business).
@@ -2690,9 +2717,58 @@ app.get("/make-server-f5961d0c/signups", async (c) => {
 // ─── Get business signups ─────────────────────────────────────────────────────
 app.get("/make-server-f5961d0c/business-signups", async (c) => {
   try {
-    const { data, error } = await db().from("business_signups_f5961d0c").select("id, business_name, instagram, email, city, address, preferred_contact, created_at, subscription_tier, feature_status, plan_clicks").order("created_at", { ascending: false });
+    const { data, error } = await db().from("business_signups_f5961d0c")
+      .select("id, business_name, instagram, email, city, address, preferred_contact, created_at, subscription_tier, feature_status, plan_clicks, referral_source, referral_code, referred_by_creator")
+      .order("created_at", { ascending: false });
     if (error) throw error;
-    return c.json({ signups: (data ?? []).map((r: any) => ({ id: r.id, businessName: r.business_name, instagram: r.instagram, email: r.email, city: r.city, address: r.address, preferredContact: r.preferred_contact, createdAt: r.created_at, subscriptionTier: r.subscription_tier || null, featureStatus: r.feature_status || null, planClicks: r.plan_clicks || 0 })), total: data?.length ?? 0 });
+    const rows = data ?? [];
+
+    // Who brought this business in. The row stores the creator's id; an id is
+    // not something anyone recognises, so it is resolved to the handle here
+    // rather than leaving the dashboard to look it up per card. One query for
+    // the whole page, and only for the ids actually referenced.
+    const creatorIds = [...new Set(rows.map((r: any) => r.referred_by_creator).filter(Boolean))];
+    const handleById: Record<string, string> = {};
+    if (creatorIds.length) {
+      const { data: creators } = await db().from("creator_signups_f5961d0c")
+        .select("id, instagram, instagram_handle").in("id", creatorIds);
+      for (const cr of (creators ?? [])) {
+        handleById[cr.id] = cr.instagram_handle || (cr.instagram || "").replace(/^@+/, "") || "";
+      }
+    }
+
+    // Some rows carry a referral code but no creator id -- older attributions,
+    // and anything written before the two were saved together. The code names
+    // the ambassador on its own, so it is resolved rather than leaving the card
+    // to say "an Ambassador" about someone we can identify.
+    const codesNeedingCreator = [...new Set(rows
+      .filter((r: any) => !r.referred_by_creator && r.referral_code)
+      .map((r: any) => r.referral_code))];
+    const handleByCode: Record<string, string> = {};
+    if (codesNeedingCreator.length) {
+      const { data: ambs } = await db().from("ambassadors_f5961d0c")
+        .select("referral_code, creator_instagram").in("referral_code", codesNeedingCreator);
+      for (const a of (ambs ?? [])) {
+        handleByCode[a.referral_code] = (a.creator_instagram || "").replace(/^@+/, "");
+      }
+    }
+
+    return c.json({
+      signups: rows.map((r: any) => ({
+        id: r.id, businessName: r.business_name, instagram: r.instagram, email: r.email,
+        city: r.city, address: r.address, preferredContact: r.preferred_contact,
+        createdAt: r.created_at, subscriptionTier: r.subscription_tier || null,
+        featureStatus: r.feature_status || null, planClicks: r.plan_clicks || 0,
+        referralSource: r.referral_source || null,
+        referralCode: r.referral_code || null,
+        // Empty when the creator row is gone but the attribution is not, so the
+        // card can still say it came from an Ambassador without naming one.
+        referredByHandle: r.referred_by_creator
+          ? (handleById[r.referred_by_creator] ?? "")
+          : (r.referral_code ? (handleByCode[r.referral_code] ?? "") : null),
+      })),
+      total: rows.length,
+    });
   } catch (e: any) { return c.json({ error: "Failed to fetch business signups", details: e.message }, 500); }
 });
 
