@@ -3522,7 +3522,10 @@ app.post("/make-server-f5961d0c/business-portal/submit-feature", async (c) => {
     const { bizToken, featureId, requestNotes, isNewRequest } = await c.req.json();
     const bizData = await businessFromToken(bizToken);
     if (!bizData) return c.json({ error: "Invalid token" }, 401);
-    const notes = requestNotes || "No specific requests, creator's choice";
+    // Stored blank when it is blank. Substituting a sentence here made an empty
+    // box indistinguishable from a business that had actually asked for the
+    // creator's choice, in the admin dashboard and to the creator.
+    const notes = String(requestNotes ?? "").trim();
     let resultFeatureId = featureId || "";
     if (isNewRequest || !featureId) {
       const bizInfoRes = await db().from("business_signups_f5961d0c").select("business_name, address, city").eq("id", bizData.businessId).single();
