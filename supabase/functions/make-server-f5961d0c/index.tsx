@@ -301,7 +301,13 @@ app.get("/make-server-f5961d0c/referral/:code", async (c) => {
     const code = c.req.param("code");
     const data = await ambassadorByAnyCode(code);
     if (!data || !data.enabled_status) return c.json({ valid: false });
-    return c.json({ valid: true, referralCode: data.referral_code, creatorInstagram: data.creator_instagram || "" });
+    // Same key the scan page gets. Both are in-person signups; the address
+    // behind a Places pick is the only place either flow learns a city.
+    return c.json({
+      valid: true, referralCode: data.referral_code,
+      creatorInstagram: data.creator_instagram || "",
+      placesKey: Deno.env.get("GOOGLE_PLACES_KEY") || "",
+    });
   } catch { return c.json({ valid: false }); }
 });
 
@@ -314,9 +320,14 @@ app.post("/make-server-f5961d0c/referral/:code/business", async (c) => {
   try {
     const code = c.req.param("code");
     const { businessName, businessEmail, instagram: instagramRaw, city: cityRaw,
-            preferredContact: contactRaw } = await c.req.json();
+            preferredContact: contactRaw, placeId: placeIdRaw, placeAddress: placeAddressRaw } = await c.req.json();
     const preferredContact = String(contactRaw ?? "").trim().slice(0, 40);
-    const city = String(cityRaw ?? "").trim().slice(0, 80);
+    const placeId = String(placeIdRaw ?? "").trim().slice(0, 200) || null;
+    const placeAddress = String(placeAddressRaw ?? "").trim().slice(0, 300) || null;
+    // The form no longer asks for a city. Google's address is where it comes
+    // from now, on the same terms as the scan page: read it if the shape holds,
+    // otherwise leave it empty rather than guess.
+    const city = String(cityRaw ?? "").trim().slice(0, 80) || cityFromFormattedAddress(placeAddressRaw);
     if (!businessName || !businessEmail) return c.json({ error: "Business name and email are required" }, 400);
     // Optional on the wire so an older client still works, but rejected when
     // present and unusable rather than stored as junk.
@@ -338,8 +349,17 @@ app.post("/make-server-f5961d0c/referral/:code/business", async (c) => {
     // form keys on: a business that signed up there and is now being referred
     // has to land on the same row, or its Features and quota split in two.
     let biz: any = null;
-    const byEmail = await db().from("business_signups_f5961d0c").select("*").ilike("email", email).limit(1);
-    biz = byEmail.data?.[0] ?? null;
+    if (placeId) {
+      // Ahead of email: two people at one business use two addresses, but the
+      // place is the place. The scan lead route already matches this way.
+      const { data } = await db().from("business_signups_f5961d0c")
+        .select("*").eq("place_id", placeId).maybeSingle();
+      biz = data ?? null;
+    }
+    if (!biz) {
+      const byEmail = await db().from("business_signups_f5961d0c").select("*").ilike("email", email).limit(1);
+      biz = byEmail.data?.[0] ?? null;
+    }
     if (!biz && handle) {
       // Compared normalised in memory for the same reason the signup form does
       // it: stored values include "@name" and full profile URLs, and Instagram
@@ -357,7 +377,9 @@ app.post("/make-server-f5961d0c/referral/:code/business", async (c) => {
     let createdBusiness = false;
     if (!biz) {
       const { data: made, error } = await db().from("business_signups_f5961d0c").insert({
-        business_name: name, email, instagram: handle, city, address: "",
+        business_name: name, email, instagram: handle, city,
+        address: placeAddress || "",
+        place_id: placeId, place_address: placeAddress,
         preferred_contact: preferredContact,
         referral_code: attribCode, referral_source: "ambassador", referred_by_creator: amb.creator_id,
       }).select("*").single();
@@ -374,6 +396,11 @@ app.post("/make-server-f5961d0c/referral/:code/business", async (c) => {
       // Same rule as the city below: fill a gap, never overwrite an answer.
       await db().from("business_signups_f5961d0c").update({ instagram: handle }).eq("id", biz.id);
       biz = { ...biz, instagram: handle };
+    }
+    if (biz && !createdBusiness && placeId && !biz.place_id) {
+      await db().from("business_signups_f5961d0c")
+        .update({ place_id: placeId, place_address: placeAddress }).eq("id", biz.id);
+      biz = { ...biz, place_id: placeId, place_address: placeAddress };
     }
     if (biz && !createdBusiness && city && !biz.city) {
       // An existing row created without one -- a scan lead, say -- gets the
@@ -2107,6 +2134,33 @@ async function sendFeatureDropBatch(opts: { creatorIds?: string[]; dryRun?: bool
     results,
   };
 }
+
+// Sends the real drop email, rendered exactly as a creator would receive it, to
+// one address of the admin's choosing. Nothing is stamped and no creator is
+// touched, so the whole path -- template, Postmark, stream, sender signature --
+// can be proven before it is pointed at anybody.
+app.post("/make-server-f5961d0c/admin/feature-drop/test", async (c) => {
+  try {
+    const body = await c.req.json().catch(() => ({}));
+    const to = String(body.to ?? "").trim().toLowerCase();
+    if (!to || !to.includes("@")) return c.json({ error: "Enter an address to send the test to." }, 400);
+    if (!POSTMARK_SERVER_TOKEN) return c.json({ error: "POSTMARK_SERVER_TOKEN is not set, so nothing can be sent." }, 400);
+
+    const { data: openFeatures } = await db().from("features_f5961d0c")
+      .select("id, city, status").eq("status", "available");
+    const liveCount = (openFeatures ?? []).length;
+    const supplied = Number(body.featureCount);
+    const count = Number.isInteger(supplied) && supplied >= 0 ? supplied : liveCount;
+    const cities = [...new Set((openFeatures ?? []).map((f: any) => cityLabel(f.city)).filter(Boolean))].sort();
+
+    // A real portal link would sign the recipient in as whichever creator it
+    // belonged to, so the test carries the signed-out portal instead.
+    const rendered = renderFeatureDropEmail({ instagram_handle: "there" }, `${SITE_ORIGIN}/app`, count, cities);
+    const sent = await postmarkSend({ to, ...rendered, stream: POSTMARK_STREAM });
+    if (!sent.ok) return c.json({ error: sent.error || "Postmark rejected the message." }, 502);
+    return c.json({ success: true, to, featureCount: count, liveCount, cities, subject: rendered.subject });
+  } catch (e: any) { return c.json({ error: "Test send failed", details: e.message }, 500); }
+});
 
 app.post("/make-server-f5961d0c/admin/feature-drop/send", async (c) => {
   try {

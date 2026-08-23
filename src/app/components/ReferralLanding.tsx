@@ -1,7 +1,8 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { motion } from "motion/react";
 import { CheckCircle, ArrowRight } from "lucide-react";
 import { projectId, publicAnonKey } from "/utils/supabase/info";
+import { usePlacesElement } from "../lib/usePlacesElement";
 
 const BASE = `https://${projectId}.supabase.co/functions/v1/make-server-f5961d0c`;
 const AUTH = { Authorization: `Bearer ${publicAnonKey}`, "Content-Type": "application/json" };
@@ -20,6 +21,10 @@ export function ReferralLanding({ code }: { code: string }) {
   const [name, setName] = useState("");
   const [instagram, setInstagram] = useState("");
   const [preferredContact, setPreferredContact] = useState("");
+  const [placesKey, setPlacesKey] = useState<string>("");
+  const [placeId, setPlaceId] = useState("");
+  const [placeAddress, setPlaceAddress] = useState("");
+  const placesHost = useRef<HTMLDivElement | null>(null);
   const [email, setEmail] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -27,10 +32,20 @@ export function ReferralLanding({ code }: { code: string }) {
   useEffect(() => {
     api(`/referral/${encodeURIComponent(code)}`)
       .then(r => r.json())
-      .then(d => { if (d?.valid) setCreator(d.creatorInstagram || ""); })
+      .then(d => { if (d?.valid) { setCreator(d.creatorInstagram || ""); setPlacesKey(d.placesKey || ""); } })
       .catch(() => {})
       .finally(() => setChecked(true));
   }, [code]);
+
+  // Picking the business from Places is what tells us the address, and the
+  // address is the only thing on this form that yields a city -- which is what
+  // feature matching runs on. Without a key the plain input below still
+  // captures the signup.
+  const placesReady = usePlacesElement(
+    placesKey || undefined, placesHost,
+    (p) => { setPlaceId(p.placeId); setPlaceAddress(p.address); if (p.name) setName(p.name); },
+    (v) => { setName(v); setPlaceId(""); setPlaceAddress(""); },
+  );
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -41,7 +56,7 @@ export function ReferralLanding({ code }: { code: string }) {
         method: "POST",
         body: JSON.stringify({
           businessName: name.trim(), instagram: instagram.trim(),
-          businessEmail: email.trim(), preferredContact,
+          businessEmail: email.trim(), preferredContact, placeId, placeAddress,
         }),
       });
       const d = await res.json().catch(() => null);
@@ -99,9 +114,14 @@ export function ReferralLanding({ code }: { code: string }) {
         </div>
 
         <form onSubmit={submit} className="space-y-2.5 bg-white/5 border border-white/10 rounded-2xl p-4">
-          <input value={name} onChange={e => setName(e.target.value)} required
-            placeholder="Business name"
-            className="w-full px-3.5 py-3 bg-white/10 border border-white/20 rounded-xl text-white text-[15px] placeholder:text-neutral-500 focus:outline-none focus:ring-2 focus:ring-white/25" />
+          {/* The Places widget mounts here when a key is configured; the plain
+              input below carries the field until then, and if it fails. */}
+          <div ref={placesHost} className={placesReady ? "contynt-places-host" : "hidden"} />
+          {!placesReady && (
+            <input value={name} onChange={e => setName(e.target.value)} required
+              placeholder="Business name"
+              className="w-full px-3.5 py-3 bg-white/10 border border-white/20 rounded-xl text-white text-[15px] placeholder:text-neutral-500 focus:outline-none focus:ring-2 focus:ring-white/25" />
+          )}
 
           {/* The @ is a prefix inside the box so this field shares a left edge
               with the others, and so nobody types the @ twice. */}
