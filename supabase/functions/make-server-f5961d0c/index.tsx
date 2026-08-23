@@ -613,6 +613,23 @@ const RESEND_COOLDOWN_MIN = 10;
 const VERIFY_ORIGIN = Deno.env.get("VERIFY_LINK_ORIGIN") || `${Deno.env.get("SUPABASE_URL") || ""}/functions/v1/make-server-f5961d0c`;
 const verifyLinkFor = (t: string) => `${VERIFY_ORIGIN}/portal/verify?t=${encodeURIComponent(t)}`;
 
+// One-click unsubscribe for the announcement stream. Gmail and Yahoo both
+// require a working List-Unsubscribe on bulk mail now, and a broadcast without
+// one is a spam complaint waiting to happen: the only control left to a reader
+// is the "report spam" button, and that is charged against the sending domain
+// rather than against the message.
+//
+// Signed rather than stored, so nothing has to be issued, kept or expired. The
+// digest covers the creator id under a purpose string, which also stops it
+// being replayed against any other route signing with the same salt.
+async function unsubSigFor(creatorId: string) {
+  const salt = Deno.env.get("LOGIN_CODE_SALT") || ADMIN_SECRET || "contynt";
+  const buf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(`${salt}:unsubscribe:${creatorId}`));
+  return [...new Uint8Array(buf)].map(b => b.toString(16).padStart(2, "0")).join("").slice(0, 32);
+}
+const unsubLinkFor = async (creatorId: string) =>
+  `${VERIFY_ORIGIN}/portal/unsubscribe?c=${encodeURIComponent(creatorId)}&s=${await unsubSigFor(creatorId)}`;
+
 // Served to the client from /creator-portal/confirm-data rather than duplicated
 // in the frontend bundle: the server validates against this list, so the form
 // and the validator can never drift apart.
@@ -1709,7 +1726,7 @@ function postmarkAuthorized(c: any): boolean {
   return false;
 }
 
-const POSTMARK_TYPES = new Set(["Delivery", "Bounce", "SpamComplaint", "Open", "Click"]);
+const POSTMARK_TYPES = new Set(["Delivery", "Bounce", "SpamComplaint", "Open", "Click", "SubscriptionChange"]);
 
 async function recordEmailEvent(ev: any) {
   const type = String(ev?.RecordType ?? "");
@@ -1771,6 +1788,23 @@ async function recordEmailEvent(ev: any) {
       await logBusinessEvent(businessId, eventType, detail);
     }
   }
+  // Postmark keeps its own suppression list, and its List-Unsubscribe handler
+  // and dashboard both write to it without telling this database. Without this,
+  // a creator who unsubscribed through their mail client would still read as
+  // subscribed here and still be counted into every future batch -- and every
+  // one of those sends would be dropped at Postmark, invisibly.
+  if (type === "SubscriptionChange") {
+    const off = ev.SuppressSending === true;
+    const detail = { via: "postmark", reason: ev.SuppressionReason ?? null, stream: ev.MessageStream ?? null };
+    if (creatorId) {
+      await db().from("creator_signups_f5961d0c").update({ notify_email: !off }).eq("id", creatorId);
+      await logCreatorEvent(creatorId, off ? "email_unsubscribed" : "email_resubscribed", detail);
+    }
+    if (businessId) {
+      await logBusinessEvent(businessId, off ? "email_unsubscribed" : "email_resubscribed", detail);
+    }
+  }
+
   // Delivery, Open and Click are logged and nothing more. Apple Mail Privacy
   // Protection prefetches images, so an Open means a mail client touched the
   // message, not that a human read it. Letting it advance verification_status
@@ -2324,6 +2358,82 @@ const HANDOFF_SCRIPT =
 // look at lives in the SPA: /app?view=cards and /app?view=qr, which read the
 // code from the JSON route below.
 
+// Unsubscribe from feature announcements.
+//
+// Split across GET and POST for exactly the reason /portal/verify is: security
+// scanners and link previewers fetch every GET in a message before a human
+// sees it, so a GET that unsubscribed would silently mute creators who never
+// touched the link. GET asks, POST acts.
+//
+// POST is also the RFC 8058 one-click endpoint. Gmail and Yahoo post
+// "List-Unsubscribe=One-Click" here with nobody watching, and that has to work
+// with no confirmation step, so the two paths deliberately end in the same
+// place rather than the button being the only way through.
+async function creatorForUnsub(c: any) {
+  const id = String(c.req.query("c") || "");
+  const sig = String(c.req.query("s") || "");
+  if (!id || !sig) return null;
+  if (!timingSafeEqual(sig, await unsubSigFor(id))) return null;
+  const { data: row } = await db().from("creator_signups_f5961d0c")
+    .select("id, email, notify_email").eq("id", id).maybeSingle();
+  return row ?? null;
+}
+
+const unsubDeadLink = () => htmlPage({
+  title: "This link is not valid", noindex: true, status: 400,
+  body: `<h1>This link is not valid</h1>
+    <p>Your email app may have cut it short. You can turn feature emails off from your portal at any time.</p>`,
+});
+
+app.get("/make-server-f5961d0c/portal/unsubscribe", async (c) => {
+  try {
+    const row = await creatorForUnsub(c);
+    if (!row) return unsubDeadLink();
+    const who = esc(row.email || "this address");
+    if (row.notify_email === false) {
+      return htmlPage({
+        title: "Already unsubscribed", noindex: true,
+        body: `<h1>You are unsubscribed</h1><p>We are not sending feature emails to ${who}.</p>`,
+      });
+    }
+    return htmlPage({
+      title: "Unsubscribe", noindex: true,
+      body: `<h1>Stop feature emails?</h1>
+        <p>We will stop emailing ${who} about new features.</p>
+        <form method="POST" action="${VERIFY_ORIGIN}/portal/unsubscribe?c=${encodeURIComponent(row.id)}&amp;s=${await unsubSigFor(row.id)}">
+          <button type="submit">Unsubscribe</button>
+        </form>
+        <p class="note">This stops every email we send, including the reminder before a Feature you are holding expires.</p>`,
+    });
+  } catch (e: any) {
+    console.error("[unsubscribe] GET failed:", e?.message ?? e);
+    return unsubDeadLink();
+  }
+});
+
+app.post("/make-server-f5961d0c/portal/unsubscribe", async (c) => {
+  try {
+    const row = await creatorForUnsub(c);
+    if (!row) return unsubDeadLink();
+    // Re-running it is not an error: a mail client may one-click a link the
+    // creator already used, and answering that with a failure page would be
+    // both wrong and alarming.
+    if (row.notify_email !== false) {
+      await db().from("creator_signups_f5961d0c").update({ notify_email: false }).eq("id", row.id);
+      await logCreatorEvent(row.id, "email_unsubscribed", { via: "link" });
+    }
+    return htmlPage({
+      title: "Unsubscribed", noindex: true,
+      body: `<h1>Unsubscribed</h1>
+        <p>We have stopped sending email to ${esc(row.email || "this address")}.</p>
+        <p class="note">Changed your mind? Turn emails back on from your portal.</p>`,
+    });
+  } catch (e: any) {
+    console.error("[unsubscribe] POST failed:", e?.message ?? e);
+    return unsubDeadLink();
+  }
+});
+
 // Cards for the portal's "Print your card" step.
 app.get("/make-server-f5961d0c/portal/cards", async (c) => {
   try {
@@ -2610,13 +2720,18 @@ Open your portal:
 ${prettyLink(link)}
 
 CONTYNT
-San Francisco`;
+San Francisco${unsubLink ? `\n\nStop these emails: ${unsubLink}` : ""}`;
 
   const html = emailShell({
     preheader: count > 0
       ? `${count} ${plural} ${isAre} open in your portal right now.`
       : `New features just landed in ${where}.`,
-    footerNote: "You are receiving this because you asked to hear about features by email.",
+    // The visible link matters as much as the header. The header is what Gmail
+    // grades, but a reader who cannot find a way out reaches for "report spam"
+    // instead, and one complaint costs more than every unsubscribe it prevents.
+    footerNote: unsubLink
+      ? `You are receiving this because you asked to hear about features by email. <a href="${esc(unsubLink)}" style="color:#8a8a8a;text-decoration:underline;">Unsubscribe</a>.`
+      : "You are receiving this because you asked to hear about features by email.",
     body:
 `      <p style="margin:0 0 16px 0;font-size:21px;line-height:1.35;font-weight:700;color:#0a0a0a;">New features just dropped</p>
       <p style="margin:0 0 14px 0;">Hi ${esc(first)},</p>
@@ -2740,7 +2855,7 @@ async function mailClaimCreator(opts: {
 // on the same stream as the announcement email.
 const POSTMARK_TRANSACTIONAL_STREAM = Deno.env.get("POSTMARK_TRANSACTIONAL_STREAM") || "outbound";
 
-async function postmarkSend(opts: { to: string; subject: string; html: string; text: string; stream: string }) {
+async function postmarkSend(opts: { to: string; subject: string; html: string; text: string; stream: string; headers?: Record<string, string> }) {
   if (!POSTMARK_SERVER_TOKEN) return { ok: false, error: "POSTMARK_SERVER_TOKEN not set", payload: {} as any };
   try {
     const res = await fetch("https://api.postmarkapp.com/email", {
@@ -2752,6 +2867,9 @@ async function postmarkSend(opts: { to: string; subject: string; html: string; t
       body: JSON.stringify({
         From: POSTMARK_FROM_HEADER, To: opts.to, Subject: opts.subject,
         HtmlBody: opts.html, TextBody: opts.text, MessageStream: opts.stream,
+        ...(opts.headers && Object.keys(opts.headers).length
+          ? { Headers: Object.entries(opts.headers).map(([Name, Value]) => ({ Name, Value })) }
+          : {}),
       }),
     });
     const payload = await res.json().catch(() => ({}));
@@ -2812,7 +2930,7 @@ async function sendVerificationBatch(opts: {
       // left them holding a dead link and no replacement. Failing this way
       // round costs nothing -- their existing link keeps working and the next
       // sweep tries again.
-      const sent = await postmarkSend({ to: email, ...rendered, stream: POSTMARK_STREAM });
+      const sent = await postmarkSend({ to: email, ...rendered, stream: POSTMARK_TRANSACTIONAL_STREAM });
       const payload = sent.payload;
       if (!sent.ok) { results.push({ id: r.id, email, error: sent.error }); continue; }
 
@@ -2902,7 +3020,8 @@ async function sendFeatureDropBatch(opts: { creatorIds?: string[]; dryRun?: bool
     // already sitting in their inbox.
     const portalToken = await ensureCreatorPortalToken(r);
     const link = `${SITE_ORIGIN}/app?creator=${encodeURIComponent(portalToken)}`;
-    const rendered = renderFeatureDropEmail(r, link, count, cities);
+    const unsubLink = await unsubLinkFor(r.id);
+    const rendered = renderFeatureDropEmail(r, link, count, cities, unsubLink);
 
     if (opts.dryRun) {
       results.push({ id: r.id, email, link, subject: rendered.subject, dryRun: true });
@@ -2914,7 +3033,16 @@ async function sendFeatureDropBatch(opts: { creatorIds?: string[]; dryRun?: bool
     }
 
     try {
-      const sent = await postmarkSend({ to: email, ...rendered, stream: POSTMARK_STREAM });
+      // RFC 8058. Gmail and Yahoo check for both of these on bulk mail, and the
+      // pair is what makes a mail client show its own Unsubscribe control next
+      // to the sender -- the button that is not "report spam".
+      const sent = await postmarkSend({
+        to: email, ...rendered, stream: POSTMARK_STREAM,
+        headers: {
+          "List-Unsubscribe": `<${unsubLink}>`,
+          "List-Unsubscribe-Post": "List-Unsubscribe=One-Click",
+        },
+      });
       if (!sent.ok) { results.push({ id: r.id, email, error: sent.error }); continue; }
       // Stamped only after Postmark accepted, so a failed send does not burn the
       // cooldown and the batch can simply be re-run.
@@ -2970,8 +3098,20 @@ app.post("/make-server-f5961d0c/admin/feature-drop/test", async (c) => {
 
     // A real portal link would sign the recipient in as whichever creator it
     // belonged to, so the test carries the signed-out portal instead.
-    const rendered = renderFeatureDropEmail({ instagram_handle: "there" }, `${SITE_ORIGIN}/app`, count, cities);
-    const sent = await postmarkSend({ to, ...rendered, stream: POSTMARK_STREAM });
+    const exampleUnsub = `${VERIFY_ORIGIN}/portal/unsubscribe?c=example&s=example`;
+    const rendered = renderFeatureDropEmail({ instagram_handle: "there" }, `${SITE_ORIGIN}/app`, count, cities, exampleUnsub);
+    // Carries the real headers, not just the real body. Postmark rejecting a
+    // custom List-Unsubscribe is the one failure this test can catch that
+    // reading the message cannot, and it is better caught here than on a batch.
+    // The link itself is deliberately inert: this goes to whoever pressed the
+    // button, and a working one would unsubscribe a creator who is not them.
+    const sent = await postmarkSend({
+      to, ...rendered, stream: POSTMARK_STREAM,
+      headers: {
+        "List-Unsubscribe": `<${exampleUnsub}>`,
+        "List-Unsubscribe-Post": "List-Unsubscribe=One-Click",
+      },
+    });
     if (!sent.ok) return c.json({ error: sent.error || "Postmark rejected the message." }, 502);
     return c.json({ success: true, to, featureCount: count, liveCount, cities, subject: rendered.subject });
   } catch (e: any) { return c.json({ error: "Test send failed", details: e.message }, 500); }
