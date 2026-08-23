@@ -1718,7 +1718,7 @@ export function CreatorPortal({ token, impersonating }: { token: string; imperso
         {/* Activity tab — every completed Feature, the creator's own included */}
         {portalTab === "activity" && (
           <div className="w-full flex flex-col gap-4">
-            <p className="text-xs text-neutral-500">Features recently claimed, including your own.</p>
+            <p className="text-xs text-neutral-500">Features recently claimed.</p>
             {[
               // The creator's own completed Features belong here too. They stay
               // unmasked and read "Claimed by You" -- there is nothing to hide
