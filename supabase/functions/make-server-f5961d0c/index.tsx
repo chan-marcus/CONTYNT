@@ -1315,9 +1315,29 @@ app.post("/make-server-f5961d0c/webhooks/stripe", async (c) => {
   // secret: the signature header is a MAC over a body Stripe already sent.
   try {
     let peek: any = null;
-    try { const p = JSON.parse(raw); peek = { type: p?.type ?? null, id: p?.id ?? null,
-      hasMetadataBusinessId: !!p?.data?.object?.metadata?.business_id,
-      clientReferenceId: p?.data?.object?.client_reference_id ?? null }; } catch { /* not JSON */ }
+    try {
+      const p = JSON.parse(raw);
+      const o = p?.data?.object ?? {};
+      peek = {
+        type: p?.type ?? null, id: p?.id ?? null,
+        apiVersion: p?.api_version ?? null,
+        hasMetadataBusinessId: !!o?.metadata?.business_id,
+        clientReferenceId: o?.client_reference_id ?? null,
+        // Stripe has moved subscription period fields between versions, so the
+        // shape is recorded rather than assumed. Field names only where the
+        // value is large; the timestamps themselves are the point.
+        sub: p?.type?.startsWith?.("customer.subscription") ? {
+          status: o?.status ?? null,
+          cancelAtPeriodEnd: o?.cancel_at_period_end ?? null,
+          cancelAt: o?.cancel_at ?? null,
+          canceledAt: o?.canceled_at ?? null,
+          currentPeriodEnd: o?.current_period_end ?? null,
+          itemPeriodEnd: o?.items?.data?.[0]?.current_period_end ?? null,
+          cancellationDetails: o?.cancellation_details ?? null,
+          topLevelKeys: Object.keys(o ?? {}),
+        } : null,
+      };
+    } catch { /* not JSON */ }
     await kv.set("stripehook_last", {
       at: new Date().toISOString(),
       signatureValid: valid,
@@ -1366,15 +1386,24 @@ app.post("/make-server-f5961d0c/webhooks/stripe", async (c) => {
         // cancellation is visible instead of a tier that vanishes one morning.
         if (!businessId) break;
         const live = ["active", "trialing", "past_due"].includes(String(obj.status));
-        const endsAt = obj.cancel_at_period_end && obj.current_period_end
-          ? new Date(obj.current_period_end * 1000).toISOString()
-          : null;
+
+        // Read from three places on purpose. Stripe's newer API versions
+        // express "cancel at the end of the period" as a cancel_at timestamp
+        // and leave cancel_at_period_end false -- so the boolean alone reports
+        // no cancellation at all -- and they moved current_period_end off the
+        // subscription onto its items. Older versions do the opposite. Taking
+        // whichever is present keeps this working across both.
+        const itemPeriodEnd = obj?.items?.data?.[0]?.current_period_end ?? null;
+        const periodEnd = obj.current_period_end ?? itemPeriodEnd;
+        const cancelAtTs = obj.cancel_at ?? (obj.cancel_at_period_end ? periodEnd : null);
+        const endsAt = cancelAtTs ? new Date(Number(cancelAtTs) * 1000).toISOString() : null;
+
         await db().from("business_signups_f5961d0c")
           .update({ subscription_tier: live ? tier : null, subscription_ends_at: endsAt })
           .eq("id", businessId);
         await logBusinessEvent(businessId,
-          obj.cancel_at_period_end ? "subscription_cancel_scheduled" : "subscription_updated",
-          { tier, status: obj.status, endsAt });
+          endsAt ? "subscription_cancel_scheduled" : "subscription_updated",
+          { tier, status: obj.status, endsAt, reason: obj?.cancellation_details?.reason ?? null });
         break;
       }
       case "customer.subscription.deleted": {
