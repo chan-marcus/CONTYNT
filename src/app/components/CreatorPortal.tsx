@@ -744,7 +744,7 @@ function FeatureCard({ feature, claim, token, onClaim, onUnclaim, onAccept, onSu
                 </div>
                 <div className="bg-green-500/10 border border-green-500/20 rounded-xl px-4 py-4 space-y-3 text-center">
                   <CheckCircle className="w-7 h-7 text-green-400 mx-auto" />
-                  <p className="text-sm font-semibold text-white">You've been selected for this Feature!</p>
+                  <p className="text-sm font-semibold text-white">You've been selected for this feature!</p>
                   <p className="text-xs text-neutral-400">Accept within 24 hours or the offer expires.</p>
                   {acceptExpires && (
                     <div className="text-xs text-yellow-400">
@@ -802,7 +802,7 @@ function FeatureCard({ feature, claim, token, onClaim, onUnclaim, onAccept, onSu
           {cardState === "claimed" && !isExpired && <>
             <button type="button" onClick={() => setExpanded(v => !v)}
               aria-expanded={expanded}
-              aria-label={expanded ? "Collapse Feature details" : "Expand Feature details"}
+              aria-label={expanded ? "Collapse feature details" : "Expand feature details"}
               className="w-full text-left flex items-start justify-between gap-3 rounded-xl focus:outline-none focus-visible:ring-2 focus-visible:ring-white/30">
               <div>
                 <p className="font-semibold text-white">{feature.businessName}</p>
@@ -1560,7 +1560,7 @@ export function CreatorPortal({ token, impersonating }: { token: string; imperso
               <p className="text-sm font-medium text-white">How it Works</p>
             </div>
             <div className="space-y-2 text-xs text-neutral-400">
-              <p><span className="text-white font-medium">1. Request</span> — Pick a Feature near you. Only request it if you're ready to film it.</p>
+              <p><span className="text-white font-medium">1. Request</span> — Pick a feature near you. Only request it if you're ready to film it.</p>
               <p><span className="text-white font-medium">2. Get Selected</span> — If the business picks you, you'll get a notification to start.</p>
               <p><span className="text-white font-medium">3. Film and Post</span> — Shoot at the location, hit the requirements and post your Reel within 5 days.</p>
               <p><span className="text-white font-medium">4. Submit</span> — Drop your Reel URL for review.</p>

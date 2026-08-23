@@ -14,7 +14,7 @@ const PURPLE_CARD = "bg-purple-500/10 border border-purple-400/25 rounded-2xl";
 const FIELD = "w-full px-3 py-2.5 bg-white/10 border border-white/20 rounded-xl text-white text-sm placeholder:text-neutral-500 focus:outline-none focus:ring-2 focus:ring-white/20";
 
 const AMBASSADOR_COPY =
-  "When you shoot a Feature, print a card from your portal or pull up your QR code, and hand it " +
+  "When you shoot a feature, print a card from your portal or pull up your QR code, and hand it " +
   "to the owner or whoever is working on your way out. If that spot comes on board, you earn an " +
   "extra $" + REFERRAL_REWARD + "!";
 

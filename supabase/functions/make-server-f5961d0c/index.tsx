@@ -514,6 +514,24 @@ const SF_NEIGHBORHOODS = [
   "Tenderloin", "West Portal",
 ];
 
+// Google's formattedAddress is the only place a scan lead carries a location,
+// and city is what Feature matching runs on. The shape is reliably
+// "street, city, region postcode, country", so the city is the second field
+// from the front -- taken from the front rather than counting back, because the
+// tail varies: some addresses carry no postcode, some no country.
+//
+// Returns "" when the shape does not hold. An empty city is a gap an admin can
+// see and fill; a wrong one silently files the business in the wrong market.
+function cityFromFormattedAddress(raw: any): string {
+  const parts = String(raw ?? "").split(",").map(p => p.trim()).filter(Boolean);
+  if (parts.length < 3) return "";
+  const city = parts[1];
+  // A house number or a postcode in this slot means the address was not in the
+  // expected shape, so nothing is guessed from it.
+  if (!city || /\d/.test(city)) return "";
+  return city;
+}
+
 // Accepts "@jane", "jane", "instagram.com/jane/", "https://www.instagram.com/jane?hl=en".
 // Returns null when what is left is not a legal handle, so the caller can reject
 // rather than silently storing garbage.
@@ -865,7 +883,7 @@ app.post("/make-server-f5961d0c/creator-portal/confirm", async (c) => {
     if (body.maxFeaturesPerWeek !== undefined && body.maxFeaturesPerWeek !== null) {
       const capacity = Number(body.maxFeaturesPerWeek);
       if (!Number.isInteger(capacity) || capacity < 1 || capacity > 4) {
-        return c.json({ error: "Choose how many Features you can take per week." }, 400);
+        return c.json({ error: "Choose how many features you can take per week." }, 400);
       }
       optional.max_features_per_week = capacity;
     }
@@ -1366,7 +1384,8 @@ app.post("/make-server-f5961d0c/scan/:code/lead", async (c) => {
       const patch: Record<string, unknown> = {};
       if (business.lead_status === "prospect" || business.lead_status == null) patch.lead_status = "lead";
       if (placeId && !business.place_id) { patch.place_id = placeId; patch.place_address = placeAddress; }
-      if (city && !business.city) patch.city = city;
+      const derived = city || cityFromFormattedAddress(placeAddress);
+      if (derived && !business.city) patch.city = derived;
       if (handle && !String(business.instagram ?? "").trim()) patch.instagram = handle;
       if (Object.keys(patch).length) {
         await db().from("business_signups_f5961d0c").update(patch).eq("id", business.id);
@@ -1384,7 +1403,10 @@ app.post("/make-server-f5961d0c/scan/:code/lead", async (c) => {
         // creator filming one town over under the wrong place -- worse than
         // empty, because city is what feature matching runs on and a wrong
         // answer is not visibly missing. The column is NOT NULL, so "".
-        city,
+        // Whatever the form sent, else whatever Google's address yields, else
+        // nothing. Still never the creator's own city: they may be filming a
+        // town over, and a wrong answer here is not visibly missing.
+        city: city || cityFromFormattedAddress(placeAddress),
         address: placeAddress || "",
         place_id: placeId,
         place_address: placeAddress,
@@ -1848,7 +1870,7 @@ function renderFeatureDropEmail(row: any, link: string, count: number, cities: s
   const text =
 `Hi ${first},
 
-We just released new Features in ${where}!${openLine}
+We just released new features in ${where}!${openLine}
 
 Features go first come, first served!
 
@@ -1861,19 +1883,19 @@ San Francisco`;
   const html = emailShell({
     preheader: count > 0
       ? `${count} ${plural} ${isAre} open in your portal right now.`
-      : `New Features just landed in ${where}.`,
-    footerNote: "You are receiving this because you asked to hear about Features by email.",
+      : `New features just landed in ${where}.`,
+    footerNote: "You are receiving this because you asked to hear about features by email.",
     body:
-`      <p style="margin:0 0 16px 0;font-size:21px;line-height:1.35;font-weight:700;color:#0a0a0a;">New Features just dropped</p>
+`      <p style="margin:0 0 16px 0;font-size:21px;line-height:1.35;font-weight:700;color:#0a0a0a;">New features just dropped</p>
       <p style="margin:0 0 14px 0;">Hi ${esc(first)},</p>
-      <p style="margin:0 0 14px 0;">We just released new Features in ${esc(where)}!${count > 0 ? ` There ${isAre} <strong>${count} ${plural}</strong> open in your portal right now.` : ""}</p>
+      <p style="margin:0 0 14px 0;">We just released new features in ${esc(where)}!${count > 0 ? ` There ${isAre} <strong>${count} ${plural}</strong> open in your portal right now.` : ""}</p>
       <p style="margin:0;">Features go first come, first served!</p>
 ${emailButton(link, "Open your portal")}
       <p style="margin:0 0 6px 0;font-size:13px;color:#8a8a8a;">Or paste this into your browser:</p>
       <p style="margin:0;font-size:13px;word-break:break-all;"><a href="${esc(link)}" style="color:#525252;">${esc(prettyLink(link))}</a></p>`,
   });
 
-  return { text, html, subject: `New Features just dropped in ${where}` };
+  return { text, html, subject: `New features just dropped in ${where}` };
 }
 
 // Postmark separates broadcast and transactional streams, and sending on the

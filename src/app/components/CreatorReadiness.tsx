@@ -176,11 +176,11 @@ function askFeatureCount(recipients: number, preview: boolean): number | null {
   const what = preview
     ? `Preview the drop for ${recipients} selected creator${recipients === 1 ? "" : "s"}.`
     : `Send the drop to ${recipients} selected creator${recipients === 1 ? "" : "s"}. This is real email and cannot be recalled.`;
-  const raw = window.prompt(`How many Features are in this drop?\n\nThis is the number the email will say.\n\n${what}`, "");
+  const raw = window.prompt(`How many features are in this drop?\n\nThis is the number the email will say.\n\n${what}`, "");
   if (raw === null) return null;
   const n = Number(raw.trim());
   if (!Number.isInteger(n) || n < 0 || n > 999) {
-    window.alert("Enter a whole number of Features, 0 to 999.");
+    window.alert("Enter a whole number of features, 0 to 999.");
     return null;
   }
   return n;
@@ -369,7 +369,7 @@ export function CreatorReadiness({ data, onSend, onSendFeatureDrop, busy, health
         <button onClick={() => { const n = askFeatureCount(ids.length, false); if (n !== null) onSendFeatureDrop(ids, false, n); }}
           disabled={busy || !ids.length || !canSend} title={sendBlocked}
           className="flex items-center gap-1.5 px-3 py-2 text-xs rounded-xl bg-purple-500 text-white font-semibold hover:bg-purple-400 transition-all disabled:opacity-40">
-          <Megaphone className="w-3.5 h-3.5" />Send Feature drop
+          <Megaphone className="w-3.5 h-3.5" />Send feature drop
         </button>
 
         <button onClick={exportCsv} disabled={!rows.length}

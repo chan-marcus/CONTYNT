@@ -7,7 +7,7 @@ const faqs = [
   },
   {
     question: "How does payment work?",
-    answer: "You're paid per approved Feature posted.",
+    answer: "You're paid per approved feature posted.",
   },
   {
     question: "Which platforms does Contynt support?",
