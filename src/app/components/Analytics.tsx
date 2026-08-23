@@ -951,6 +951,26 @@ export function Analytics({ adminToken }: { adminToken?: string } = {}) {
     finally { setSendBusy(false); }
   }, []);
 
+  // Corrects the app against Stripe when a webhook never arrived. Previews by
+  // default, because it writes what people are paying for.
+  const syncSubscriptions = useCallback(async (dryRun: boolean) => {
+    setSendBusy(true);
+    try {
+      const res = await apiFetch("/admin/stripe/sync-subscriptions", {
+        method: "POST", body: JSON.stringify({ dryRun }),
+      });
+      const d = await res.json().catch(() => null);
+      if (!res.ok || !d?.success) { window.alert(d?.error || "Subscription sync failed."); return; }
+      const lines = (d.results || []).map((r: any) =>
+        r.error ? `${r.business}: ${r.error}`
+        : r.unchanged ? `${r.business}: already correct (${r.status})`
+        : `${r.business}: ${r.status} → tier ${r.to?.tier ?? "none"}${r.to?.endsAt ? `, ends ${String(r.to.endsAt).slice(0, 10)}` : ""}`);
+      window.alert(`${dryRun ? "Preview" : "Synced from Stripe"}\n\n${lines.join("\n") || "(no businesses with a Stripe customer)"}`);
+      if (!dryRun) await fetchAll();
+    } catch { window.alert("Could not reach the server."); }
+    finally { setSendBusy(false); }
+  }, []);
+
   const ambAction = async (id: string, path: string, body: object) => {
     setAmbBusy(id);
     await apiFetch(path, { method: "POST", body: JSON.stringify(body) }).catch(() => {});
@@ -1296,6 +1316,15 @@ export function Analytics({ adminToken }: { adminToken?: string } = {}) {
             <button onClick={generateAdminLink}
               className="flex items-center gap-1.5 px-3 py-2 bg-white text-neutral-900 rounded-lg hover:bg-neutral-100 transition-all text-sm">
               <Link className="w-3.5 h-3.5" />Generate Private Link
+            </button>
+            <button onClick={() => syncSubscriptions(true)} disabled={sendBusy}
+              title="Compare every business against Stripe, without writing"
+              className="flex items-center gap-1.5 px-3 py-2 bg-white/10 text-neutral-300 rounded-lg hover:bg-white/15 transition-all text-sm disabled:opacity-40">
+              Check subscriptions
+            </button>
+            <button onClick={() => syncSubscriptions(false)} disabled={sendBusy}
+              className="flex items-center gap-1.5 px-3 py-2 bg-indigo-500/20 border border-indigo-400/40 text-indigo-100 rounded-lg hover:bg-indigo-500/30 transition-all text-sm disabled:opacity-40">
+              Sync from Stripe
             </button>
             <button onClick={() => syncStripePrices(true)} disabled={sendBusy}
               title="Show which plan prices exist in Stripe, without creating any"

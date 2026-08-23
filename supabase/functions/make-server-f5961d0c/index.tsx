@@ -1286,6 +1286,82 @@ app.post("/make-server-f5961d0c/business-portal/billing", async (c) => {
   } catch (e: any) { return c.json({ error: "Could not open billing", details: e.message }, 500); }
 });
 
+// What a Stripe subscription actually says, in one place. Read from three
+// fields on purpose: newer API versions express "cancel at the end of the
+// period" as a cancel_at timestamp and leave cancel_at_period_end false -- so
+// the boolean alone reports no cancellation at all -- and they moved
+// current_period_end off the subscription onto its items. Older versions do the
+// opposite. Shared by the webhook and the reconcile below so the push and the
+// pull can never disagree about the same subscription.
+function readSubscriptionState(sub: any) {
+  const itemPeriodEnd = sub?.items?.data?.[0]?.current_period_end ?? null;
+  const periodEnd = sub?.current_period_end ?? itemPeriodEnd;
+  const cancelAtTs = sub?.cancel_at ?? (sub?.cancel_at_period_end ? periodEnd : null);
+  return {
+    live: ["active", "trialing", "past_due"].includes(String(sub?.status)),
+    tier: sub?.metadata?.contynt_tier ?? null,
+    endsAt: cancelAtTs ? new Date(Number(cancelAtTs) * 1000).toISOString() : null,
+    status: sub?.status ?? null,
+  };
+}
+
+// Pulls the current truth from Stripe for every business with a customer, and
+// writes what it finds. A webhook that never arrived -- wrong mode, endpoint
+// added late, a delivery that failed every retry -- leaves the app quietly out
+// of step with what people are paying, and nothing else here can notice. This
+// is how that gets corrected without waiting for the next billing event.
+app.post("/make-server-f5961d0c/admin/stripe/sync-subscriptions", async (c) => {
+  try {
+    const body = await c.req.json().catch(() => ({}));
+    const dryRun = !!body.dryRun;
+    if (!STRIPE_SECRET_KEY) return c.json({ error: "STRIPE_SECRET_KEY is not set on the server." }, 400);
+
+    const { data: rows } = await db().from("business_signups_f5961d0c")
+      .select("id, business_name, subscription_tier, subscription_ends_at, stripe_customer_id")
+      .not("stripe_customer_id", "is", null);
+
+    const results: any[] = [];
+    for (const b of (rows ?? [])) {
+      const subs = await stripeCall("GET", "subscriptions", { customer: b.stripe_customer_id, status: "all", limit: 10 });
+      if (!subs.ok) { results.push({ business: b.business_name, error: subs.error }); continue; }
+
+      // The one that still grants something, else the most recent, so a
+      // business with an old cancelled subscription beside a live one is read
+      // from the live one.
+      const all = subs.data?.data ?? [];
+      const chosen = all.find((x: any) => readSubscriptionState(x).live) ?? all[0] ?? null;
+      const state = chosen ? readSubscriptionState(chosen) : { live: false, tier: null, endsAt: null, status: "none" };
+
+      const tier = state.live ? state.tier : null;
+      const endsAt = state.live ? state.endsAt : null;
+      const changed = (b.subscription_tier ?? null) !== (tier ?? null)
+        || (b.subscription_ends_at ?? null) !== (endsAt ?? null);
+
+      if (!changed) { results.push({ business: b.business_name, status: state.status, unchanged: true }); continue; }
+      if (dryRun) {
+        results.push({ business: b.business_name, status: state.status,
+          from: { tier: b.subscription_tier ?? null, endsAt: b.subscription_ends_at ?? null },
+          to: { tier, endsAt }, wouldUpdate: true });
+        continue;
+      }
+      await db().from("business_signups_f5961d0c")
+        .update({ subscription_tier: tier, subscription_ends_at: endsAt }).eq("id", b.id);
+      await logBusinessEvent(b.id, "subscription_reconciled", { status: state.status, tier, endsAt });
+      results.push({ business: b.business_name, status: state.status, to: { tier, endsAt }, updated: true });
+    }
+
+    return c.json({
+      success: true, dryRun,
+      considered: (rows ?? []).length,
+      updated: results.filter(r => r.updated).length,
+      wouldUpdate: results.filter(r => r.wouldUpdate).length,
+      unchanged: results.filter(r => r.unchanged).length,
+      failed: results.filter(r => r.error).length,
+      results,
+    });
+  } catch (e: any) { return c.json({ error: "Subscription sync failed", details: e.message }, 500); }
+});
+
 // Stripe signs every webhook. Without checking it, this endpoint is a public
 // route that upgrades any business named in its body, so an unverified request
 // is refused rather than trusted.
@@ -1391,17 +1467,7 @@ app.post("/make-server-f5961d0c/webhooks/stripe", async (c) => {
         if (!businessId) break;
         const live = ["active", "trialing", "past_due"].includes(String(obj.status));
 
-        // Read from three places on purpose. Stripe's newer API versions
-        // express "cancel at the end of the period" as a cancel_at timestamp
-        // and leave cancel_at_period_end false -- so the boolean alone reports
-        // no cancellation at all -- and they moved current_period_end off the
-        // subscription onto its items. Older versions do the opposite. Taking
-        // whichever is present keeps this working across both.
-        const itemPeriodEnd = obj?.items?.data?.[0]?.current_period_end ?? null;
-        const periodEnd = obj.current_period_end ?? itemPeriodEnd;
-        const cancelAtTs = obj.cancel_at ?? (obj.cancel_at_period_end ? periodEnd : null);
-        const endsAt = cancelAtTs ? new Date(Number(cancelAtTs) * 1000).toISOString() : null;
-
+        const { endsAt } = readSubscriptionState(obj);
         await db().from("business_signups_f5961d0c")
           .update({ subscription_tier: live ? tier : null, subscription_ends_at: endsAt })
           .eq("id", businessId);
