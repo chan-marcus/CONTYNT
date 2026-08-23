@@ -305,7 +305,12 @@ function Dashboard({ state, instagram, token }: { state: AmbassadorState; instag
   };
 
   const s = state.stats!;
+  // Reads as the funnel it is: signed up under the link, then paying, then paid
+  // out. Pending is first because it is the one that moves the moment a creator
+  // hands a card over -- without it the panel showed nothing at all until a
+  // business started paying, which looks like the referral never landed.
   const cards = [
+    { label: "Pending", value: s.pendingReferrals, icon: Building2 },
     { label: "Active Businesses", value: s.activeBusinesses, icon: Users },
     { label: "Rewards Earned", value: `$${s.rewardsEarned}`, icon: DollarSign },
   ];
@@ -374,11 +379,8 @@ function Dashboard({ state, instagram, token }: { state: AmbassadorState; instag
         </p>
       </div>
 
-      {/* Two columns, not three. The grid was sized for five tiles, so the two
-          that remain sat in the first two of three slots with a gap beside
-          them. Centred so they read as a matched pair rather than a row that
-          ran out. */}
-      <div className="grid grid-cols-2 gap-3">
+      {/* Three tiles, three columns, so the row fills exactly. */}
+      <div className="grid grid-cols-3 gap-2">
         {cards.map(c => (
           <div key={c.label} className="bg-white/5 border border-white/10 rounded-2xl p-4 text-center">
             <div className="flex items-center justify-center gap-1.5 mb-1.5">

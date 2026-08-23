@@ -19,6 +19,7 @@ export function ReferralLanding({ code }: { code: string }) {
   const [checked, setChecked] = useState(false);
   const [name, setName] = useState("");
   const [instagram, setInstagram] = useState("");
+  const [preferredContact, setPreferredContact] = useState("");
   const [email, setEmail] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -33,14 +34,14 @@ export function ReferralLanding({ code }: { code: string }) {
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!name.trim() || !instagram.trim() || !email.trim()) return;
+    if (!name.trim() || !instagram.trim() || !email.trim() || !preferredContact) return;
     setBusy(true); setError("");
     try {
       const res = await api(`/referral/${encodeURIComponent(code)}/business`, {
         method: "POST",
         body: JSON.stringify({
           businessName: name.trim(), instagram: instagram.trim(),
-          businessEmail: email.trim(),
+          businessEmail: email.trim(), preferredContact,
         }),
       });
       const d = await res.json().catch(() => null);
@@ -113,8 +114,17 @@ export function ReferralLanding({ code }: { code: string }) {
           <input value={email} onChange={e => setEmail(e.target.value)} required type="email"
             placeholder="you@yourbusiness.com"
             className="w-full px-3.5 py-3 bg-white/10 border border-white/20 rounded-xl text-white text-[15px] placeholder:text-neutral-500 focus:outline-none focus:ring-2 focus:ring-white/25" />
+
+          {/* Same question the main business signup asks, so a business that
+              arrives by card is not the one record with no answer on file. */}
+          <select value={preferredContact} onChange={e => setPreferredContact(e.target.value)} required
+            className={`w-full px-3.5 py-3 bg-white/10 border border-white/20 rounded-xl text-[15px] focus:outline-none focus:ring-2 focus:ring-white/25 ${preferredContact ? "text-white" : "text-neutral-500"}`}>
+            <option value="" disabled className="bg-neutral-900 text-neutral-400">Preferred way to reach you</option>
+            <option value="Instagram" className="bg-neutral-900 text-white">Instagram</option>
+            <option value="Email" className="bg-neutral-900 text-white">Email</option>
+          </select>
           {error && <p className="text-xs text-red-400">{error}</p>}
-          <button type="submit" disabled={busy || !name.trim() || !instagram.trim() || !email.trim()}
+          <button type="submit" disabled={busy || !name.trim() || !instagram.trim() || !email.trim() || !preferredContact}
             className="w-full py-3.5 bg-white text-neutral-900 text-sm font-semibold rounded-xl hover:bg-neutral-100 transition-all disabled:opacity-40 flex items-center justify-center gap-2">
             {busy ? "Setting up…" : <>Claim your dashboard <ArrowRight className="w-4 h-4" /></>}
           </button>
