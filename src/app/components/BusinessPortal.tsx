@@ -404,13 +404,22 @@ function FeatureNoteCard({ feature: f, bizPortalData: data, bizToken, onNoteSave
   );
 }
 
-function PlanCard({ plan, featured, onBuy, busy }: {
+function PlanCard({ plan, featured, onBuy, busy, current, muted, collapsible }: {
   plan: typeof PLANS[0]; featured: boolean;
   onBuy: () => void; busy: boolean;
+  // Set once the business is on a plan: the cards stop being a pitch and start
+  // being a statement of what they have, so they collapse and everything that
+  // is not theirs recedes.
+  current?: boolean; muted?: boolean; collapsible?: boolean;
 }) {
+  const [open, setOpen] = useState(!collapsible);
   return (
-    <div className={`relative rounded-2xl p-6 flex flex-col gap-5 border h-full ${featured ? "bg-white/10 border-white/25 ring-1 ring-white/20" : "bg-white/5 border-white/10"}`}>
-      {plan.tag && (
+    <div className={`relative rounded-2xl p-6 flex flex-col gap-5 border h-full transition-opacity ${
+      current ? "bg-white/10 border-green-400/30 ring-1 ring-green-400/20"
+      : featured && !muted ? "bg-white/10 border-white/25 ring-1 ring-white/20"
+      : "bg-white/5 border-white/10"
+    } ${muted ? "opacity-45 hover:opacity-80" : ""}`}>
+      {plan.tag && !muted && !current && (
         <div className="absolute -top-4 left-1/2 -translate-x-1/2 z-10">
           <span className="bg-gradient-to-r from-yellow-400 to-amber-400 text-neutral-900 text-xs font-bold px-4 py-1.5 rounded-full flex items-center gap-1.5 shadow-lg whitespace-nowrap">
             <Star className="w-3 h-3" />{plan.tag}
@@ -428,18 +437,35 @@ function PlanCard({ plan, featured, onBuy, busy }: {
         </div>
         {/* Unit price — the upgrade argument, stated plainly. */}
         <p className="text-xs text-neutral-500 mt-1.5">{plan.perCreator}</p>
-        <p className="text-sm text-neutral-400 mt-2">{plan.tagline}</p>
+        {current && (
+          <p className="text-xs text-green-300 mt-2 font-semibold">Your current plan</p>
+        )}
+        {open && <p className="text-sm text-neutral-400 mt-2">{plan.tagline}</p>}
       </div>
-      <ul className="space-y-2 flex-1">
-        {plan.features.map((feat, i) => (
-          <li key={i} className="flex items-start gap-2 text-sm text-neutral-300">
-            <CheckCircle className="w-4 h-4 text-green-400 shrink-0 mt-0.5" />{feat}
-          </li>
-        ))}
-      </ul>
-      <button onClick={onBuy} disabled={busy}
-        className={`w-full py-3 rounded-xl text-sm font-semibold transition-all disabled:opacity-50 ${plan.ctaStyle}`}>
-        {busy ? "Opening checkout…" : <>👉 {plan.cta}</>}
+      {open && (
+        <ul className="space-y-2 flex-1">
+          {plan.features.map((feat, i) => (
+            <li key={i} className="flex items-start gap-2 text-sm text-neutral-300">
+              <CheckCircle className="w-4 h-4 text-green-400 shrink-0 mt-0.5" />{feat}
+            </li>
+          ))}
+        </ul>
+      )}
+      {collapsible && (
+        <button type="button" onClick={() => setOpen(v => !v)}
+          className="text-xs text-neutral-400 hover:text-white underline underline-offset-4 self-start">
+          {open ? "Hide details" : "See what's included"}
+        </button>
+      )}
+      {/* On the plan they are on, there is nothing to buy. On the others, the
+          route is the billing portal rather than checkout: starting a second
+          checkout while subscribed creates a second subscription and bills
+          them twice. */}
+      <button onClick={onBuy} disabled={busy || current}
+        className={`w-full py-3 rounded-xl text-sm font-semibold transition-all disabled:opacity-60 ${
+          current ? "bg-white/10 text-neutral-300 border border-white/15 cursor-default" : plan.ctaStyle
+        }`}>
+        {current ? "Current plan" : busy ? "Opening…" : muted ? `Switch to ${plan.name}` : <>👉 {plan.cta}</>}
       </button>
     </div>
   );
@@ -1060,7 +1086,11 @@ export function BusinessPortal({ token }: { token: string }) {
                 {PLANS.map(plan => (
                   <div key={plan.name} className="flex flex-col">
                     <PlanCard plan={plan} featured={plan.name === "Growth"}
-                      busy={buying === plan.name} onBuy={() => startCheckout(plan.name)} />
+                      busy={buying === plan.name || openingBilling}
+                      current={data.subscriptionTier === plan.name}
+                      muted={!!data.subscriptionTier && data.subscriptionTier !== plan.name}
+                      collapsible={!!data.subscriptionTier}
+                      onBuy={() => data.subscriptionTier ? openBilling() : startCheckout(plan.name)} />
                   </div>
                 ))}
               </div>
@@ -1080,7 +1110,7 @@ export function BusinessPortal({ token }: { token: string }) {
 
               {/* One-off purchase — secondary to the subscription plans above,
                   so it reuses the muted card styling rather than PlanCard. */}
-              <div className="bg-white/5 border border-white/10 rounded-2xl px-5 py-4 flex flex-col sm:flex-row sm:items-center gap-4">
+              <div className={`bg-white/5 border border-white/10 rounded-2xl px-5 py-4 flex flex-col sm:flex-row sm:items-center gap-4 transition-opacity ${data.subscriptionTier ? "opacity-60 hover:opacity-100" : ""}`}>
                 <div className="flex-1 min-w-0">
                   <div className="flex items-baseline gap-2">
                     <p className="text-sm font-semibold text-white">{ONE_OFF.name}</p>
