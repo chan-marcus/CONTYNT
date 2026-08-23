@@ -1244,6 +1244,44 @@ app.post("/make-server-f5961d0c/business-portal/checkout", async (c) => {
   } catch (e: any) { return c.json({ error: "Could not start checkout", details: e.message }, 500); }
 });
 
+// Sends a business to Stripe's own billing portal, where it can change its card,
+// read invoices and cancel. Cancelling there ends the plan at the period end,
+// which is the deal the portal already promises -- so this needs no cancel
+// button of its own, and no code here can accidentally cut somebody off early.
+app.post("/make-server-f5961d0c/business-portal/billing", async (c) => {
+  try {
+    const { bizToken } = await c.req.json();
+    const session = await businessFromToken(String(bizToken ?? ""));
+    if (!session?.businessId) return c.json({ error: "Invalid or expired link" }, 401);
+    if (!STRIPE_SECRET_KEY) return c.json({ error: "Payments are not configured yet." }, 400);
+
+    const { data: biz } = await db().from("business_signups_f5961d0c")
+      .select("id, email, stripe_customer_id").eq("id", session.businessId).maybeSingle();
+    if (!biz) return c.json({ error: "Business not found" }, 404);
+
+    // Stored id first. Anything bought before that column existed is found by
+    // email instead, and the id is written back so the lookup happens once.
+    let customer = biz.stripe_customer_id || null;
+    if (!customer && biz.email) {
+      const found = await stripeCall("GET", "customers", { email: String(biz.email).trim().toLowerCase(), limit: 1 });
+      if (found.ok && found.data?.data?.[0]?.id) {
+        customer = found.data.data[0].id;
+        await db().from("business_signups_f5961d0c")
+          .update({ stripe_customer_id: customer }).eq("id", biz.id);
+      }
+    }
+    // Nothing has ever been bought, so there is no billing to manage. Said
+    // plainly rather than as a Stripe error about a missing customer.
+    if (!customer) return c.json({ error: "No billing set up yet. Choose a plan first." }, 409);
+
+    const back = `${SITE_ORIGIN}/business?biz=${encodeURIComponent(String(bizToken))}`;
+    const made = await stripeCall("POST", "billing_portal/sessions", { customer, return_url: back });
+    if (!made.ok) return c.json({ error: made.error }, 502);
+    await logBusinessEvent(biz.id, "billing_portal_opened", {});
+    return c.json({ success: true, url: made.data.url });
+  } catch (e: any) { return c.json({ error: "Could not open billing", details: e.message }, 500); }
+});
+
 // Stripe signs every webhook. Without checking it, this endpoint is a public
 // route that upgrades any business named in its body, so an unverified request
 // is refused rather than trusted.
@@ -1303,9 +1341,13 @@ app.post("/make-server-f5961d0c/webhooks/stripe", async (c) => {
       case "checkout.session.completed": {
         if (!businessId) break;
         // A one-off buys a single Feature, not a tier, so it must not write one.
-        if (tier && tier !== "one_off") {
-          await db().from("business_signups_f5961d0c")
-            .update({ subscription_tier: tier }).eq("id", businessId);
+        // The customer is kept whichever kind of purchase this was: a one-off
+        // buyer still has invoices and a card on file worth reaching.
+        const patch: Record<string, unknown> = {};
+        if (obj.customer) patch.stripe_customer_id = String(obj.customer);
+        if (tier && tier !== "one_off") patch.subscription_tier = tier;
+        if (Object.keys(patch).length) {
+          await db().from("business_signups_f5961d0c").update(patch).eq("id", businessId);
         }
         await logBusinessEvent(businessId, tier === "one_off" ? "one_off_purchased" : "subscription_started", {
           tier, sessionId: obj.id, amountTotal: obj.amount_total ?? null,
