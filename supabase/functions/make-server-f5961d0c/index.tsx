@@ -446,12 +446,16 @@ app.post("/make-server-f5961d0c/referral/:code/business", async (c) => {
       }));
     }
 
-    // Give the owner a way straight into their portal.
-    const token = token32();
-    await kv.set(`biztoken_${token}`, { businessId: biz.id, businessName: biz.business_name, city: biz.city || "", createdAt: new Date().toISOString() });
-    await kv.set(`biztokenref_${biz.id}`, { token, businessId: biz.id, createdAt: new Date().toISOString() });
-
-    return c.json({ success: true, businessId: biz.id, businessCreated: createdBusiness, portalToken: token });
+    // Deliberately no portal token in this response. The form matches an
+    // existing business by email, handle or place, so handing back a session
+    // for whatever it matched would let anyone who knows a business's email
+    // type it here and be signed in as them. A code to that address proves the
+    // person filling this in can read the inbox it belongs to.
+    await issueLoginCode({
+      audience: "business", addr: email, to: biz.email || email, subjectId: biz.id,
+      log: (type, payload) => logBusinessEvent(biz.id, type, payload),
+    });
+    return c.json({ success: true, businessId: biz.id, businessCreated: createdBusiness, needsVerification: true });
   } catch (e: any) { return c.json({ error: "Could not complete signup", details: e.message }, 500); }
 });
 
@@ -1905,22 +1909,25 @@ app.post("/make-server-f5961d0c/scan/:code/lead", async (c) => {
     // screen saying a link is on its way makes them wait on an inbox to see
     // something they could be looking at now. Reuses their live token, so a
     // link already mailed to them keeps working.
-    let portalToken: string | null = null;
+    // A code rather than a session, for the same reason the referral form does
+    // it: this matches an existing business by place, handle or name, and a
+    // session handed to whoever filled the form in would be a way into an
+    // account belonging to somebody else.
+    let verifying = false;
     if (business?.id) {
       try {
-        portalToken = await ensureBusinessPortalToken({
-          id: business.id,
-          business_name: business.business_name ?? businessName,
-          city: business.city ?? "",
+        await issueLoginCode({
+          audience: "business", addr: email, to: email, subjectId: business.id,
+          log: (type, payload) => logBusinessEvent(business.id, type, payload),
         });
+        verifying = true;
       } catch (e: any) {
-        // The lead is already saved. Failing to mint a token is a worse portal
-        // experience, not a lost signup, so the caller falls back to the
-        // confirmation screen rather than seeing an error.
-        console.error("[lead] could not mint portal token:", e?.message ?? e);
+        // The lead is saved either way. A code that could not be sent is a
+        // worse landing, not a lost signup, so the confirmation screen stands.
+        console.error("[lead] could not send login code:", e?.message ?? e);
       }
     }
-    return c.json({ ok: true, businessId: business?.id ?? null, portalToken });
+    return c.json({ ok: true, businessId: business?.id ?? null, needsVerification: verifying });
   } catch (e: any) {
     console.error("[lead]", e?.message ?? e);
     // Never dead-end the person standing at the counter.
