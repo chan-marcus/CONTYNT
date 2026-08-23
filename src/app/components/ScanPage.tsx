@@ -49,6 +49,11 @@ export function ScanPage({ code }: { code: string }) {
   const [instagram, setInstagram] = useState("");
   const [busy, setBusy] = useState(false);
   const [done, setDone] = useState(false);
+  // Second step, for the same reason the referral form has one: this matches
+  // existing businesses, so a session handed straight over would be a way into
+  // an account belonging to somebody else.
+  const [step, setStep] = useState<"form" | "code">("form");
+  const [otp, setOtp] = useState("");
   const [error, setError] = useState("");
 
   const placesHost = useRef<HTMLDivElement | null>(null);
@@ -84,6 +89,22 @@ export function ScanPage({ code }: { code: string }) {
     return () => { alive = false; };
   }, [code]);
 
+  const verify = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const digits = otp.replace(/\D/g, "");
+    if (digits.length !== 6) { setError("Enter the 6 digit code."); return; }
+    setBusy(true); setError("");
+    try {
+      const res = await fetch(`${BASE}/business-login/verify`, {
+        method: "POST", headers: AUTH,
+        body: JSON.stringify({ email, code: digits }),
+      });
+      const d = await res.json().catch(() => null);
+      if (!res.ok || !d?.token) { setError(d?.error || "That code is not right."); setBusy(false); return; }
+      window.location.replace(`${window.location.origin}/business?biz=${encodeURIComponent(d.token)}`);
+    } catch { setError("Could not reach the server."); setBusy(false); }
+  };
+
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!businessName.trim() || !instagram.trim() || !email.trim()) return;
@@ -95,16 +116,12 @@ export function ScanPage({ code }: { code: string }) {
       });
       const d = await res.json().catch(() => null);
       if (!res.ok) { setError(d?.error || "Could not send that. Try again."); setBusy(false); return; }
-      // Straight into the portal. The owner is at their own counter with the
-      // creator standing there; there is nothing to gain by telling them to go
-      // and wait for an email. setBusy stays true while the browser navigates,
-      // so the button cannot be pressed twice.
-      if (d?.portalToken) {
-        window.location.replace(`${window.location.origin}/business?biz=${encodeURIComponent(d.portalToken)}`);
-        return;
-      }
-      // No token means the lead saved but the portal could not be opened, which
-      // is a worse landing rather than a lost signup: the confirmation stands.
+      // A code is on its way. The owner is standing right there, so this is one
+      // extra step rather than a wait -- and it is what stops the form being a
+      // way into a business that is already on file.
+      if (d?.needsVerification) { setStep("code"); setBusy(false); return; }
+      // The lead saved but no code went out, which is a worse landing rather
+      // than a lost signup: the confirmation stands.
       setDone(true);
     } catch { setError("Could not reach the server. Try again."); }
     setBusy(false);
@@ -173,6 +190,24 @@ export function ScanPage({ code }: { code: string }) {
       ))}
     </div>
 
+    {step === "code" ? (
+    <form onSubmit={verify} className="flex flex-col gap-2.5 text-left mt-5">
+      <p className="text-[15px] text-white font-semibold text-center">Check your email</p>
+      <p className="text-xs text-neutral-400 leading-relaxed text-center">
+        We sent a 6 digit code to <span className="text-neutral-200">{email}</span>. It expires in 10 minutes.
+      </p>
+      <input value={otp} onChange={e => { setOtp(e.target.value.replace(/\D/g, "").slice(0, 6)); setError(""); }}
+        inputMode="numeric" autoComplete="one-time-code" placeholder="000000" autoFocus
+        className="w-full px-3.5 py-3 bg-white/10 border border-white/20 rounded-xl text-white text-center text-2xl font-bold tracking-[0.4em] placeholder:text-neutral-600 focus:outline-none focus:ring-2 focus:ring-white/25" />
+      {error && <p className="text-xs text-red-400">{error}</p>}
+      <button type="submit" disabled={busy || otp.replace(/\D/g, "").length !== 6}
+        className="w-full py-3.5 rounded-xl bg-white text-neutral-900 text-sm font-semibold disabled:opacity-50">
+        {busy ? "Checking…" : "Open my dashboard"}
+      </button>
+      <button type="button" onClick={() => { setStep("form"); setOtp(""); setError(""); }}
+        className="w-full text-xs text-neutral-500 hover:text-neutral-300">Use a different email</button>
+    </form>
+    ) : (
     <form onSubmit={submit} className="flex flex-col gap-2.5 text-left mt-5">
       {/* The Places component mounts here when a key is configured. Until then,
           and if it fails to load, the plain input below carries the field. */}
@@ -203,5 +238,6 @@ export function ScanPage({ code }: { code: string }) {
         No payment details needed.
       </p>
     </form>
+    )}
   </Shell>;
 }

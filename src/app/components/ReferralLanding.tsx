@@ -27,6 +27,11 @@ export function ReferralLanding({ code }: { code: string }) {
   const placesHost = useRef<HTMLDivElement | null>(null);
   const [email, setEmail] = useState("");
   const [busy, setBusy] = useState(false);
+  // Second step. The signup no longer hands back a session, so the code proves
+  // whoever filled the form in can read the address it was filed under.
+  const [step, setStep] = useState<"form" | "code">("form");
+  // Named otp, not code: the component already takes a referral code as a prop.
+  const [otp, setOtp] = useState("");
   const [error, setError] = useState("");
 
   useEffect(() => {
@@ -60,17 +65,34 @@ export function ReferralLanding({ code }: { code: string }) {
         }),
       });
       const d = await res.json().catch(() => null);
-      if (!res.ok || !d?.portalToken) {
+      if (!res.ok || !d?.success) {
         setError(d?.error || "Something went wrong. Please try again.");
         setBusy(false);
         return;
       }
-      // Straight into the portal — the owner should not have to wait for a link.
-      window.location.href = `${window.location.origin}?biz=${d.portalToken}`;
+      // A code is on its way instead of a session. See the server note: this
+      // form matches existing businesses, so a session here would be a way into
+      // somebody else's account.
+      setStep("code"); setBusy(false);
     } catch {
       setError("Could not reach the server. Please try again.");
       setBusy(false);
     }
+  };
+
+  const verify = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const digits = otp.replace(/\D/g, "");
+    if (digits.length !== 6) { setError("Enter the 6 digit code."); return; }
+    setBusy(true); setError("");
+    try {
+      const res = await api("/business-login/verify", {
+        method: "POST", body: JSON.stringify({ email: email.trim(), code: digits }),
+      });
+      const d = await res.json().catch(() => null);
+      if (!res.ok || !d?.token) { setError(d?.error || "That code is not right."); setBusy(false); return; }
+      window.location.href = `${window.location.origin}/business?biz=${encodeURIComponent(d.token)}`;
+    } catch { setError("Could not reach the server."); setBusy(false); }
   };
 
   const handle = (creator || "").replace(/^@+/, "");
@@ -113,6 +135,24 @@ export function ReferralLanding({ code }: { code: string }) {
           ))}
         </div>
 
+        {step === "code" ? (
+          <form onSubmit={verify} className="space-y-2.5 bg-white/5 border border-white/10 rounded-2xl p-4">
+            <p className="text-[15px] text-white font-semibold">Check your email</p>
+            <p className="text-xs text-neutral-400 leading-relaxed">
+              We sent a 6 digit code to <span className="text-neutral-200">{email.trim()}</span>. It expires in 10 minutes.
+            </p>
+            <input value={otp} onChange={e => { setOtp(e.target.value.replace(/\D/g, "").slice(0, 6)); setError(""); }}
+              inputMode="numeric" autoComplete="one-time-code" placeholder="000000" autoFocus
+              className="w-full px-3.5 py-3 bg-white/10 border border-white/20 rounded-xl text-white text-center text-2xl font-bold tracking-[0.4em] placeholder:text-neutral-600 focus:outline-none focus:ring-2 focus:ring-white/25" />
+            {error && <p className="text-xs text-red-400">{error}</p>}
+            <button type="submit" disabled={busy || otp.replace(/\D/g, "").length !== 6}
+              className="w-full py-3.5 bg-white text-neutral-900 text-sm font-semibold rounded-xl hover:bg-neutral-100 transition-all disabled:opacity-40 flex items-center justify-center gap-2">
+              {busy ? "Checking…" : <>Open my dashboard <ArrowRight className="w-4 h-4" /></>}
+            </button>
+            <button type="button" onClick={() => { setStep("form"); setOtp(""); setError(""); }}
+              className="w-full text-xs text-neutral-500 hover:text-neutral-300">Use a different email</button>
+          </form>
+        ) : (
         <form onSubmit={submit} className="space-y-2.5 bg-white/5 border border-white/10 rounded-2xl p-4">
           {/* The Places widget mounts here when a key is configured; the plain
               input below carries the field until then, and if it fails. */}
@@ -152,6 +192,7 @@ export function ReferralLanding({ code }: { code: string }) {
             No payment details needed.
           </p>
         </form>
+        )}
       </main>
 
       <footer className="border-t border-white/10 px-6 py-5 text-center">
