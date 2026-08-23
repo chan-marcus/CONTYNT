@@ -517,6 +517,12 @@ async function creatorIsConfirmed(creatorId: string | undefined): Promise<boolea
 }
 
 // ─── Creator verification ─────────────────────────────────────────────────────
+// How long a selected creator has to accept before the Feature goes back.
+const ACCEPTANCE_HOURS = 24;
+// How close to a deadline a reminder goes out, and how far past it is still
+// worth reminding -- a sweep that runs late should not skip somebody silently.
+const REMIND_WITHIN_HOURS = 6;
+
 const VERIFY_DAYS = 90;
 // Short, because this is a person who just told us their link does not work.
 // Long enough that a public form cannot be used to mail somebody repeatedly.
@@ -2009,6 +2015,104 @@ ${emailButton(link, "Open your portal")}
   return { text, html, subject: `New features just dropped in ${where}` };
 }
 
+// Both claim emails are about one creator's own Feature, so they go on the
+// transactional stream, not the broadcast one the drop announcement uses. A
+// creator who muted announcements has not asked to stop hearing that the thing
+// they are holding is about to lapse.
+function renderSelectedEmail(row: any, feature: any, link: string, hoursToAccept: number) {
+  const first = firstNameFor(row);
+  const where = [feature?.business_name, cityLabel(feature?.city)].filter(Boolean).join(", ");
+  const text =
+`Hi ${first},
+
+You have been selected for the feature at ${where}.
+
+Accept it within ${hoursToAccept} hours and it is yours to film. Leave it and it goes back to everyone else.
+
+Accept it here:
+${prettyLink(link)}
+
+CONTYNT
+San Francisco`;
+  const html = emailShell({
+    preheader: `Accept within ${hoursToAccept} hours to keep it.`,
+    body:
+`      <p style="margin:0 0 16px 0;font-size:21px;line-height:1.35;font-weight:700;color:#0a0a0a;">You have been selected</p>
+      <p style="margin:0 0 14px 0;">Hi ${esc(first)},</p>
+      <p style="margin:0 0 14px 0;">You have been selected for the feature at <strong>${esc(where)}</strong>.</p>
+      <p style="margin:0;">Accept it within ${hoursToAccept} hours and it is yours to film. Leave it and it goes back to everyone else.</p>
+${emailButton(link, "Accept the feature")}
+      <p style="margin:0 0 6px 0;font-size:13px;color:#8a8a8a;">Or paste this into your browser:</p>
+      <p style="margin:0;font-size:13px;word-break:break-all;"><a href="${esc(link)}" style="color:#525252;">${esc(prettyLink(link))}</a></p>`,
+  });
+  return { text, html, subject: `You have been selected: ${where}` };
+}
+
+// One template for both deadlines. What changes is what runs out and what the
+// creator has to do about it, so those are the arguments.
+function renderClaimExpiryEmail(row: any, feature: any, link: string, opts: {
+  hoursLeft: number; kind: "accept" | "submit";
+}) {
+  const first = firstNameFor(row);
+  const where = [feature?.business_name, cityLabel(feature?.city)].filter(Boolean).join(", ");
+  const hrs = opts.hoursLeft === 1 ? "1 hour" : `${opts.hoursLeft} hours`;
+  // The verb and its preposition travel together, or the sentence reads
+  // "accept it for Poop Cafe".
+  const what = opts.kind === "accept"
+    ? { head: "Your feature is about to go back", act: "accept the feature", prep: "at",
+        lost: "it goes back to everyone else", cta: "Accept the feature" }
+    : { head: "Your feature is about to expire", act: "submit your Reel", prep: "for",
+        lost: "the feature is released", cta: "Submit your Reel" };
+
+  const text =
+`Hi ${first},
+
+You have ${hrs} left to ${what.act} ${what.prep} ${where}. After that ${what.lost}.
+
+${prettyLink(link)}
+
+CONTYNT
+San Francisco`;
+  const html = emailShell({
+    preheader: `${hrs} left to ${what.act}.`,
+    body:
+`      <p style="margin:0 0 16px 0;font-size:21px;line-height:1.35;font-weight:700;color:#0a0a0a;">${esc(what.head)}</p>
+      <p style="margin:0 0 14px 0;">Hi ${esc(first)},</p>
+      <p style="margin:0;">You have <strong>${hrs}</strong> left to ${esc(what.act)} ${esc(what.prep)} ${esc(where)}. After that ${esc(what.lost)}.</p>
+${emailButton(link, what.cta)}
+      <p style="margin:0 0 6px 0;font-size:13px;color:#8a8a8a;">Or paste this into your browser:</p>
+      <p style="margin:0;font-size:13px;word-break:break-all;"><a href="${esc(link)}" style="color:#525252;">${esc(prettyLink(link))}</a></p>`,
+  });
+  return { text, html, subject: `${hrs} left: ${where}` };
+}
+
+// Resolves the creator behind a claim and sends, or says why it did not. Shared
+// so selection and both reminders cannot drift on who is skipped: a suppressed
+// address, or a creator who turned email off, is skipped in all three.
+async function mailClaimCreator(opts: {
+  creatorToken: string; featureId: string;
+  build: (creator: any, feature: any, link: string) => { subject: string; html: string; text: string };
+}): Promise<{ ok: true; messageId: string | null } | { ok: false; reason: string }> {
+  const session = await creatorFromToken(opts.creatorToken);
+  if (!session?.creatorId) return { ok: false, reason: "no creator for that token" };
+
+  const [{ data: creator }, { data: feature }] = await Promise.all([
+    db().from("creator_signups_f5961d0c").select("*").eq("id", session.creatorId).maybeSingle(),
+    db().from("features_f5961d0c").select("id, business_name, city").eq("id", opts.featureId).maybeSingle(),
+  ]);
+  if (!creator) return { ok: false, reason: "creator not found" };
+  const to = String(creator.email ?? "").trim();
+  if (!to) return { ok: false, reason: "no email" };
+  if (creator.email_bounced_at || creator.email_complained_at) return { ok: false, reason: "suppressed" };
+  if (creator.notify_email === false) return { ok: false, reason: "email notifications off" };
+  if (!POSTMARK_SERVER_TOKEN) return { ok: false, reason: "POSTMARK_SERVER_TOKEN not set" };
+
+  const link = `${SITE_ORIGIN}/app?creator=${encodeURIComponent(opts.creatorToken)}`;
+  const sent = await postmarkSend({ to, ...opts.build(creator, feature, link), stream: POSTMARK_TRANSACTIONAL_STREAM });
+  if (!sent.ok) return { ok: false, reason: sent.error || "Postmark rejected the message" };
+  return { ok: true, messageId: sent.payload?.MessageID ?? null };
+}
+
 // Postmark separates broadcast and transactional streams, and sending on the
 // wrong one is not cosmetic: broadcast messages carry unsubscribe headers and
 // are rate shaped for bulk. A login code is transactional and must not go out
@@ -3444,13 +3548,39 @@ app.post("/make-server-f5961d0c/admin/approve-creator-claim", async (c) => {
     if (!featureId || !creatorToken) return c.json({ error: "featureId and creatorToken required" }, 400);
     const now = new Date();
     const approvedAt = now.toISOString();
-    const acceptanceExpiresAt = new Date(now.getTime() + 24 * 60 * 60 * 1000).toISOString();
+    const acceptanceExpiresAt = new Date(now.getTime() + ACCEPTANCE_HOURS * 60 * 60 * 1000).toISOString();
     const { error } = await db().from("creator_claims_f5961d0c").update({ status: "approved", approved_at: approvedAt, acceptance_expires_at: acceptanceExpiresAt }).eq("feature_id", featureId).eq("creator_token", creatorToken);
     if (error) throw error;
     // Approval, not claiming, is what mints the card. A card handed out for a
     // shoot that never got approved would point at a Reel that never arrives.
     const card = await ensureCardForApprovedClaim(featureId, creatorToken);
-    return c.json({ success: true, approvedAt, acceptanceExpiresAt, cardCode: card?.code ?? null });
+
+    // Being selected is the one moment a creator has to act on a clock, and
+    // until now nothing told them: it appeared in the portal and the 24 hours
+    // ran whether or not they opened it. Sent after the approval is stored, so
+    // a mail failure cannot leave a creator told about a Feature that is not
+    // theirs. Stamped, so re-approving does not mail them again.
+    let notified: any = null;
+    const { data: claimRow } = await db().from("creator_claims_f5961d0c")
+      .select("selected_notified_at").eq("feature_id", featureId).eq("creator_token", creatorToken).maybeSingle();
+    if (!claimRow?.selected_notified_at) {
+      notified = await mailClaimCreator({
+        creatorToken, featureId,
+        build: (creator, feature, link) => renderSelectedEmail(creator, feature, link, ACCEPTANCE_HOURS),
+      });
+      if (notified.ok) {
+        await db().from("creator_claims_f5961d0c")
+          .update({ selected_notified_at: new Date().toISOString() })
+          .eq("feature_id", featureId).eq("creator_token", creatorToken);
+      } else {
+        console.error("[selected] not mailed:", notified.reason);
+      }
+    }
+
+    return c.json({
+      success: true, approvedAt, acceptanceExpiresAt, cardCode: card?.code ?? null,
+      notified: notified ? (notified.ok ? "sent" : notified.reason) : "already notified",
+    });
   } catch (e: any) { return c.json({ error: e.message }, 500); }
 });
 
@@ -3653,6 +3783,72 @@ app.post("/make-server-f5961d0c/creator-portal/complete-payout", async (c) => {
     }).eq("id", featureId));
     return c.json({ success: true });
   } catch (e: any) { return c.json({ error: e.message }, 500); }
+});
+
+// Expiry reminders for both claim deadlines. Not a cron: nothing in this
+// project schedules anything, so this is a route that does one sweep and can be
+// called by a button, a scheduler, or curl. Idempotent -- a claim already
+// reminded for a given deadline is skipped -- so calling it more often than
+// necessary costs nothing and calling it late still catches people.
+async function sendClaimExpiryReminders(opts: { dryRun?: boolean } = {}) {
+  const now = Date.now();
+  const horizon = REMIND_WITHIN_HOURS * 3600e3;
+
+  const { data: claims } = await db().from("creator_claims_f5961d0c")
+    .select("feature_id, creator_token, status, acceptance_expires_at, expires_at, acceptance_reminded_at, expiry_reminded_at")
+    .in("status", ["approved", "claimed"]);
+
+  const results: any[] = [];
+  for (const cl of (claims ?? [])) {
+    // Which clock is running depends on where the claim is: an approved claim
+    // is waiting to be accepted, a claimed one is waiting for a Reel.
+    const kind: "accept" | "submit" = cl.status === "approved" ? "accept" : "submit";
+    const dueAt = kind === "accept" ? cl.acceptance_expires_at : cl.expires_at;
+    const alreadySent = kind === "accept" ? cl.acceptance_reminded_at : cl.expiry_reminded_at;
+    if (!dueAt || alreadySent) continue;
+
+    const msLeft = new Date(dueAt).getTime() - now;
+    // Past the deadline there is nothing to save, and the sweep that reclaims
+    // expired claims is a separate concern from telling anyone about it.
+    if (msLeft <= 0 || msLeft > horizon) continue;
+    const hoursLeft = Math.max(1, Math.ceil(msLeft / 3600e3));
+
+    if (opts.dryRun) {
+      results.push({ featureId: cl.feature_id, kind, hoursLeft, wouldSend: true });
+      continue;
+    }
+    const out = await mailClaimCreator({
+      creatorToken: cl.creator_token, featureId: cl.feature_id,
+      build: (creator, feature, link) => renderClaimExpiryEmail(creator, feature, link, { hoursLeft, kind }),
+    });
+    if (!out.ok) { results.push({ featureId: cl.feature_id, kind, skipped: out.reason }); continue; }
+
+    // Stamped only after Postmark accepted, so a failed send is retried by the
+    // next sweep rather than silently counted as done.
+    await db().from("creator_claims_f5961d0c")
+      .update(kind === "accept"
+        ? { acceptance_reminded_at: new Date().toISOString() }
+        : { expiry_reminded_at: new Date().toISOString() })
+      .eq("feature_id", cl.feature_id).eq("creator_token", cl.creator_token);
+    results.push({ featureId: cl.feature_id, kind, hoursLeft, sent: true });
+  }
+
+  return {
+    dryRun: !!opts.dryRun,
+    considered: (claims ?? []).length,
+    sent: results.filter(r => r.sent).length,
+    wouldSend: results.filter(r => r.wouldSend).length,
+    skipped: results.filter(r => r.skipped).length,
+    results,
+  };
+}
+
+app.post("/make-server-f5961d0c/admin/claims/expiry-reminders", async (c) => {
+  try {
+    const body = await c.req.json().catch(() => ({}));
+    const out = await sendClaimExpiryReminders({ dryRun: !!body.dryRun });
+    return c.json({ success: true, ...out });
+  } catch (e: any) { return c.json({ error: "Reminder sweep failed", details: e.message }, 500); }
 });
 
 // ─── Admin: ambassador management ────────────────────────────────────────────
