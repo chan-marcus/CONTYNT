@@ -1053,6 +1053,234 @@ app.post("/make-server-f5961d0c/creator-portal/ambassador/toggle", async (c) => 
   } catch (e: any) { return c.json({ error: e.message }, 500); }
 });
 
+// ─── Stripe ───────────────────────────────────────────────────────────────────
+// Called over the REST API rather than through the SDK: this function already
+// talks to Postmark the same way, and a payment dependency is not worth pulling
+// into a Deno bundle for four endpoints.
+//
+// The secret never appears in this repo. It is read from the environment, the
+// same as POSTMARK_SERVER_TOKEN, so the key lives in Supabase secrets and is
+// visible to nobody who reads the source.
+const STRIPE_SECRET_KEY = Deno.env.get("STRIPE_SECRET_KEY") || "";
+const STRIPE_WEBHOOK_SECRET = Deno.env.get("STRIPE_WEBHOOK_SECRET") || "";
+
+// Stripe wants form encoding, including for nested fields, which is why this
+// flattens rather than posting JSON.
+function stripeForm(obj: Record<string, any>, prefix = ""): string[] {
+  const out: string[] = [];
+  for (const [k, v] of Object.entries(obj)) {
+    if (v === undefined || v === null) continue;
+    const key = prefix ? `${prefix}[${k}]` : k;
+    if (typeof v === "object" && !Array.isArray(v)) out.push(...stripeForm(v, key));
+    else if (Array.isArray(v)) v.forEach((item, i) => {
+      if (typeof item === "object") out.push(...stripeForm(item, `${key}[${i}]`));
+      else out.push(`${encodeURIComponent(`${key}[${i}]`)}=${encodeURIComponent(String(item))}`);
+    });
+    else out.push(`${encodeURIComponent(key)}=${encodeURIComponent(String(v))}`);
+  }
+  return out;
+}
+
+async function stripeCall(method: "GET" | "POST", path: string, body?: Record<string, any>) {
+  if (!STRIPE_SECRET_KEY) return { ok: false as const, error: "STRIPE_SECRET_KEY is not set on the server.", data: null };
+  const url = `https://api.stripe.com/v1/${path}`;
+  const init: RequestInit = {
+    method,
+    headers: {
+      Authorization: `Bearer ${STRIPE_SECRET_KEY}`,
+      "Content-Type": "application/x-www-form-urlencoded",
+    },
+  };
+  if (body && method === "POST") (init as any).body = stripeForm(body).join("&");
+  try {
+    const res = await fetch(method === "GET" && body ? `${url}?${stripeForm(body).join("&")}` : url, init);
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) return { ok: false as const, error: data?.error?.message || `Stripe ${res.status}`, data };
+    return { ok: true as const, error: "", data };
+  } catch (e: any) {
+    return { ok: false as const, error: e?.message ?? String(e), data: null };
+  }
+}
+
+// The plans as Stripe should see them. Kept beside the portal's own copy rather
+// than derived from it: the portal's PLANS array is marketing text that changes
+// freely, and a price is not something a copy edit should be able to move.
+//
+// lookup_key is what makes creating these idempotent. Stripe rejects a second
+// price with the same key, so a sync that runs twice reuses what is there.
+const STRIPE_PLANS = [
+  { tier: "Starter", lookupKey: "contynt_starter_monthly", label: "Contynt Starter", amount: 6900, interval: "month" as const },
+  { tier: "Growth", lookupKey: "contynt_growth_monthly", label: "Contynt Growth", amount: 11900, interval: "month" as const },
+  { tier: "Pro", lookupKey: "contynt_pro_monthly", label: "Contynt Pro", amount: 19900, interval: "month" as const },
+  { tier: null, lookupKey: "contynt_one_off_feature", label: "Contynt One-Time Feature", amount: 8900, interval: null },
+];
+
+// Finds the price for a plan, creating the product and price the first time.
+// Idempotent on lookup_key, so this is safe to run against a live account more
+// than once -- which matters, because the alternative is duplicate products in
+// somebody's real Stripe dashboard.
+async function ensureStripePrice(plan: typeof STRIPE_PLANS[number], dryRun: boolean) {
+  const found = await stripeCall("GET", "prices", { lookup_keys: [plan.lookupKey], limit: 1, active: true });
+  if (!found.ok) return { plan: plan.label, error: found.error };
+  const existing = found.data?.data?.[0];
+  if (existing) return { plan: plan.label, priceId: existing.id, lookupKey: plan.lookupKey, existed: true };
+  if (dryRun) return { plan: plan.label, lookupKey: plan.lookupKey, wouldCreate: true, amount: plan.amount };
+
+  const product = await stripeCall("POST", "products", {
+    name: plan.label,
+    metadata: { contynt_tier: plan.tier ?? "one_off" },
+  });
+  if (!product.ok) return { plan: plan.label, error: product.error };
+
+  const price = await stripeCall("POST", "prices", {
+    product: product.data.id,
+    unit_amount: plan.amount,
+    currency: "usd",
+    lookup_key: plan.lookupKey,
+    ...(plan.interval ? { recurring: { interval: plan.interval } } : {}),
+    metadata: { contynt_tier: plan.tier ?? "one_off" },
+  });
+  if (!price.ok) return { plan: plan.label, error: price.error };
+  return { plan: plan.label, priceId: price.data.id, lookupKey: plan.lookupKey, created: true };
+}
+
+app.post("/make-server-f5961d0c/admin/stripe/sync-prices", async (c) => {
+  try {
+    const body = await c.req.json().catch(() => ({}));
+    const dryRun = !!body.dryRun;
+    if (!STRIPE_SECRET_KEY) return c.json({ error: "STRIPE_SECRET_KEY is not set on the server." }, 400);
+    const results = [];
+    for (const plan of STRIPE_PLANS) results.push(await ensureStripePrice(plan, dryRun));
+    return c.json({
+      success: true, dryRun,
+      created: results.filter(r => (r as any).created).length,
+      existed: results.filter(r => (r as any).existed).length,
+      wouldCreate: results.filter(r => (r as any).wouldCreate).length,
+      failed: results.filter(r => (r as any).error).length,
+      results,
+    });
+  } catch (e: any) { return c.json({ error: "Price sync failed", details: e.message }, 500); }
+});
+
+// Starts checkout for one plan. The business is identified from its own portal
+// token, never from anything the browser sends: a body that named its own
+// business id would let anyone buy a plan onto somebody else's account.
+app.post("/make-server-f5961d0c/business-portal/checkout", async (c) => {
+  try {
+    const { bizToken, tier } = await c.req.json();
+    const session = await businessFromToken(String(bizToken ?? ""));
+    if (!session?.businessId) return c.json({ error: "Invalid or expired link" }, 401);
+    if (!STRIPE_SECRET_KEY) return c.json({ error: "Payments are not configured yet." }, 400);
+
+    const plan = STRIPE_PLANS.find(p => (p.tier ?? "one_off") === String(tier));
+    if (!plan) return c.json({ error: "Unknown plan" }, 400);
+
+    const found = await stripeCall("GET", "prices", { lookup_keys: [plan.lookupKey], limit: 1, active: true });
+    if (!found.ok) return c.json({ error: found.error }, 502);
+    const price = found.data?.data?.[0];
+    // A price that was never synced is a setup problem, and saying so beats a
+    // Stripe error that means nothing to whoever is standing at the till.
+    if (!price) return c.json({ error: "That plan has no price in Stripe yet. Run the price sync in the admin dashboard." }, 409);
+
+    const { data: biz } = await db().from("business_signups_f5961d0c")
+      .select("id, email, business_name").eq("id", session.businessId).maybeSingle();
+
+    const back = `${SITE_ORIGIN}/business?biz=${encodeURIComponent(String(bizToken))}`;
+    const created = await stripeCall("POST", "checkout/sessions", {
+      mode: plan.interval ? "subscription" : "payment",
+      line_items: [{ price: price.id, quantity: 1 }],
+      // Both, deliberately. client_reference_id survives on the session for a
+      // human reading the Stripe dashboard; metadata is what the webhook reads.
+      client_reference_id: session.businessId,
+      metadata: { business_id: session.businessId, contynt_tier: plan.tier ?? "one_off" },
+      ...(plan.interval ? { subscription_data: { metadata: { business_id: session.businessId, contynt_tier: plan.tier } } } : {}),
+      customer_email: biz?.email || undefined,
+      success_url: `${back}&paid=1`,
+      cancel_url: back,
+      allow_promotion_codes: true,
+    });
+    if (!created.ok) return c.json({ error: created.error }, 502);
+
+    await logBusinessEvent(session.businessId, "checkout_started", { tier: plan.tier ?? "one_off", sessionId: created.data.id });
+    return c.json({ success: true, url: created.data.url });
+  } catch (e: any) { return c.json({ error: "Could not start checkout", details: e.message }, 500); }
+});
+
+// Stripe signs every webhook. Without checking it, this endpoint is a public
+// route that upgrades any business named in its body, so an unverified request
+// is refused rather than trusted.
+async function stripeSignatureValid(rawBody: string, header: string): Promise<boolean> {
+  if (!STRIPE_WEBHOOK_SECRET || !header) return false;
+  const parts = Object.fromEntries(header.split(",").map(p => p.split("=").map(x => x.trim()) as [string, string]));
+  const timestamp = parts["t"], signature = parts["v1"];
+  if (!timestamp || !signature) return false;
+  // Five minutes, so a captured request cannot be replayed indefinitely.
+  if (Math.abs(Date.now() / 1000 - Number(timestamp)) > 300) return false;
+
+  const key = await crypto.subtle.importKey(
+    "raw", new TextEncoder().encode(STRIPE_WEBHOOK_SECRET),
+    { name: "HMAC", hash: "SHA-256" }, false, ["sign"],
+  );
+  const mac = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(`${timestamp}.${rawBody}`));
+  const expected = [...new Uint8Array(mac)].map(b => b.toString(16).padStart(2, "0")).join("");
+  return timingSafeEqual(expected, signature);
+}
+
+app.post("/make-server-f5961d0c/webhooks/stripe", async (c) => {
+  // Read once, as text: the signature is over the exact bytes Stripe sent, so
+  // parsing first and re-serialising would never match.
+  const raw = await c.req.text();
+  if (!(await stripeSignatureValid(raw, c.req.header("stripe-signature") || ""))) {
+    return c.json({ error: "Bad signature" }, 400);
+  }
+  let event: any;
+  try { event = JSON.parse(raw); } catch { return c.json({ error: "Bad payload" }, 400); }
+
+  try {
+    const obj = event?.data?.object ?? {};
+    const businessId = obj?.metadata?.business_id || obj?.client_reference_id || null;
+    const tier = obj?.metadata?.contynt_tier || null;
+
+    switch (event.type) {
+      case "checkout.session.completed": {
+        if (!businessId) break;
+        // A one-off buys a single Feature, not a tier, so it must not write one.
+        if (tier && tier !== "one_off") {
+          await db().from("business_signups_f5961d0c")
+            .update({ subscription_tier: tier }).eq("id", businessId);
+        }
+        await logBusinessEvent(businessId, tier === "one_off" ? "one_off_purchased" : "subscription_started", {
+          tier, sessionId: obj.id, amountTotal: obj.amount_total ?? null,
+        });
+        break;
+      }
+      case "customer.subscription.updated": {
+        // A subscription that has lapsed should stop granting quota. Anything
+        // still active or in its grace period keeps the tier it paid for.
+        if (!businessId) break;
+        const live = ["active", "trialing", "past_due"].includes(String(obj.status));
+        await db().from("business_signups_f5961d0c")
+          .update({ subscription_tier: live ? tier : null }).eq("id", businessId);
+        await logBusinessEvent(businessId, "subscription_updated", { tier, status: obj.status });
+        break;
+      }
+      case "customer.subscription.deleted": {
+        if (!businessId) break;
+        await db().from("business_signups_f5961d0c")
+          .update({ subscription_tier: null }).eq("id", businessId);
+        await logBusinessEvent(businessId, "subscription_cancelled", { tier });
+        break;
+      }
+    }
+    // Acknowledged whatever happened above. Stripe retries on a non-2xx, and a
+    // retry storm over an event we do not handle helps nobody.
+    return c.json({ received: true });
+  } catch (e: any) {
+    console.error("[stripe webhook]", e?.message ?? e);
+    return c.json({ received: true, error: e?.message ?? String(e) });
+  }
+});
+
 // ─── Postmark webhook ─────────────────────────────────────────────────────────
 // Postmark's own convention is basic auth embedded in the webhook URL, but a
 // custom header is easier to rotate, so both are accepted.

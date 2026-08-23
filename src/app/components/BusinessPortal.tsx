@@ -404,7 +404,10 @@ function FeatureNoteCard({ feature: f, bizPortalData: data, bizToken, onNoteSave
   );
 }
 
-function PlanCard({ plan, featured }: { plan: typeof PLANS[0]; featured: boolean }) {
+function PlanCard({ plan, featured, onBuy, busy }: {
+  plan: typeof PLANS[0]; featured: boolean;
+  onBuy: () => void; busy: boolean;
+}) {
   return (
     <div className={`relative rounded-2xl p-6 flex flex-col gap-5 border h-full ${featured ? "bg-white/10 border-white/25 ring-1 ring-white/20" : "bg-white/5 border-white/10"}`}>
       {plan.tag && (
@@ -434,8 +437,9 @@ function PlanCard({ plan, featured }: { plan: typeof PLANS[0]; featured: boolean
           </li>
         ))}
       </ul>
-      <button className={`w-full py-3 rounded-xl text-sm font-semibold transition-all ${plan.ctaStyle}`}>
-        👉 {plan.cta}
+      <button onClick={onBuy} disabled={busy}
+        className={`w-full py-3 rounded-xl text-sm font-semibold transition-all disabled:opacity-50 ${plan.ctaStyle}`}>
+        {busy ? "Opening checkout…" : <>👉 {plan.cta}</>}
       </button>
     </div>
   );
@@ -443,6 +447,9 @@ function PlanCard({ plan, featured }: { plan: typeof PLANS[0]; featured: boolean
 
 export function BusinessPortal({ token }: { token: string }) {
   const [data, setData] = useState<BizData | null>(null);
+  // Which plan is mid-checkout, so only the pressed button shows it.
+  const [buying, setBuying] = useState<string | null>(null);
+  const [buyError, setBuyError] = useState("");
 
   // Named tab title, matching the creator portal. App.tsx's title effect never
   // runs on this route: it returns <BusinessPortal> before reaching it.
@@ -461,6 +468,24 @@ export function BusinessPortal({ token }: { token: string }) {
   const [editingEmail, setEditingEmail] = useState(false);
   const [emailInput, setEmailInput] = useState("");
   const [plansExpanded, setPlansExpanded] = useState(false);
+
+  // The server decides which business is buying, from the portal token. Nothing
+  // here names a business id, because a body that did would let anyone put a
+  // subscription on somebody else's account.
+  const startCheckout = async (tier: string) => {
+    setBuying(tier); setBuyError("");
+    try {
+      const res = await fetch(`${BASE}/business-portal/checkout`, {
+        method: "POST", headers: { ...AUTH, "Content-Type": "application/json" },
+        body: JSON.stringify({ bizToken: token, tier }),
+      });
+      const d = await res.json().catch(() => null);
+      if (!res.ok || !d?.url) { setBuyError(d?.error || "Could not open checkout."); setBuying(null); return; }
+      // Left spinning: the browser is leaving, and a button that resets first
+      // invites a second click that starts a second checkout.
+      window.location.assign(d.url);
+    } catch { setBuyError("Could not reach the server."); setBuying(null); }
+  };
   const [expandedFaqs, setExpandedFaqs] = useState<Set<number>>(new Set());
   const [bizTab, setBizTab] = useState<"features" | "submissions">("features");
   const submissionsSeenKey = `contynt_biz_subs_seen_${token}`;
@@ -998,10 +1023,12 @@ export function BusinessPortal({ token }: { token: string }) {
               <div className="grid grid-cols-1 md:grid-cols-3 gap-4 items-stretch">
                 {PLANS.map(plan => (
                   <div key={plan.name} className="flex flex-col">
-                    <PlanCard plan={plan} featured={plan.name === "Growth"} />
+                    <PlanCard plan={plan} featured={plan.name === "Growth"}
+                      busy={buying === plan.name} onBuy={() => startCheckout(plan.name)} />
                   </div>
                 ))}
               </div>
+              {buyError && <p className="text-center text-xs text-red-400">{buyError}</p>}
               <p className="text-center text-xs text-neutral-500">Cancel anytime. No contracts.</p>
 
               {/* One-off purchase — secondary to the subscription plans above,
@@ -1017,9 +1044,9 @@ export function BusinessPortal({ token }: { token: string }) {
                       cheaper subscription reads as the obvious choice. */}
                   <p className="text-[11px] text-neutral-500 mt-1.5">{ONE_OFF.note}</p>
                 </div>
-                <button
-                  className="shrink-0 px-4 py-2.5 text-sm font-medium rounded-xl bg-neutral-800 text-white border border-white/10 hover:bg-neutral-700 transition-all">
-                  {ONE_OFF.cta}
+                <button onClick={() => startCheckout("one_off")} disabled={buying === "one_off"}
+                  className="shrink-0 px-4 py-2.5 text-sm font-medium rounded-xl bg-neutral-800 text-white border border-white/10 hover:bg-neutral-700 transition-all disabled:opacity-50">
+                  {buying === "one_off" ? "Opening checkout…" : ONE_OFF.cta}
                 </button>
               </div>
 

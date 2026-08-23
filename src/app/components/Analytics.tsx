@@ -904,6 +904,28 @@ export function Analytics({ adminToken }: { adminToken?: string } = {}) {
     finally { setSendBusy(false); }
   }, []);
 
+  // Creates the four Prices in the real Stripe account, so this asks first and
+  // previews by default. Idempotent on lookup_key, so a second run reuses what
+  // is already there rather than making duplicate products in a live dashboard.
+  const syncStripePrices = useCallback(async (dryRun: boolean) => {
+    if (!dryRun && !window.confirm("Create the Contynt plan prices in your live Stripe account?\n\nExisting ones are reused, not duplicated.")) return;
+    setSendBusy(true);
+    try {
+      const res = await apiFetch("/admin/stripe/sync-prices", {
+        method: "POST", body: JSON.stringify({ dryRun }),
+      });
+      const d = await res.json().catch(() => null);
+      if (!res.ok || !d?.success) { window.alert(d?.error || "Stripe price sync failed."); return; }
+      const lines = (d.results || []).map((r: any) =>
+        r.error ? `${r.plan}: ${r.error}`
+        : r.existed ? `${r.plan}: already in Stripe (${r.priceId})`
+        : r.created ? `${r.plan}: created (${r.priceId})`
+        : `${r.plan}: would create at $${((r.amount ?? 0) / 100).toFixed(2)}`);
+      window.alert(`${dryRun ? "Preview" : "Stripe prices"}\n\n${lines.join("\n")}`);
+    } catch { window.alert("Could not reach the server."); }
+    finally { setSendBusy(false); }
+  }, []);
+
   const ambAction = async (id: string, path: string, body: object) => {
     setAmbBusy(id);
     await apiFetch(path, { method: "POST", body: JSON.stringify(body) }).catch(() => {});
@@ -1249,6 +1271,15 @@ export function Analytics({ adminToken }: { adminToken?: string } = {}) {
             <button onClick={generateAdminLink}
               className="flex items-center gap-1.5 px-3 py-2 bg-white text-neutral-900 rounded-lg hover:bg-neutral-100 transition-all text-sm">
               <Link className="w-3.5 h-3.5" />Generate Private Link
+            </button>
+            <button onClick={() => syncStripePrices(true)} disabled={sendBusy}
+              title="Show which plan prices exist in Stripe, without creating any"
+              className="flex items-center gap-1.5 px-3 py-2 bg-white/10 text-neutral-300 rounded-lg hover:bg-white/15 transition-all text-sm disabled:opacity-40">
+              Check Stripe prices
+            </button>
+            <button onClick={() => syncStripePrices(false)} disabled={sendBusy}
+              className="flex items-center gap-1.5 px-3 py-2 bg-indigo-500/20 border border-indigo-400/40 text-indigo-100 rounded-lg hover:bg-indigo-500/30 transition-all text-sm disabled:opacity-40">
+              Create Stripe prices
             </button>
             <button onClick={() => { sessionStorage.removeItem("analytics_token"); setIsAuthenticated(false); }}
               className="px-3 py-2 bg-white/10 text-neutral-300 rounded-lg hover:bg-white/15 transition-all text-sm">

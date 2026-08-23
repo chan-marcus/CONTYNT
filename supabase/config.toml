@@ -5,14 +5,14 @@ project_id = "kskqipduwovvedcuhwre"
 # deployed function slug (make-server-f5961d0c), not the folder Make shipped.
 [functions.make-server-f5961d0c]
 entrypoint = "./functions/make-server-f5961d0c/index.tsx"
-# Six routes are reached by callers that cannot send an Authorization header: the
-# verification magic link and the ambassador QR codes are opened straight from a
-# phone browser, the card print/screen views likewise, and Postmark posts the
-# delivery webhook itself. Supabase only offers verify_jwt per function, not per
-# route, so the gate has to come off for any of them to work.
+# Several routes are reached by callers that cannot send an Authorization header:
+# the verification magic link and the ambassador QR codes are opened straight
+# from a phone browser, the card print/screen views likewise, and Postmark and
+# Stripe post their webhooks themselves. Supabase only offers verify_jwt per
+# function, not per route, so the gate has to come off for any of them to work.
 #
 # This is not the security boundary it looks like. The anon key it checks for is
 # public by design — it ships inside the frontend bundle. The function does its
 # own auth per route: admin routes require x-admin-token, creator routes resolve
-# a portal token out of KV, and the webhook verifies a shared secret.
+# a portal token out of KV, and each webhook verifies its sender's signature.
 verify_jwt = false
