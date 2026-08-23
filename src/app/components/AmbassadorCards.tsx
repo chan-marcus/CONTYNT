@@ -94,11 +94,9 @@ export function AmbassadorPrintSheet({ token }: { token: string }) {
     <div className="amb-card" key={i}>
       <div className="amb-inner">
         <div className="amb-brand">C O N T Y N T</div>
-        {/* The hook is that content about their business exists -- that is what
-            makes an owner scan. "Dashboard" is a thing nobody wants; the scan
-            page explains it once they are already interested. */}
-        <div className="amb-lead">A creator filmed a Reel at your business.</div>
-        <div className="amb-cta">See it free when it goes live</div>
+        <div className="amb-lead">A creator filmed a Reel here.</div>
+        {/* The reason to scan, set darker than the lead so it reads as the ask. */}
+        <div className="amb-cta">Claim your business dashboard</div>
         <img className="amb-qr" src={qr} alt="" />
         <div className="amb-or">Scan the code, or go to</div>
         <div className="amb-url">{prettyUrl(state.url)}</div>
