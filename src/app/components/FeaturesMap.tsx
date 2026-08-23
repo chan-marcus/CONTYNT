@@ -138,9 +138,18 @@ export function FeaturesMap({ apiKey, features }: { apiKey?: string; features: M
 
         const map = new Map(host.current, {
           styles: MAP_STYLE,
+          // Every control off. This is an orientation aid a few hundred pixels
+          // tall, not something to navigate in -- the pins are the point, and
+          // the cards below are where the detail lives. Pinch and ctrl-scroll
+          // still work for anyone who wants a closer look.
+          //
+          // What cannot come off is the Google wordmark and the "Map data (c)
+          // Google / Terms" line. Those are required attribution under the Maps
+          // Platform terms; CSS could hide them and doing so risks the key.
           disableDefaultUI: true,
+          zoomControl: false,
+          keyboardShortcuts: false,
           gestureHandling: "cooperative",
-          zoomControl: true,
           backgroundColor: "#1c1c1f",
         });
 
