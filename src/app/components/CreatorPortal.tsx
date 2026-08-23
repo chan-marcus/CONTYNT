@@ -3,6 +3,7 @@ import { motion, AnimatePresence } from "motion/react";
 import { MapPin, DollarSign, CheckCircle, X, ExternalLink, AlertCircle, Users, Zap, TrendingUp, Award, ChevronDown } from "lucide-react";
 import { projectId, publicAnonKey } from "/utils/supabase/info";
 import { CreatorLogin, CREATOR_TOKEN_KEY } from "./CreatorLogin";
+import { FeaturesMap } from "./FeaturesMap";
 import { AmbassadorPanel, AmbassadorUpsell, AmbassadorEmptyState, useAmbassador,
          AmbassadorFeatureActions, HandoffQuestion } from "./Ambassador";
 
@@ -19,6 +20,8 @@ interface Feature {
   payoutRange: string;
   status: "available" | "completed";
   adminNotes?: string;
+  // The business's Google place_id, when it has one. Only the map reads it.
+  placeId?: string | null;
 }
 
 interface Claim { featureId: string; status: "interested" | "admin_approved" | "claimed" | "submitted" | "approved" | "cashed_out" | "denied"; reelUrl?: string; stripeLink?: string; payoutAmount?: string; deniedNote?: string; approvedAt?: string; expiresAt?: string; acceptanceExpiresAt?: string; }
@@ -1025,6 +1028,7 @@ export function CreatorPortal({ token, impersonating }: { token: string; imperso
   // explainer, and no tab content until a tab is actually chosen. Features used
   // to be selected on arrival, which buried the explainer under a feature list.
   const [portalTab, setPortalTab] = useState<"home" | "features" | "completed" | "activity" | "ambassador">("home");
+  const [placesKey, setPlacesKey] = useState("");
   const ambassador = useAmbassador(token);
   // Cards only exist for opted-in creators, so the fetch is gated on that
   // rather than firing for every creator on every portal load.
@@ -1071,6 +1075,7 @@ export function CreatorPortal({ token, impersonating }: { token: string; imperso
       }
       setCreator(json.creator);
       setServerImpersonated(!!json.impersonated);
+      setPlacesKey(json.placesKey || "");
       // adminNotes now comes back from /creator-portal directly.
       setFeatures(json.features || []);
 
@@ -1612,6 +1617,14 @@ export function CreatorPortal({ token, impersonating }: { token: string; imperso
 
         {portalTab === "features" && (
           <div className="w-full flex flex-col gap-4">
+            {/* Above the cards rather than below: the question a creator opens
+                this tab with is "is any of this near me", and the list answers
+                it one address at a time. Only unclaimed Features are pinned --
+                the ones already held are in progress, not somewhere to go. */}
+            <FeaturesMap
+              apiKey={placesKey}
+              features={features.filter(f => f.status === "available" && !claims[f.id])}
+            />
             {(() => {
               const hasAvailable = features.some(f => f.status === "available" && !claims[f.id]);
               // Count claims that will actually render a card in the features tab

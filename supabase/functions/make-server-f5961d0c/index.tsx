@@ -4511,11 +4511,19 @@ app.get("/make-server-f5961d0c/creator-portal", async (c) => {
     const resetRecord = await kv.get(`reset_${token}`);
     const resetAt = resetRecord?.resetAt || null;
     // Get all real features
-    const [featRes, claimsRes, statsRes] = await Promise.all([
+    const [featRes, claimsRes, statsRes, placeRes] = await Promise.all([
       db().from("features_f5961d0c").select("*").order("approved_at", { ascending: false }),
       db().from("creator_claims_f5961d0c").select("*").eq("creator_token", token).neq("status", "unclaimed"),
       db().from("submissions_f5961d0c").select("id, feature_id, status").eq("token", token),
+      // The Feature stores a formatted address and no coordinates. Turning that
+      // string back into a point needs the Geocoding API, which is a separate
+      // product and is not enabled on this key -- but the business it belongs
+      // to already carries the place_id that Places picked when it signed up.
+      // That is both exact and free of a second API to switch on.
+      db().from("business_signups_f5961d0c").select("id, place_id").not("place_id", "is", null),
     ]);
+    const placeById = new Map<string, string>(
+      (placeRes.data ?? []).map((b: any) => [String(b.id), String(b.place_id)]));
     // Early-access gating. A creator who already claimed a Feature keeps seeing
     // it regardless, otherwise a gated Feature would vanish from under them.
     const confirmed = await creatorIsConfirmed(creatorData.creatorId);
@@ -4527,7 +4535,7 @@ app.get("/make-server-f5961d0c/creator-portal", async (c) => {
     const features = (featRes.data ?? [])
       .filter((r: any) => claimedIds.has(r.id)
         || (visibleToCreator(r, confirmed) && featureInCreatorCity(r, creatorData.city)))
-      .map((r: any) => ({ id: r.id, businessId: r.business_id, businessName: r.business_name, address: r.address, city: r.city, category: r.category, payoutRange: r.payout_range, status: r.status, approvedAt: r.approved_at, winnerInstagram: r.winner_instagram || "", businessInstagram: r.business_instagram || "", adminNotes: r.admin_notes || "", earlyAccessUntil: r.early_access_until || null }));
+      .map((r: any) => ({ id: r.id, businessId: r.business_id, businessName: r.business_name, address: r.address, city: r.city, placeId: placeById.get(String(r.business_id)) ?? null, category: r.category, payoutRange: r.payout_range, status: r.status, approvedAt: r.approved_at, winnerInstagram: r.winner_instagram || "", businessInstagram: r.business_instagram || "", adminNotes: r.admin_notes || "", earlyAccessUntil: r.early_access_until || null }));
     // SQL only — no KV merge needed
     const claimsMap: Record<string, any> = {};
     for (const cl of (claimsRes.data ?? [])) {
@@ -4560,6 +4568,11 @@ app.get("/make-server-f5961d0c/creator-portal", async (c) => {
       // Comes from the session itself rather than a URL flag, so the read-only
       // banner cannot be dismissed by editing the address bar.
       impersonated: !!creatorData.impersonated,
+      // Same key the referral and scan forms already get. Browser keys are
+      // public by nature -- they ship in the page either way -- so the control
+      // that matters is the HTTP referrer restriction on the key itself, not
+      // whether this endpoint returns it.
+      placesKey: Deno.env.get("GOOGLE_PLACES_KEY") || "",
     });
   } catch (e: any) { return c.json({ error: "Failed to load portal", details: e.message }, 500); }
 });

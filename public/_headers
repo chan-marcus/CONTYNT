@@ -29,8 +29,17 @@
   #   cloudflareinsights.com the Web Analytics beacon Cloudflare injects into
   #                          every Pages response. Not something the app asks
   #                          for, so it is easy to forget it needs a home here.
+  #   places.googleapis.com  where Places API (New) actually lives. The Maps
+  #                          script is served from maps.googleapis.com, so a
+  #                          policy written by reading the <script> tag misses
+  #                          this entirely -- and the failure is quiet: the
+  #                          autocomplete element renders, accepts typing, and
+  #                          returns no predictions, which looks exactly like a
+  #                          place nobody has heard of. Caught by opening the
+  #                          live page and reading securitypolicyviolation,
+  #                          not by reading the source.
   # worker-src allows blob: because the Maps Places element spawns one.
-  Content-Security-Policy: default-src 'self'; base-uri 'self'; object-src 'none'; frame-ancestors 'none'; form-action 'self'; img-src 'self' data: blob: https:; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' data: https://fonts.gstatic.com; script-src 'self' 'unsafe-inline' https://maps.googleapis.com https://maps.gstatic.com https://static.cloudflareinsights.com; connect-src 'self' https://*.supabase.co https://maps.googleapis.com https://maps.gstatic.com https://cloudflareinsights.com; worker-src 'self' blob:; frame-src https://www.instagram.com
+  Content-Security-Policy: default-src 'self'; base-uri 'self'; object-src 'none'; frame-ancestors 'none'; form-action 'self'; img-src 'self' data: blob: https:; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' data: https://fonts.gstatic.com; script-src 'self' 'unsafe-inline' https://maps.googleapis.com https://maps.gstatic.com https://static.cloudflareinsights.com; connect-src 'self' https://*.supabase.co https://maps.googleapis.com https://maps.gstatic.com https://places.googleapis.com https://cloudflareinsights.com; worker-src 'self' blob:; frame-src https://www.instagram.com
 
 # Ambassador card scans. Per-creator links handed to one business at a time --
 # never anything a search engine should hold. Both the printed /a/CODE form and

@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { loadGoogleMaps } from "./loadGoogleMaps";
 
 // Google closed the legacy google.maps.places.Autocomplete widget to new
 // customers on 1 March 2025: it loads without error and simply returns no
@@ -20,34 +21,9 @@ export function usePlacesElement(
     if (!key) return;
     let cancelled = false;
 
-    // With loading=async the script's onload fires before the bootstrap has
-    // attached google.maps.importLibrary, so waiting on onload alone gives
-    // "importLibrary is not a function". Google's documented answer is the
-    // callback parameter, which fires once the API is genuinely ready.
-    const ready = () => typeof (window as any).google?.maps?.importLibrary === "function";
-    const loadScript = () => new Promise<void>((resolve, reject) => {
-      if (ready()) return resolve();
-      const cbName = "__contyntMapsReady";
-      const prev = (window as any)[cbName];
-      (window as any)[cbName] = () => { prev?.(); resolve(); };
-
-      const id = "contynt-places";
-      if (document.getElementById(id)) {
-        // Already loading from an earlier mount: the callback above is chained
-        // onto the pending one, so this resolves when that finishes.
-        return;
-      }
-      const sc = document.createElement("script");
-      sc.id = id; sc.async = true;
-      sc.src = `https://maps.googleapis.com/maps/api/js?key=${encodeURIComponent(key)}`
-             + `&libraries=places&loading=async&v=weekly&callback=${cbName}`;
-      sc.onerror = () => reject(new Error("maps script failed to load"));
-      document.head.appendChild(sc);
-    });
-
     (async () => {
       try {
-        await loadScript();
+        await loadGoogleMaps(key);
         const g = (window as any).google;
         const { PlaceAutocompleteElement } = await g.maps.importLibrary("places");
         if (cancelled) return;
