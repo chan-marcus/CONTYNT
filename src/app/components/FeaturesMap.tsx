@@ -116,6 +116,14 @@ const PIN_AVAILABLE = {
 
 export function FeaturesMap({ apiKey, features }: { apiKey?: string; features: MapFeature[] }) {
   const host = useRef<HTMLDivElement | null>(null);
+  // The map is built once and kept. Constructing a second one on a div that
+  // already holds a map leaves the div blank -- which is exactly what happened
+  // when a Feature moved to in-progress: the redraw key changed, the effect
+  // re-ran, and the whole map vanished instead of one pin changing colour.
+  const mapRef = useRef<any>(null);
+  const markersRef = useRef<any[]>([]);
+  const infoRef = useRef<any>(null);
+  const fittedRef = useRef(false);
   const [state, setState] = useState<"idle" | "loading" | "ready" | "empty" | "failed">("idle");
   const [count, setCount] = useState(0);
   const [inProgressCount, setInProgressCount] = useState(0);
@@ -128,7 +136,9 @@ export function FeaturesMap({ apiKey, features }: { apiKey?: string; features: M
   useEffect(() => {
     if (!apiKey || features.length === 0) { setState("empty"); return; }
     let cancelled = false;
-    setState("loading");
+    // Only the first pass shows the spinner. On a later pass the map is already
+    // on screen and covering it would be a flash of nothing for no reason.
+    if (!mapRef.current) setState("loading");
 
     (async () => {
       try {
@@ -182,7 +192,7 @@ export function FeaturesMap({ apiKey, features }: { apiKey?: string; features: M
 
         if (located.length === 0) { setState("empty"); return; }
 
-        const map = new Map(host.current, {
+        const map = mapRef.current ?? new Map(host.current, {
           styles: MAP_STYLE,
           // Every control off. This is an orientation aid a few hundred pixels
           // tall, not something to navigate in -- the pins are the point, and
@@ -198,9 +208,18 @@ export function FeaturesMap({ apiKey, features }: { apiKey?: string; features: M
           gestureHandling: "cooperative",
           backgroundColor: "#242833",
         });
+        mapRef.current = map;
 
         const bounds = new g.maps.LatLngBounds();
-        const info = new InfoWindow();
+        const info = infoRef.current ?? new InfoWindow();
+        infoRef.current = info;
+
+        // Only the pins are rebuilt. They are cheap, they are what actually
+        // changed, and detaching them by hand is the whole reason the map
+        // underneath can be left alone.
+        info.close();
+        for (const m of markersRef.current) m.setMap(null);
+        markersRef.current = [];
 
         for (const { f, pos } of located) {
           const marker = new Marker({
@@ -220,15 +239,23 @@ export function FeaturesMap({ apiKey, features }: { apiKey?: string; features: M
                </div>`);
             info.open({ map, anchor: marker });
           });
+          markersRef.current.push(marker);
           bounds.extend(pos);
         }
 
-        map.fitBounds(bounds, 48);
-        // fitBounds on a single pin zooms to the building. One listener, removed
-        // as it fires, so a creator who zooms in afterwards is not yanked back.
-        g.maps.event.addListenerOnce(map, "idle", () => {
-          if (map.getZoom() > 15) map.setZoom(15);
-        });
+        // Fitted once. Re-fitting on every change would yank the view back
+        // whenever a Feature changed state, undoing wherever the creator had
+        // panned to.
+        if (!fittedRef.current) {
+          fittedRef.current = true;
+          map.fitBounds(bounds, 48);
+          // fitBounds on a single pin zooms to the building. One listener,
+          // removed as it fires, so a creator who zooms in afterwards is not
+          // yanked back out.
+          g.maps.event.addListenerOnce(map, "idle", () => {
+            if (map.getZoom() > 15) map.setZoom(15);
+          });
+        }
 
         setCount(located.length);
         setInProgressCount(located.filter(l => l.f.inProgress).length);
