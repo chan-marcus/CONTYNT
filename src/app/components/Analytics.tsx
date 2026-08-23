@@ -883,6 +883,27 @@ export function Analytics({ adminToken }: { adminToken?: string } = {}) {
     finally { setAmbBusy(null); }
   }, [loadAmbassadors]);
 
+  const remindExpiring = useCallback(async (dryRun: boolean) => {
+    setSendBusy(true);
+    try {
+      const res = await apiFetch("/admin/claims/expiry-reminders", {
+        method: "POST", body: JSON.stringify({ dryRun }),
+      });
+      const d = await res.json().catch(() => null);
+      if (!res.ok || !d?.success) { setSendResult(d?.error || "Reminder sweep failed."); return; }
+      const why = (() => {
+        const counts = new Map<string, number>();
+        for (const r of (d.results || [])) if (r.skipped) counts.set(r.skipped, (counts.get(r.skipped) ?? 0) + 1);
+        return [...counts.entries()].map(([reason, n]) => `${n} ${reason}`);
+      })();
+      const detail = why.length ? ` — ${why.join(", ")}` : "";
+      setSendResult(dryRun
+        ? `Dry run: ${d.wouldSend} claim${d.wouldSend === 1 ? "" : "s"} near a deadline, of ${d.considered} open${detail}.`
+        : `Reminded ${d.sent} of ${d.considered} open claim${d.considered === 1 ? "" : "s"}${detail}.`);
+    } catch { setSendResult("Could not reach the server."); }
+    finally { setSendBusy(false); }
+  }, []);
+
   const ambAction = async (id: string, path: string, body: object) => {
     setAmbBusy(id);
     await apiFetch(path, { method: "POST", body: JSON.stringify(body) }).catch(() => {});
@@ -1443,7 +1464,7 @@ export function Analytics({ adminToken }: { adminToken?: string } = {}) {
                       className="text-xs text-neutral-500 hover:text-neutral-300">Dismiss</button>
                   </div>
                 )}
-                <CreatorReadiness data={readyData} onSend={sendVerification} onSendFeatureDrop={sendFeatureDrop} onTestFeatureDrop={testFeatureDrop} busy={sendBusy}
+                <CreatorReadiness data={readyData} onSend={sendVerification} onSendFeatureDrop={sendFeatureDrop} onTestFeatureDrop={testFeatureDrop} onRemindExpiring={remindExpiring} busy={sendBusy}
                   health={emailHealth} onTest={sendTestEmail} testing={testingEmail} testResult={testEmailResult} />
               </div>
             : <p className="text-neutral-400 text-sm">Loading readiness…</p>

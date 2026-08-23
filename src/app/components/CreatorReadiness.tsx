@@ -1,5 +1,5 @@
 import { Fragment, useMemo, useState } from "react";
-import { Download, Send, Loader2, Check, X, AlertTriangle, CheckCircle2, MailCheck, Megaphone } from "lucide-react";
+import { Download, Send, Loader2, Check, X, AlertTriangle, CheckCircle2, MailCheck, Megaphone, Clock } from "lucide-react";
 
 export interface ReadinessCreator {
   id: string; handle: string; email: string; city: string;
@@ -215,11 +215,12 @@ function ReachChips({ email, dm }: { email: boolean; dm: boolean }) {
   );
 }
 
-export function CreatorReadiness({ data, onSend, onSendFeatureDrop, onTestFeatureDrop, busy, health, onTest, testing, testResult }: {
+export function CreatorReadiness({ data, onSend, onSendFeatureDrop, onTestFeatureDrop, onRemindExpiring, busy, health, onTest, testing, testResult }: {
   data: ReadinessData;
   onSend: (creatorIds: string[], reminderOnly: boolean, dryRun: boolean) => void;
   onSendFeatureDrop: (creatorIds: string[], dryRun: boolean, featureCount: number) => void;
   onTestFeatureDrop: (to: string, featureCount: number) => void;
+  onRemindExpiring: (dryRun: boolean) => void;
   busy: boolean;
   health: EmailHealth | null;
   onTest: (to: string) => void;
@@ -385,6 +386,19 @@ export function CreatorReadiness({ data, onSend, onSendFeatureDrop, onTestFeatur
           disabled={busy || !ids.length || !canSend} title={sendBlocked}
           className="flex items-center gap-1.5 px-3 py-2 text-xs rounded-xl bg-purple-500 text-white font-semibold hover:bg-purple-400 transition-all disabled:opacity-40">
           <Megaphone className="w-3.5 h-3.5" />Send feature drop
+        </button>
+
+        {/* Nothing in this project schedules anything, so a deadline only gets
+            chased when somebody runs this. Idempotent, so running it twice in a
+            day costs nothing. */}
+        <button onClick={() => onRemindExpiring(true)} disabled={busy}
+          title="Show who is close to a deadline, without emailing them"
+          className="flex items-center gap-1.5 px-3 py-2 text-xs rounded-xl bg-white/5 border border-white/15 text-neutral-200 hover:border-white/30 transition-all disabled:opacity-40">
+          <Clock className="w-3.5 h-3.5" />Preview expiry reminders
+        </button>
+        <button onClick={() => onRemindExpiring(false)} disabled={busy || !canSend} title={sendBlocked}
+          className="flex items-center gap-1.5 px-3 py-2 text-xs rounded-xl bg-white/5 border border-white/15 text-neutral-200 hover:border-white/30 transition-all disabled:opacity-40">
+          <Clock className="w-3.5 h-3.5" />Send expiry reminders
         </button>
 
         <button onClick={exportCsv} disabled={!rows.length}
