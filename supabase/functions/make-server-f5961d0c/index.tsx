@@ -1155,10 +1155,25 @@ app.post("/make-server-f5961d0c/admin/stripe/sync-prices", async (c) => {
     // Balance rather than account, because the Account object carries no
     // livemode flag and a Price only exists after the thing this check is
     // supposed to happen before. Balance always exists and always says.
-    const [acct, balance] = await Promise.all([
+    // Webhook endpoints are listed with the same key, which is the point: a key
+    // only ever sees endpoints in its own mode. An endpoint that exists in the
+    // Stripe dashboard but is absent here is in the other mode, and will never
+    // be sent an event by these payments no matter how correct its URL is.
+    const [acct, balance, hooks] = await Promise.all([
       stripeCall("GET", "account"),
       stripeCall("GET", "balance"),
+      stripeCall("GET", "webhook_endpoints", { limit: 10 }),
     ]);
+    const webhooks = hooks.ok
+      ? (hooks.data?.data ?? []).map((w: any) => ({
+          url: w.url, status: w.status,
+          events: w.enabled_events ?? [],
+          // Named so the reader can tell at a glance whether the three events
+          // this integration depends on are actually subscribed.
+          hasCheckoutCompleted: (w.enabled_events ?? []).includes("checkout.session.completed")
+            || (w.enabled_events ?? []).includes("*"),
+        }))
+      : [{ error: hooks.error }];
     const account = acct.ok ? {
       chargesEnabled: !!acct.data?.charges_enabled,
       payoutsEnabled: !!acct.data?.payouts_enabled,
@@ -1175,7 +1190,7 @@ app.post("/make-server-f5961d0c/admin/stripe/sync-prices", async (c) => {
     const priceLivemode = results.map((r: any) => r.livemode).find((v: any) => v !== undefined) ?? null;
     const livemode = accountLivemode ?? priceLivemode;
     return c.json({
-      success: true, dryRun, account, livemode,
+      success: true, dryRun, account, livemode, webhooks,
       created: results.filter(r => (r as any).created).length,
       existed: results.filter(r => (r as any).existed).length,
       wouldCreate: results.filter(r => (r as any).wouldCreate).length,
@@ -1253,9 +1268,29 @@ app.post("/make-server-f5961d0c/webhooks/stripe", async (c) => {
   // Read once, as text: the signature is over the exact bytes Stripe sent, so
   // parsing first and re-serialising would never match.
   const raw = await c.req.text();
-  if (!(await stripeSignatureValid(raw, c.req.header("stripe-signature") || ""))) {
-    return c.json({ error: "Bad signature" }, 400);
-  }
+  const sigHeader = c.req.header("stripe-signature") || "";
+  const valid = await stripeSignatureValid(raw, sigHeader);
+
+  // Records that a request arrived and whether it verified, because from the
+  // database side "Stripe never delivered" and "Stripe delivered and we refused
+  // it" are indistinguishable otherwise -- both leave no trace at all. Holds no
+  // secret: the signature header is a MAC over a body Stripe already sent.
+  try {
+    let peek: any = null;
+    try { const p = JSON.parse(raw); peek = { type: p?.type ?? null, id: p?.id ?? null,
+      hasMetadataBusinessId: !!p?.data?.object?.metadata?.business_id,
+      clientReferenceId: p?.data?.object?.client_reference_id ?? null }; } catch { /* not JSON */ }
+    await kv.set("stripehook_last", {
+      at: new Date().toISOString(),
+      signatureValid: valid,
+      hadSignatureHeader: !!sigHeader,
+      secretConfigured: !!STRIPE_WEBHOOK_SECRET,
+      bodyBytes: raw.length,
+      ...peek,
+    });
+  } catch { /* diagnostics must never break the webhook */ }
+
+  if (!valid) return c.json({ error: "Bad signature" }, 400);
   let event: any;
   try { event = JSON.parse(raw); } catch { return c.json({ error: "Bad payload" }, 400); }
 
@@ -1280,18 +1315,32 @@ app.post("/make-server-f5961d0c/webhooks/stripe", async (c) => {
       case "customer.subscription.updated": {
         // A subscription that has lapsed should stop granting quota. Anything
         // still active or in its grace period keeps the tier it paid for.
+        //
+        // Cancelling is one of these, not a deletion: Stripe leaves the status
+        // active and sets cancel_at_period_end, then sends the delete when the
+        // period actually runs out. So a business that cancels keeps its plan
+        // to the end of the month it paid for, which is the intended deal --
+        // and the end date is recorded rather than left implicit, so a pending
+        // cancellation is visible instead of a tier that vanishes one morning.
         if (!businessId) break;
         const live = ["active", "trialing", "past_due"].includes(String(obj.status));
+        const endsAt = obj.cancel_at_period_end && obj.current_period_end
+          ? new Date(obj.current_period_end * 1000).toISOString()
+          : null;
         await db().from("business_signups_f5961d0c")
-          .update({ subscription_tier: live ? tier : null }).eq("id", businessId);
-        await logBusinessEvent(businessId, "subscription_updated", { tier, status: obj.status });
+          .update({ subscription_tier: live ? tier : null, subscription_ends_at: endsAt })
+          .eq("id", businessId);
+        await logBusinessEvent(businessId,
+          obj.cancel_at_period_end ? "subscription_cancel_scheduled" : "subscription_updated",
+          { tier, status: obj.status, endsAt });
         break;
       }
       case "customer.subscription.deleted": {
+        // The period has now run out. This is where the plan actually stops.
         if (!businessId) break;
         await db().from("business_signups_f5961d0c")
-          .update({ subscription_tier: null }).eq("id", businessId);
-        await logBusinessEvent(businessId, "subscription_cancelled", { tier });
+          .update({ subscription_tier: null, subscription_ends_at: null }).eq("id", businessId);
+        await logBusinessEvent(businessId, "subscription_ended", { tier });
         break;
       }
     }
@@ -3239,7 +3288,7 @@ app.get("/make-server-f5961d0c/signups", async (c) => {
 app.get("/make-server-f5961d0c/business-signups", async (c) => {
   try {
     const { data, error } = await db().from("business_signups_f5961d0c")
-      .select("id, business_name, instagram, email, city, address, preferred_contact, created_at, subscription_tier, feature_status, plan_clicks, referral_source, referral_code, referred_by_creator")
+      .select("id, business_name, instagram, email, city, address, preferred_contact, created_at, subscription_tier, subscription_ends_at, feature_status, plan_clicks, referral_source, referral_code, referred_by_creator")
       .order("created_at", { ascending: false });
     if (error) throw error;
     const rows = data ?? [];
@@ -3279,6 +3328,7 @@ app.get("/make-server-f5961d0c/business-signups", async (c) => {
         id: r.id, businessName: r.business_name, instagram: r.instagram, email: r.email,
         city: r.city, address: r.address, preferredContact: r.preferred_contact,
         createdAt: r.created_at, subscriptionTier: r.subscription_tier || null,
+        subscriptionEndsAt: r.subscription_ends_at || null,
         featureStatus: r.feature_status || null, planClicks: r.plan_clicks || 0,
         referralSource: r.referral_source || null,
         referralCode: r.referral_code || null,
