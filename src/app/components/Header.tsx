@@ -26,7 +26,7 @@ export function Header() {
             <a href="#businesses" className="hover:text-white transition-colors" style={{ fontWeight: 400 }}>
               For Businesses
             </a>
-            <a href="/login" className="px-4 py-2.5 rounded-lg border border-white/20 text-white hover:bg-white/10 transition-all duration-200" style={{ fontWeight: 400 }}>
+            <a href="/app" className="px-4 py-2.5 rounded-lg border border-white/20 text-white hover:bg-white/10 transition-all duration-200" style={{ fontWeight: 400 }}>
               Log In
             </a>
             <a href="#early-access" className="px-6 py-2.5 bg-white text-black rounded-lg hover:bg-neutral-100 transition-all duration-200" style={{ fontWeight: 500 }}>
@@ -80,7 +80,7 @@ export function Header() {
               For Businesses
             </a>
             <a
-              href="/login"
+              href="/app"
               className="px-6 py-3 rounded-lg border border-white/20 text-white hover:bg-white/10 transition-all duration-200 text-center"
               style={{ fontWeight: 400 }}
               onClick={() => setMobileMenuOpen(false)}

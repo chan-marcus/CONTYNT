@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect } from "react";
 import { motion } from "motion/react";
-import { Mail, ArrowLeft, AlertCircle, Loader2 } from "lucide-react";
+import { ArrowLeft, AlertCircle, Loader2 } from "lucide-react";
 import { projectId, publicAnonKey } from "/utils/supabase/info";
 
 const BASE = `https://${projectId}.supabase.co/functions/v1/make-server-f5961d0c`;
@@ -53,6 +53,15 @@ export function CreatorLogin({ onSignedIn }: { onSignedIn?: (token: string, need
       const d = await res.json().catch(() => null);
       if (!res.ok || !d?.token) { setError(d?.error || "Could not sign you in."); setBusy(false); return; }
 
+      // A business address is accepted here rather than rejected: the server
+      // issues it a business code and says so once the code checks out. Sent to
+      // their own portal, not stored as a creator session, because it is a
+      // business token and nothing on the creator side can read it.
+      if (d.portal === "business") {
+        window.location.replace(`${window.location.origin}/business?biz=${encodeURIComponent(d.token)}`);
+        return;
+      }
+
       localStorage.setItem(CREATOR_TOKEN_KEY, d.token);
       if (onSignedIn) { onSignedIn(d.token, !!d.needsConfirm); return; }
       // Confirmed creators go to the portal, everyone else confirms first.
@@ -67,18 +76,14 @@ export function CreatorLogin({ onSignedIn }: { onSignedIn?: (token: string, need
     <div className="min-h-screen bg-neutral-950 text-white flex flex-col">
       <header className="border-b border-white/10 px-5 py-4">
         <div className="max-w-sm mx-auto flex items-center justify-between">
-          <span className="text-sm font-semibold tracking-[0.2em]">C O N T Y N T</span>
-          <span className="text-xs text-neutral-500">For Creators</span>
+          <a href="/" className="text-sm font-semibold tracking-[0.2em] hover:opacity-80 transition-opacity">C O N T Y N T</a>
+          <span className="text-xs text-neutral-500">Sign In</span>
         </div>
       </header>
 
       <main className="flex-1 w-full max-w-sm mx-auto px-5 py-12">
         <motion.div initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.35 }}
           className="space-y-6">
-          <div className="inline-flex items-center justify-center w-12 h-12 rounded-2xl bg-white/5 border border-white/10">
-            <Mail className="w-5 h-5 text-neutral-300" />
-          </div>
-
           {step === "email" ? (
             <>
               <div className="space-y-2">
@@ -102,6 +107,16 @@ export function CreatorLogin({ onSignedIn }: { onSignedIn?: (token: string, need
                   {busy ? <Loader2 className="w-4 h-4 animate-spin" /> : "Email me a code"}
                 </button>
               </form>
+
+              {/* The header's Log In goes straight here now, so this is the only
+                  thing standing between an owner who followed it and a dead end:
+                  nothing else on the site links to the business portal. */}
+              <p className="text-xs text-neutral-500">
+                Here for your business?{" "}
+                <a href="/business" className="text-neutral-300 underline underline-offset-2 hover:text-white">
+                  Sign in as a business
+                </a>.
+              </p>
             </>
           ) : (
             <>
