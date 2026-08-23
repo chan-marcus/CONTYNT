@@ -1753,14 +1753,19 @@ async function recordEmailEvent(ev: any) {
   // Both id columns stay nullable on purpose: a bounce for an address no longer
   // matched to anyone is still worth keeping, and dropping it would lose the
   // only signal that the address is dead.
-  await db().from("email_events_f5961d0c").insert({
+  //
+  // Through must(): this insert IS the record. Unchecked, a failing write left
+  // the route answering 200 to Postmark, which then considered the event
+  // delivered and never retried -- losing the one thing this table exists for,
+  // on the one table whose entire job is remembering what happened.
+  await must("email event: record", db().from("email_events_f5961d0c").insert({
     creator_id: creatorId,
     business_id: businessId,
     message_id: ev.MessageID ?? ev.MessageId ?? null,
     type,
     payload: ev,
     occurred_at: occurredAt,
-  });
+  }));
 
   if (!creatorId && !businessId) return { recorded: type, matched: false };
 
@@ -1813,9 +1818,37 @@ async function recordEmailEvent(ev: any) {
 }
 
 app.post("/make-server-f5961d0c/webhooks/postmark", async (c) => {
+  // Records that a request arrived and whether it authorised, before deciding
+  // anything -- the same diagnostic the Stripe hook carries, and for the same
+  // reason. Without it "Postmark never posted" and "Postmark posted and we
+  // refused it" are the identical observation from in here: an empty table.
+  //
+  // That ambiguity had a real cost. email_events_f5961d0c sat at zero rows
+  // while three messages went out and one link was opened twice, and there was
+  // no way to tell from the data whether the webhook was misconfigured or
+  // simply absent. It was absent -- Postmark had no webhook registered at all
+  // -- but confirming that meant going and asking Postmark by hand.
+  //
+  // Holds no secret: it records whether a credential matched, never what was
+  // sent. Overwritten each time, so it is a "what happened last" probe rather
+  // than a log that grows.
+  const authorized = postmarkAuthorized(c);
+  try {
+    await kv.set("postmarkhook_last", {
+      at: new Date().toISOString(),
+      authorized,
+      secretConfigured: !!POSTMARK_WEBHOOK_SECRET,
+      // Which of the two accepted credential shapes was offered, so a webhook
+      // configured with neither is distinguishable from one configured wrongly.
+      hadCustomHeader: !!c.req.header("x-postmark-secret"),
+      hadBasicAuth: (c.req.header("authorization") || "").toLowerCase().startsWith("basic "),
+      userAgent: c.req.header("user-agent") || "",
+    });
+  } catch { /* diagnostics must never break the webhook */ }
+
   try {
     if (!POSTMARK_WEBHOOK_SECRET) return c.json({ error: "Server is missing POSTMARK_WEBHOOK_SECRET" }, 500);
-    if (!postmarkAuthorized(c)) return c.json({ error: "Unauthorized" }, 401);
+    if (!authorized) return c.json({ error: "Unauthorized" }, 401);
 
     const body = await c.req.json();
     const events = Array.isArray(body) ? body : [body];
