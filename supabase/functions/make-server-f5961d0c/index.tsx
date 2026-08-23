@@ -1385,7 +1385,7 @@ app.post("/make-server-f5961d0c/scan/:code/lead", async (c) => {
     let createdBusiness = false;
     if (placeId) {
       const { data } = await db().from("business_signups_f5961d0c")
-        .select("id, lead_status, place_id").eq("place_id", placeId).maybeSingle();
+        .select("id, lead_status, place_id, business_name, city").eq("place_id", placeId).maybeSingle();
       business = data ?? null;
     }
     if (!business && handle) {
@@ -1395,14 +1395,14 @@ app.post("/make-server-f5961d0c/scan/:code/lead", async (c) => {
       // because stored values include "@name" and full profile URLs, and
       // handles are case insensitive -- neither matches in SQL.
       const { data: all } = await db().from("business_signups_f5961d0c")
-        .select("id, lead_status, place_id, instagram, city");
+        .select("id, lead_status, place_id, instagram, city, business_name");
       const wanted = handle.toLowerCase();
       business = (all ?? []).find((r: any) =>
         (normalizeHandle(String(r.instagram ?? "")) ?? "").toLowerCase() === wanted) ?? null;
     }
     if (!business) {
       const { data } = await db().from("business_signups_f5961d0c")
-        .select("id, lead_status, place_id, instagram, city").ilike("business_name", businessName).limit(1);
+        .select("id, lead_status, place_id, instagram, city, business_name").ilike("business_name", businessName).limit(1);
       business = (data ?? [])[0] ?? null;
     }
 
@@ -1438,7 +1438,7 @@ app.post("/make-server-f5961d0c/scan/:code/lead", async (c) => {
         lead_status: "unverified_lead",
         referral_source: "ambassador_scan",
         referred_by_creator: creator.id,
-      }).select("id").single();
+      }).select("id, business_name, city").single();
       if (makeErr) console.error("[lead] could not create business:", makeErr.message);
       business = made ?? null;
     }
@@ -1491,7 +1491,28 @@ app.post("/make-server-f5961d0c/scan/:code/lead", async (c) => {
       card_code: code, business_id: business?.id ?? null, email,
     });
     if (error && !String(error.message || "").includes("duplicate")) throw error;
-    return c.json({ ok: true });
+
+    // Hand back a way straight into the portal, the same as the referral route
+    // does. The owner is standing at their own counter with the creator; a
+    // screen saying a link is on its way makes them wait on an inbox to see
+    // something they could be looking at now. Reuses their live token, so a
+    // link already mailed to them keeps working.
+    let portalToken: string | null = null;
+    if (business?.id) {
+      try {
+        portalToken = await ensureBusinessPortalToken({
+          id: business.id,
+          business_name: business.business_name ?? businessName,
+          city: business.city ?? "",
+        });
+      } catch (e: any) {
+        // The lead is already saved. Failing to mint a token is a worse portal
+        // experience, not a lost signup, so the caller falls back to the
+        // confirmation screen rather than seeing an error.
+        console.error("[lead] could not mint portal token:", e?.message ?? e);
+      }
+    }
+    return c.json({ ok: true, businessId: business?.id ?? null, portalToken });
   } catch (e: any) {
     console.error("[lead]", e?.message ?? e);
     // Never dead-end the person standing at the counter.
