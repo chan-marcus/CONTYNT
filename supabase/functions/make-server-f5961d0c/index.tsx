@@ -2,14 +2,11 @@ import { Hono } from "npm:hono@4";
 import { cors } from "npm:hono@4/cors";
 import { logger } from "npm:hono@4/logger";
 import { createClient } from "jsr:@supabase/supabase-js@2.49.8";
-// Same package the creator portal already uses for QR codes, imported here so
-// the printable is generated server-side and the code and its QR cannot disagree.
-import QRCode from "npm:qrcode@1.5.4";
 import * as kv from "./kv_store.tsx";
 
 const app = new Hono();
 app.use("*", logger(console.log));
-app.use("/*", cors({ origin: "*", allowHeaders: ["Content-Type", "Authorization", "x-admin-token"], allowMethods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"], exposeHeaders: ["Content-Length"], maxAge: 600 }));
+app.use("/*", cors({ origin: "*", allowHeaders: ["Content-Type", "Authorization", "x-admin-token", "x-cron-secret"], allowMethods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"], exposeHeaders: ["Content-Length"], maxAge: 600 }));
 
 const db = () => createClient(Deno.env.get("SUPABASE_URL")!, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!);
 
@@ -93,13 +90,22 @@ async function allCreatorBalances(): Promise<Record<string, any>> {
   return out;
 }
 
+// Row ids, not credentials. Math.random is fine here -- nothing is guarded by
+// guessing a feature id, and these strings are stored, never presented as
+// proof of anything.
 function uid(prefix = "") {
   return `${prefix}${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
 }
-function token32() {
-  const c = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
-  return Array.from({ length: 8 }, () => c[Math.floor(Math.random() * c.length)]).join("");
-}
+
+// token32() lived here: 8 characters drawn from Math.random, used to mint the
+// private admin link and the creator and business portal tokens. Three real
+// credentials from a PRNG that is not one -- V8's generator gives up its state
+// to anyone who collects a few outputs, so a single leaked portal token was
+// leverage on the admin link beside it, and 8 characters was thin regardless.
+//
+// Everything now goes through secureToken(), which draws from
+// crypto.getRandomValues. Tokens already minted the old way keep working: they
+// are looked up by KV key, so nothing about their format is load bearing.
 
 // ─── Admin auth ───────────────────────────────────────────────────────────────
 // ADMIN_SECRET is set in Dashboard → Project Settings → Edge Functions → Secrets.
@@ -159,8 +165,35 @@ const ADMIN_OPEN = new Set([
   "/make-server-f5961d0c/admin/verify",
 ]);
 
+// ─── Scheduled sweeps ─────────────────────────────────────────────────────────
+// Nothing in this project scheduled anything: the expiry sweeps and the Stripe
+// reconcile were buttons in the admin dashboard, so a reminder went out only if
+// somebody happened to click within the six hours before a deadline, and a
+// webhook that never arrived stayed uncorrected until a human noticed.
+//
+// A scheduler cannot hold an admin session, so these specific routes -- and only
+// these -- also accept a shared secret. They are all idempotent sweeps that take
+// no parameters and expose no data, which is what makes that safe; nothing that
+// reads a person's details or moves money is on this list.
+//
+// CRON_SECRET is set in Dashboard -> Edge Functions -> Secrets, and the pg_cron
+// jobs in migration 20260828000000 read their copy from Vault.
+const CRON_SECRET = Deno.env.get("CRON_SECRET") || "";
+const CRON_CALLABLE = new Set([
+  "/make-server-f5961d0c/admin/claims/sweep-expired",
+  "/make-server-f5961d0c/admin/claims/expiry-reminders",
+  "/make-server-f5961d0c/admin/stripe/sync-subscriptions",
+  "/make-server-f5961d0c/admin/kv/prune",
+]);
+
 const adminGuard = async (c: any, next: any) => {
-  if (ADMIN_OPEN.has(new URL(c.req.url).pathname)) return next();
+  const path = new URL(c.req.url).pathname;
+  if (ADMIN_OPEN.has(path)) return next();
+  const cronHeader = c.req.header("x-cron-secret") || "";
+  if (cronHeader && CRON_SECRET && CRON_CALLABLE.has(path)
+      && timingSafeEqual(cronHeader, CRON_SECRET)) {
+    return next();
+  }
   if (!ADMIN_SECRET) return c.json({ error: "Server is missing ADMIN_SECRET" }, 500);
   if (!(await validAdminToken(c.req.header("x-admin-token") || ""))) {
     return c.json({ error: "Unauthorized" }, 401);
@@ -186,12 +219,49 @@ app.use("/make-server-f5961d0c/business-links/*", adminGuard);
 // Only the admin panel closes out a feature; it writes to any feature by id.
 app.use("/make-server-f5961d0c/feature-complete", adminGuard);
 
+// ADMIN_SECRET is a password compared in one shot, and /admin/verify answers
+// yes or no about a token, so both are oracles worth walking -- and CORS is
+// open, so a browser anywhere could do the walking. Counted per hashed IP in a
+// fixed window: cheap, approximately right, and it does not turn the store into
+// a list of addresses that tried.
+const ADMIN_MAX_ATTEMPTS = 8;
+const ADMIN_WINDOW_MIN = 15;
+
+async function adminAttemptLimited(c: any, bucket: string): Promise<boolean> {
+  const ip = c.req.header("cf-connecting-ip") || c.req.header("x-forwarded-for")?.split(",")[0]?.trim() || "";
+  // An unidentifiable caller shares one bucket rather than being waved through.
+  const key = `adminrl_${bucket}_${ip ? await hashIp(ip) : "unknown"}`;
+  const rec = await kv.get(key).catch(() => null);
+  const now = Date.now();
+  const fresh = !rec?.windowStart || now - new Date(rec.windowStart).getTime() > ADMIN_WINDOW_MIN * 60e3;
+  const count = fresh ? 0 : (rec?.count ?? 0);
+  if (count >= ADMIN_MAX_ATTEMPTS) return true;
+  await kv.set(key, {
+    windowStart: fresh ? new Date(now).toISOString() : rec.windowStart,
+    count: count + 1,
+    expiresAt: new Date(now + ADMIN_WINDOW_MIN * 60e3).toISOString(),
+  }).catch(() => {});
+  return false;
+}
+
+async function clearAdminAttempts(c: any, bucket: string) {
+  const ip = c.req.header("cf-connecting-ip") || c.req.header("x-forwarded-for")?.split(",")[0]?.trim() || "";
+  await kv.del(`adminrl_${bucket}_${ip ? await hashIp(ip) : "unknown"}`).catch(() => {});
+}
+
 app.post("/make-server-f5961d0c/admin/login", async (c) => {
   try {
     if (!ADMIN_SECRET) return c.json({ error: "Server is missing ADMIN_SECRET" }, 500);
+    if (await adminAttemptLimited(c, "login")) {
+      return c.json({ error: "Too many attempts. Try again in a few minutes." }, 429);
+    }
     const { password } = await c.req.json();
-    if (!password || password !== ADMIN_SECRET) return c.json({ error: "Incorrect password" }, 401);
-    const token = `${token32()}${token32()}${token32()}${token32()}`;
+    // Constant time, so the comparison cannot be walked a character at a time.
+    if (!password || !timingSafeEqual(String(password), ADMIN_SECRET)) {
+      return c.json({ error: "Incorrect password" }, 401);
+    }
+    await clearAdminAttempts(c, "login");
+    const token = secureToken(32);
     const expiresAt = new Date(Date.now() + SESSION_HOURS * 60 * 60 * 1000).toISOString();
     await kv.set(`admin_session_${token}`, { createdAt: new Date().toISOString(), expiresAt });
     return c.json({ success: true, token, expiresAt });
@@ -460,10 +530,11 @@ app.post("/make-server-f5961d0c/referral/:code/business", async (c) => {
 });
 
 // ─── Crypto helpers ───────────────────────────────────────────────────────────
-// token32() above is 8 characters of Math.random. That is the weakest link in
-// creator auth, but the tokens it minted are live in the wild and KV looks them
-// up by key, so nothing about their format is load bearing. New tokens are
-// minted here instead; old ones keep working untouched.
+// The only token mint in this file. Everything that is presented as proof of
+// anything -- admin sessions, the private admin link, creator and business
+// portal tokens, verification links -- comes from here. Tokens issued by the
+// retired token32() are still live in the wild and keep working: KV looks them
+// up by key, so nothing about their format is load bearing.
 function secureToken(bytes = 32): string {
   const b = new Uint8Array(bytes);
   crypto.getRandomValues(b);
@@ -554,6 +625,35 @@ const SF_NEIGHBORHOODS = [
   "Tenderloin", "West Portal",
 ];
 
+// City is written in two shapes by two halves of the funnel: the signup forms
+// save a slug ("san-francisco"), while scan leads and referral signups save
+// whatever Google's address yields ("San Francisco"). Nothing reconciled them,
+// so any comparison between a creator's city and a Feature's would have missed
+// on format alone.
+//
+// Stored values are deliberately left as they are -- cityLabel() already
+// renders both, and rewriting live rows to suit a comparison is the wrong way
+// round. This is the form everything *compares* on.
+function citySlug(raw: any): string {
+  return String(raw ?? "")
+    .trim().toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+}
+
+// Is this Feature in the creator's market?
+//
+// Fails open in both directions, on purpose. A creator we cannot place, or a
+// Feature with no city on it, is a gap in the data rather than a reason to hide
+// paid work from somebody -- and an empty city is visible to an admin, where a
+// Feature silently withheld from every creator would not be.
+function featureInCreatorCity(feature: any, creatorCity: any): boolean {
+  const want = citySlug(creatorCity);
+  const have = citySlug(feature?.city);
+  if (!want || !have) return true;
+  return want === have;
+}
+
 // Google's formattedAddress is the only place a scan lead carries a location,
 // and city is what Feature matching runs on. The shape is reliably
 // "street, city, region postcode, country", so the city is the second field
@@ -600,17 +700,31 @@ async function logCreatorEvent(creatorId: string, type: string, payload: any = {
   } catch (e: any) { console.error(`[events] ${type} failed:`, e?.message ?? e); }
 }
 
-// Reuses the creator's live portal token when there is one, so a verify link
-// opened twice does not invalidate the link they already have.
+// The creator's portal token, minted once and reused for ever after.
+//
+// This string is not just a session: creator_claims, submissions,
+// creator_earnings and creator_payout_requests are all keyed by it, so it is
+// the creator's durable identity in this schema. Handing back a *different*
+// string orphans every row they have earned -- their balance reads zero and
+// their history disappears -- which is why a token already on file is reused
+// even when its session record is gone. Signing out deletes the session
+// (`ctoken_`); this recreates it against the same string on the way back in.
+//
+// ctokenref_ is therefore the record of identity and ctoken_ the record of a
+// live session, and only the second is disposable.
 async function ensureCreatorPortalToken(creator: any): Promise<string> {
   const ref = await kv.get(`ctokenref_${creator.id}`).catch(() => null);
-  if (ref?.token && await kv.get(`ctoken_${ref.token}`).catch(() => null)) return ref.token;
-  const token = secureToken(24);
-  await kv.set(`ctoken_${token}`, {
-    creatorId: creator.id, instagram: creator.instagram, email: creator.email,
-    city: creator.city, createdAt: new Date().toISOString(),
-  });
-  await kv.set(`ctokenref_${creator.id}`, { token, creatorId: creator.id, createdAt: new Date().toISOString() });
+  const token = ref?.token || secureToken(24);
+  const live = await kv.get(`ctoken_${token}`).catch(() => null);
+  if (!live) {
+    await kv.set(`ctoken_${token}`, {
+      creatorId: creator.id, instagram: creator.instagram, email: creator.email,
+      city: creator.city, createdAt: new Date().toISOString(),
+    });
+  }
+  if (ref?.token !== token) {
+    await kv.set(`ctokenref_${creator.id}`, { token, creatorId: creator.id, createdAt: new Date().toISOString() });
+  }
   return token;
 }
 
@@ -623,19 +737,25 @@ async function logBusinessEvent(businessId: string, type: string, payload: any =
   } catch (e: any) { console.error(`[events] ${type} failed:`, e?.message ?? e); }
 }
 
-// Same contract as ensureCreatorPortalToken: reuse the live token when there is
-// one, so signing in through the code flow does not invalidate the ?biz= link
-// already sitting in the owner's inbox. Impersonation tokens are deliberately
-// absent from biztokenref_, so an admin session can never be handed back here.
+// Same contract as ensureCreatorPortalToken: one durable token per business,
+// reused whether or not a session is currently live, so signing in through the
+// code flow does not invalidate the ?biz= link already sitting in the owner's
+// inbox and signing out does not strand anything keyed to the string.
+// Impersonation tokens are deliberately absent from biztokenref_, so an admin
+// session can never be handed back here.
 async function ensureBusinessPortalToken(biz: any): Promise<string> {
   const ref = await kv.get(`biztokenref_${biz.id}`).catch(() => null);
-  if (ref?.token && await kv.get(`biztoken_${ref.token}`).catch(() => null)) return ref.token;
-  const token = secureToken(24);
-  await kv.set(`biztoken_${token}`, {
-    businessId: biz.id, businessName: biz.business_name, city: biz.city || "",
-    createdAt: new Date().toISOString(),
-  });
-  await kv.set(`biztokenref_${biz.id}`, { token, businessId: biz.id, createdAt: new Date().toISOString() });
+  const token = ref?.token || secureToken(24);
+  const live = await kv.get(`biztoken_${token}`).catch(() => null);
+  if (!live) {
+    await kv.set(`biztoken_${token}`, {
+      businessId: biz.id, businessName: biz.business_name, city: biz.city || "",
+      createdAt: new Date().toISOString(),
+    });
+  }
+  if (ref?.token !== token) {
+    await kv.set(`biztokenref_${biz.id}`, { token, businessId: biz.id, createdAt: new Date().toISOString() });
+  }
   return token;
 }
 
@@ -776,7 +896,7 @@ app.post("/make-server-f5961d0c/portal/verify/resend", async (c) => {
         await logCreatorEvent(row.id, "verify_link_resend_failed", { reason: "POSTMARK_SERVER_TOKEN not set" });
         return done();
       }
-      const sent = await postmarkSend({ to: row.email, ...rendered, stream: POSTMARK_STREAM });
+      const sent = await postmarkSend({ to: row.email, ...rendered, stream: POSTMARK_TRANSACTIONAL_STREAM });
       if (!sent.ok) {
         // Logged rather than swallowed: the creator is now waiting on an email
         // that is not coming, and this is the only place that says so.
@@ -796,6 +916,26 @@ app.post("/make-server-f5961d0c/portal/verify/resend", async (c) => {
     return done();
   } catch { return done(); }
 });
+
+// A Reel URL is rendered as an href in the business portal and the admin
+// dashboard. React 18 renders a `javascript:` href with nothing but a console
+// warning, so an unvalidated field here was a stored script waiting for an
+// admin -- the one person holding a session token -- to click it. Validation
+// existed only in the browser, which is not where it counts.
+const REEL_HOSTS = ["instagram.com", "instagr.am"];
+
+function normalizeReelUrl(raw: any): string | null {
+  const v = String(raw ?? "").trim();
+  if (!v || v.length > 500) return null;
+  let u: URL;
+  try { u = new URL(/^https?:\/\//i.test(v) ? v : `https://${v}`); } catch { return null; }
+  if (u.protocol !== "https:" && u.protocol !== "http:") return null;
+  const host = u.hostname.replace(/^www\./i, "").toLowerCase();
+  // Instagram only. This is where a Reel lives, and a link anywhere else is
+  // either a mistake worth catching at the form or somebody trying it on.
+  if (!REEL_HOSTS.includes(host) && !REEL_HOSTS.some(h => host.endsWith(`.${h}`))) return null;
+  return u.toString();
+}
 
 function normalizeUrl(raw: any): string | null {
   const v = String(raw ?? "").trim();
@@ -1113,11 +1253,27 @@ async function stripeCall(method: "GET" | "POST", path: string, body?: Record<st
 // lookup_key is what makes creating these idempotent. Stripe rejects a second
 // price with the same key, so a sync that runs twice reuses what is there.
 const STRIPE_PLANS = [
-  { tier: "Starter", lookupKey: "contynt_starter_monthly", label: "Contynt Starter", amount: 6900, interval: "month" as const },
-  { tier: "Growth", lookupKey: "contynt_growth_monthly", label: "Contynt Growth", amount: 11900, interval: "month" as const },
-  { tier: "Pro", lookupKey: "contynt_pro_monthly", label: "Contynt Pro", amount: 19900, interval: "month" as const },
-  { tier: null, lookupKey: "contynt_one_off_feature", label: "Contynt One-Time Feature", amount: 8900, interval: null },
+  { tier: "Starter", lookupKey: "contynt_starter_monthly", label: "Contynt Starter", amount: 6900, interval: "month" as const, reels: 1 },
+  { tier: "Growth", lookupKey: "contynt_growth_monthly", label: "Contynt Growth", amount: 11900, interval: "month" as const, reels: 2 },
+  { tier: "Pro", lookupKey: "contynt_pro_monthly", label: "Contynt Pro", amount: 19900, interval: "month" as const, reels: 4 },
+  { tier: null, lookupKey: "contynt_one_off_feature", label: "Contynt One-Time Feature", amount: 8900, interval: null, reels: 1 },
 ];
+
+// Every tier name the app will accept, derived from the plans above so a new
+// plan cannot be sellable in Stripe and unknown to /admin/set-tier.
+const KNOWN_TIERS = STRIPE_PLANS.map(p => p.tier).filter(Boolean) as string[];
+
+// Stripe sets subscription metadata once, at checkout, and never touches it
+// again -- so a business that upgrades Starter -> Growth in the billing portal
+// kept the tier it first bought. The price on the subscription item does move,
+// and lookup_key is the stable name we gave it, so the tier is read from there
+// and metadata is only the fallback for a subscription whose price predates a
+// lookup key.
+function tierFromSubscription(sub: any): string | null {
+  const key = sub?.items?.data?.[0]?.price?.lookup_key ?? null;
+  const byKey = key ? STRIPE_PLANS.find(p => p.lookupKey === key)?.tier ?? null : null;
+  return byKey ?? sub?.metadata?.contynt_tier ?? null;
+}
 
 // Finds the price for a plan, creating the product and price the first time.
 // Idempotent on lookup_key, so this is safe to run against a live account more
@@ -1299,7 +1455,7 @@ function readSubscriptionState(sub: any) {
   const cancelAtTs = sub?.cancel_at ?? (sub?.cancel_at_period_end ? periodEnd : null);
   return {
     live: ["active", "trialing", "past_due"].includes(String(sub?.status)),
-    tier: sub?.metadata?.contynt_tier ?? null,
+    tier: tierFromSubscription(sub),
     endsAt: cancelAtTs ? new Date(Number(cancelAtTs) * 1000).toISOString() : null,
     status: sub?.status ?? null,
   };
@@ -1452,6 +1608,43 @@ app.post("/make-server-f5961d0c/webhooks/stripe", async (c) => {
         await logBusinessEvent(businessId, tier === "one_off" ? "one_off_purchased" : "subscription_started", {
           tier, sessionId: obj.id, amountTotal: obj.amount_total ?? null,
         });
+
+        // The purchase has to become the thing that was bought. Until now this
+        // logged the sale and stopped, so the Feature only appeared if somebody
+        // spotted the event and clicked "One-Time" in the dashboard by hand.
+        //
+        // Created "offered", exactly as the admin button creates it: the
+        // business accepts it in their own portal and says what the Reel should
+        // cover, and is_one_off raises their allowance rather than spending it.
+        if (tier === "one_off") {
+          const { data: biz } = await db().from("business_signups_f5961d0c")
+            .select("business_name, address, city").eq("id", businessId).maybeSingle();
+          const { error: featErr } = await db().from("features_f5961d0c").insert({
+            id: uid("feat_"), business_id: businessId,
+            business_name: (biz as any)?.business_name || "",
+            address: (biz as any)?.address || "", city: (biz as any)?.city || "",
+            status: "offered", is_one_off: true,
+            offered_at: new Date().toISOString(),
+            category: "", payout_range: "",
+            // Unique in the database. Stripe retries any delivery it did not
+            // get a 2xx for, and a retry must not grant a second Reel.
+            stripe_session_id: String(obj.id),
+          });
+          if (featErr) {
+            const dupe = /duplicate|unique/i.test(String(featErr.message || ""));
+            if (!dupe) {
+              // Money has changed hands and the Feature did not appear. Loud,
+              // and recorded against the business, because this is the one
+              // trace an admin has that something is owed.
+              console.error("[stripe webhook] one-off Feature not created:", featErr.message);
+              await logBusinessEvent(businessId, "one_off_feature_failed", {
+                sessionId: obj.id, error: featErr.message,
+              });
+            }
+          } else {
+            await logBusinessEvent(businessId, "one_off_feature_granted", { sessionId: obj.id });
+          }
+        }
         break;
       }
       case "customer.subscription.updated": {
@@ -1465,15 +1658,16 @@ app.post("/make-server-f5961d0c/webhooks/stripe", async (c) => {
         // and the end date is recorded rather than left implicit, so a pending
         // cancellation is visible instead of a tier that vanishes one morning.
         if (!businessId) break;
-        const live = ["active", "trialing", "past_due"].includes(String(obj.status));
-
-        const { endsAt } = readSubscriptionState(obj);
+        // Read through the shared reader rather than off `tier` above: that one
+        // is the frozen checkout metadata, so an upgrade made in the billing
+        // portal would have written the plan the business first bought.
+        const { live, endsAt, tier: liveTier } = readSubscriptionState(obj);
         await db().from("business_signups_f5961d0c")
-          .update({ subscription_tier: live ? tier : null, subscription_ends_at: endsAt })
+          .update({ subscription_tier: live ? liveTier : null, subscription_ends_at: endsAt })
           .eq("id", businessId);
         await logBusinessEvent(businessId,
           endsAt ? "subscription_cancel_scheduled" : "subscription_updated",
-          { tier, status: obj.status, endsAt, reason: obj?.cancellation_details?.reason ?? null });
+          { tier: liveTier, status: obj.status, endsAt, reason: obj?.cancellation_details?.reason ?? null });
         break;
       }
       case "customer.subscription.deleted": {
@@ -1524,7 +1718,7 @@ async function recordEmailEvent(ev: any) {
   // Field naming varies by event type: Delivery/Open/Click carry Recipient,
   // Bounce and SpamComplaint carry Email.
   const email = String(ev.Recipient ?? ev.Email ?? "").trim().toLowerCase();
-  const occurredAt = ev.DeliveredAt ?? ev.BouncedAt ?? ev.ReceivedAt ?? new Date().toISOString();
+  const occurredAt = ev.DeliveredAt ?? ev.BouncedAt ?? ev.ChangedAt ?? ev.ReceivedAt ?? new Date().toISOString();
 
   // An address can belong to a creator, to a business, to both, or to neither.
   // All four are real, so both lookups run and neither is required.
@@ -1834,9 +2028,12 @@ app.get("/make-server-f5961d0c/scan/:code", async (c) => {
 // recorded. Attribution is still one payout per business ever and still admin
 // approved -- nothing here credits anybody.
 app.post("/make-server-f5961d0c/scan/:code/lead", async (c) => {
+  // Hoisted so the failure path below can park what was sent. Losing a lead is
+  // the one outcome this route must not have.
+  const code = canonicalCode(c.req.param("code"));
+  let body: any = {};
   try {
-    const code = canonicalCode(c.req.param("code"));
-    const body = await c.req.json().catch(() => ({} as any));
+    body = await c.req.json().catch(() => ({} as any));
     const email = String((body as any).email ?? "").trim().toLowerCase();
     const businessName = String((body as any).businessName ?? "").trim().slice(0, 120);
     const city = String((body as any).city ?? "").trim().slice(0, 80);
@@ -1993,12 +2190,42 @@ app.post("/make-server-f5961d0c/scan/:code/lead", async (c) => {
         console.error("[lead] could not send login code:", e?.message ?? e);
       }
     }
-    return c.json({ ok: true, businessId: business?.id ?? null, needsVerification: verifying });
+    return c.json({ ok: true, saved: true, businessId: business?.id ?? null, needsVerification: verifying });
   } catch (e: any) {
     console.error("[lead]", e?.message ?? e);
-    // Never dead-end the person standing at the counter.
-    return c.json({ ok: true });
+    // Never dead-end the person standing at the counter -- and never lose them
+    // either. This used to answer a bare { ok: true }, which the scan page
+    // reads as success, so a lead that failed to save showed a confirmation
+    // screen to the owner and left no trace anywhere for anyone to chase. The
+    // payload is parked so an admin can replay it, and `saved: false` tells the
+    // page not to promise an email that is not coming.
+    try {
+      await kv.set(`leadfailed_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`, {
+        at: new Date().toISOString(), code,
+        error: e?.message ?? String(e),
+        businessName: String(body?.businessName ?? "").slice(0, 120),
+        email: String(body?.email ?? "").slice(0, 254),
+        instagram: String(body?.instagram ?? "").slice(0, 60),
+        placeId: String(body?.placeId ?? "").slice(0, 200),
+        placeAddress: String(body?.placeAddress ?? "").slice(0, 300),
+      });
+    } catch (parkErr: any) {
+      console.error("[lead] could not park the failed lead:", parkErr?.message ?? parkErr);
+    }
+    return c.json({ ok: true, saved: false });
   }
+});
+
+// The parked leads above, so a failure is something an admin can see and work
+// rather than a line in a log nobody reads.
+app.get("/make-server-f5961d0c/admin/failed-leads", async (c) => {
+  try {
+    const rows = await kv.getByPrefix("leadfailed_");
+    return c.json({
+      leads: (rows ?? []).sort((a: any, b: any) => String(b?.at).localeCompare(String(a?.at))),
+      total: (rows ?? []).length,
+    });
+  } catch (e: any) { return c.json({ error: e.message }, 500); }
 });
 
 // ─── Reel goes live ───────────────────────────────────────────────────────────
@@ -2035,9 +2262,19 @@ async function markReelLive(sub: any) {
 // moment Postmark sending exists this is the one function that changes.
 async function notifyLeadsForFeature(featureId: string) {
   try {
+    // Leads are filed under the CREATOR's ambassador code. This used to read
+    // ambassador_cards.code, which migration 20260819030000 retired and set to
+    // null on every row -- so the lookup matched nothing, and even the backlog
+    // count the TODO below promised was never printed. The code moved onto the
+    // creator, so that is where it is read from.
     const { data: cards } = await db().from("ambassador_cards_f5961d0c")
-      .select("code").eq("feature_id", featureId);
-    const codes = (cards ?? []).map((r: any) => r.code);
+      .select("creator_id").eq("feature_id", featureId);
+    const creatorIds = [...new Set((cards ?? []).map((r: any) => r.creator_id).filter(Boolean))];
+    if (!creatorIds.length) return;
+
+    const { data: creators } = await db().from("creator_signups_f5961d0c")
+      .select("ambassador_code").in("id", creatorIds);
+    const codes = (creators ?? []).map((r: any) => r.ambassador_code).filter(Boolean);
     if (!codes.length) return;
 
     const { data: leads } = await db().from("ambassador_leads_f5961d0c")
@@ -2073,81 +2310,12 @@ const HANDOFF_SCRIPT =
   "If you scan it you can see the Reel when it goes live, and get set up if you want more.";
 
 
-// A6 (105x148mm) centred on a letter sheet with crop marks. This is HTML rather
-// than a generated PDF: adding a PDF toolchain to a Deno edge function to draw
-// two rectangles and a QR would cost far more than it returns, and every browser
-// prints this to PDF natively at the right trim size.
-function buildCardSheet(code: string, qr: string): string {
-  // Four identical cards, 2x2 on a letter sheet, so one print run gives the
-  // creator a handful to leave behind. Identical because the code belongs to
-  // the creator, not to a Feature -- any card works at any business.
-  //
-  // Deliberately anonymous: no handle, name, photo or id. A card left on a
-  // counter should not tell a stranger who dropped it off.
-  const card = `
-    <div class="card">
-      <div class="inner">
-        <div class="brand">C O N T Y N T</div>
-        <div class="lead">A creator filmed here.</div>
-        <img class="qr" src="${qr}" alt="">
-        <div class="code">${esc(code)}</div>
-        <div class="sub">Scan the code, or go to<br>${esc(cardUrlFor(code))}</div>
-      </div>
-    </div>`;
-
-  return `<!doctype html><html><head><meta charset="utf-8"><title>CONTYNT cards</title>
-<meta name="robots" content="noindex,nofollow">
-<style>
-  /* Margin keeps the outer cut lines inside every printer's imageable area;
-     letter is 8.5x11in, so 4 cards of 4in x 5in leave room for the guides. */
-  @page { size: letter; margin: 10mm; }
-  *{box-sizing:border-box;margin:0;padding:0}
-  html,body{background:#fff}
-  body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Helvetica,Arial,sans-serif;color:#0a0a0a}
-
-  .sheet{position:relative;display:grid;grid-template-columns:1fr 1fr;grid-template-rows:1fr 1fr;
-         width:190mm;height:240mm;margin:0 auto}
-  .card{position:relative;page-break-inside:avoid;break-inside:avoid}
-  .inner{position:absolute;inset:5mm;border:1pt solid #d4d4d4;border-radius:4mm;
-         display:flex;flex-direction:column;align-items:center;justify-content:center;
-         text-align:center;padding:6mm}
-  .brand{font-size:9pt;font-weight:700;letter-spacing:.34em;color:#111}
-  .lead{font-size:10pt;color:#525252;margin-top:2mm}
-  .qr{width:46mm;height:46mm;margin:5mm 0 4mm;display:block}
-  /* The code is the fallback when a camera will not focus, so it is set large
-     and monospaced with wide tracking to survive being read across a counter. */
-  .code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:26pt;font-weight:700;
-        letter-spacing:.18em;color:#0a0a0a;line-height:1}
-  .sub{font-size:7.5pt;color:#737373;margin-top:3mm;line-height:1.5}
-
-  /* Perforation guides: dashed lines down the middle of the sheet in both
-     directions, with a scissors at each midpoint so the cut is obvious. */
-  .perf{position:absolute;background:none;color:#a3a3a3;pointer-events:none}
-  .perf.v{left:50%;top:0;bottom:0;border-left:1pt dashed #bdbdbd;transform:translateX(-.5pt)}
-  .perf.h{top:50%;left:0;right:0;border-top:1pt dashed #bdbdbd;transform:translateY(-.5pt)}
-  .scissors{position:absolute;font-size:10pt;line-height:1;color:#9ca3af;background:#fff;padding:1mm}
-  .scissors.top{left:50%;top:-1mm;transform:translateX(-50%)}
-  .scissors.bottom{left:50%;bottom:-1mm;transform:translateX(-50%)}
-  .scissors.left{top:50%;left:-1mm;transform:translateY(-50%)}
-  .scissors.right{top:50%;right:-1mm;transform:translateY(-50%)}
-
-  @media print{
-    /* Keep the guide lines and any fill exactly as designed rather than letting
-       the browser drop "background" ink to save toner. */
-    html,body{-webkit-print-color-adjust:exact;print-color-adjust:exact}
-    .noprint{display:none !important}
-  }
-  .noprint{max-width:190mm;margin:6mm auto 0;font-size:11px;color:#737373;text-align:center}
-</style></head><body>
-  <div class="sheet">
-    ${card}${card}${card}${card}
-    <div class="perf v"><span class="scissors top">&#9986;</span><span class="scissors bottom">&#9986;</span></div>
-    <div class="perf h"><span class="scissors left">&#9986;</span><span class="scissors right">&#9986;</span></div>
-  </div>
-  <p class="noprint">Print this page, then cut along the dashed lines. Every card carries the same code, so any one of them works at any business.</p>
-</body></html>`;
-}
-
+// buildCardSheet() stood here: an A6 print sheet rendered by this function.
+// It had no callers and could not have worked if it did -- Supabase rewrites
+// any HTML an Edge Function returns to text/plain with a sandbox CSP, which is
+// exactly why the sheet moved into the SPA. It was also the only reason this
+// file imported npm:qrcode, so a QR library was being bundled into the edge
+// deploy for code that never ran.
 
 // The printable sheet and the on-screen QR are rendered by the site, not here.
 // Supabase rewrites any HTML an Edge Function returns to text/plain with
@@ -2170,8 +2338,11 @@ app.get("/make-server-f5961d0c/portal/cards", async (c) => {
       handoffScript: HANDOFF_SCRIPT,
       attributionRule: ATTRIBUTION_RULE,
       unprintedCount: (rows ?? []).filter((r: any) => !r.printed_at).length,
+      // No `code` here any more. Migration 20260819030000 retired the
+      // per-card code and nulled the column -- the code lives on the creator
+      // now -- so this field was shipping null to a client that never read it.
       cards: (rows ?? []).map((r: any) => ({
-        id: r.id, featureId: r.feature_id, code: r.code,
+        id: r.id, featureId: r.feature_id,
         printedAt: r.printed_at, handedOffAt: r.handed_off_at,
         handoffStatus: r.handoff_status, isAttributed: r.is_attributed,
       })),
@@ -2414,7 +2585,7 @@ function cityLabel(raw: any): string {
 // recency lives in the framing, which the admin makes true by sending this when
 // they have just dropped something; the number is the one fact that is checked
 // at send time.
-function renderFeatureDropEmail(row: any, link: string, count: number, cities: string[]) {
+function renderFeatureDropEmail(row: any, link: string, count: number, cities: string[], unsubLink?: string) {
   const first = firstNameFor(row);
   const isAre = count === 1 ? "is" : "are";
   const plural = count === 1 ? "Feature" : "Features";
@@ -2629,20 +2800,26 @@ async function sendVerificationBatch(opts: {
       continue;
     }
 
-    await must("send: issue token", supabase.from("creator_signups_f5961d0c").update({
-      verify_token: token,
-      verify_token_expires_at: new Date(Date.now() + VERIFY_DAYS * 864e5).toISOString(),
-    }).eq("id", r.id));
-
     if (!POSTMARK_SERVER_TOKEN) {
       results.push({ id: r.id, email, link, skipped: "POSTMARK_SERVER_TOKEN not set" });
       continue;
     }
 
     try {
+      // Sent BEFORE the new token is stored. The other order is what ran here
+      // until now, and it is the same bug the resend form was fixed for: a new
+      // token retires the link the creator already has, so a send that failed
+      // left them holding a dead link and no replacement. Failing this way
+      // round costs nothing -- their existing link keeps working and the next
+      // sweep tries again.
       const sent = await postmarkSend({ to: email, ...rendered, stream: POSTMARK_STREAM });
       const payload = sent.payload;
       if (!sent.ok) { results.push({ id: r.id, email, error: sent.error }); continue; }
+
+      await must("send: issue token", supabase.from("creator_signups_f5961d0c").update({
+        verify_token: token,
+        verify_token_expires_at: new Date(Date.now() + VERIFY_DAYS * 864e5).toISOString(),
+      }).eq("id", r.id));
 
       // Stamped only after Postmark accepted it, so a failed send does not burn
       // the 24 hour cooldown.
@@ -3304,17 +3481,95 @@ app.post("/make-server-f5961d0c/admin/impersonate-business", async (c) => {
   } catch (e: any) { return c.json({ error: e.message }, 500); }
 });
 
+// ─── Sign out ─────────────────────────────────────────────────────────────────
+// Clearing localStorage was the whole of "Sign out" until now, which meant the
+// token stayed valid for ever: creator and business tokens carry no expiry, so
+// anyone holding a copy -- a shared browser, a screenshot, the ?creator= link
+// still sitting in the address bar -- kept full access after the owner thought
+// they had left. These revoke the session server-side.
+//
+// The token STRING survives on purpose. Every claim, submission and earning is
+// keyed by it, so signing back in with an emailed code restores the same string
+// and nothing is orphaned. The consequence, stated plainly: this revokes the
+// live session, it does not rotate the credential. A leaked token is dead until
+// the owner signs in again and live again after. Real rotation needs those
+// tables re-keyed to creator_id / business_id first.
+async function revokeSession(kind: "ctoken" | "biztoken", token: string) {
+  if (!token) return false;
+  const existing = await kv.get(`${kind}_${token}`).catch(() => null);
+  if (!existing) return false;
+  await kv.del(`${kind}_${token}`).catch(() => {});
+  return true;
+}
+
+app.post("/make-server-f5961d0c/creator-portal/logout", async (c) => {
+  try {
+    const { token } = await c.req.json().catch(() => ({} as any));
+    const session = await creatorFromToken(String(token ?? ""));
+    // Answered the same either way: whether a token was live is not something
+    // this route should confirm to whoever is holding it.
+    if (session?.creatorId) {
+      await revokeSession("ctoken", String(token));
+      await logCreatorEvent(session.creatorId, "signed_out", {});
+    }
+    return c.json({ success: true });
+  } catch { return c.json({ success: true }); }
+});
+
+app.post("/make-server-f5961d0c/business-portal/logout", async (c) => {
+  try {
+    const { token } = await c.req.json().catch(() => ({} as any));
+    const session = await businessFromToken(String(token ?? ""));
+    if (session?.businessId) {
+      await revokeSession("biztoken", String(token));
+      await logBusinessEvent(session.businessId, "signed_out", {});
+    }
+    return c.json({ success: true });
+  } catch { return c.json({ success: true }); }
+});
+
 // ─── Health ───────────────────────────────────────────────────────────────────
 app.get("/make-server-f5961d0c/health", (c) => c.json({ status: "ok" }));
 
 // ─── Creator signup ───────────────────────────────────────────────────────────
 app.post("/make-server-f5961d0c/signup", async (c) => {
   try {
-    const { instagram, email, city } = await c.req.json();
+    const { instagram, email, city: rawCity } = await c.req.json();
+    const city = String(rawCity ?? "").trim().slice(0, 80);
     if (!city) return c.json({ error: "City is required" }, 400);
-    const { data, error } = await db().from("creator_signups_f5961d0c").insert({ instagram: instagram || "", email: email || "", city }).select("id").single();
+
+    // Validated rather than stored as typed. This route accepted an empty email
+    // and an empty handle, which produced rows nothing downstream could ever
+    // reach: no verification link, no login code, no way to identify the person.
+    const addr = normalizeEmail(email);
+    if (!addr) return c.json({ error: "Enter a valid email address." }, 400);
+    const handle = normalizeHandle(instagram);
+    if (!handle) return c.json({ error: "Enter a valid Instagram handle." }, 400);
+
+    // One row per address. Two creator rows on one email break every lookup
+    // that resolves an address back to a creator with maybeSingle() -- the
+    // resend form and the login code among them -- so a repeat signup updates
+    // what is on file instead of minting a twin.
+    const { data: existing } = await db().from("creator_signups_f5961d0c")
+      .select("id, instagram, city").ilike("email", addr)
+      .order("created_at", { ascending: true }).limit(1);
+    const found = existing?.[0];
+    if (found) {
+      // Gaps filled, answers never overwritten -- the same rule the business
+      // and referral forms follow.
+      const patch: Record<string, unknown> = {};
+      if (!String(found.instagram ?? "").trim()) patch.instagram = handle;
+      if (!String(found.city ?? "").trim()) patch.city = city;
+      if (Object.keys(patch).length) {
+        await db().from("creator_signups_f5961d0c").update(patch).eq("id", found.id);
+      }
+      return c.json({ success: true, message: "Successfully signed up for early access!", id: found.id, matched: true });
+    }
+
+    const { data, error } = await db().from("creator_signups_f5961d0c")
+      .insert({ instagram: handle, email: addr, city }).select("id").single();
     if (error) throw error;
-    return c.json({ success: true, message: "Successfully signed up for early access!", id: data.id });
+    return c.json({ success: true, message: "Successfully signed up for early access!", id: data.id, matched: false });
   } catch (e: any) { return c.json({ error: "Failed to process signup.", details: e.message }, 500); }
 });
 
@@ -3375,12 +3630,40 @@ app.post("/make-server-f5961d0c/business-signup", async (c) => {
 });
 
 // ─── Page view ────────────────────────────────────────────────────────────────
+// An unauthenticated insert on a public route, so it is bounded in both
+// directions: every field is capped, and one address cannot write more than
+// this many rows in the window. Without either, anyone could grow the visitors
+// table without limit and take the analytics figures with it.
+const PAGEVIEW_MAX_PER_WINDOW = 60;
+const PAGEVIEW_WINDOW_MIN = 10;
+
 app.post("/make-server-f5961d0c/analytics/pageview", async (c) => {
   try {
     const { visitorId, userAgent, referrer } = await c.req.json();
+    const ip = c.req.header("cf-connecting-ip") || c.req.header("x-forwarded-for")?.split(",")[0]?.trim() || "";
+    if (ip) {
+      const key = `pvrl_${await hashIp(ip)}`;
+      const rec = await kv.get(key).catch(() => null);
+      const now = Date.now();
+      const fresh = !rec?.windowStart || now - new Date(rec.windowStart).getTime() > PAGEVIEW_WINDOW_MIN * 60e3;
+      const count = fresh ? 0 : (rec?.count ?? 0);
+      // Silently accepted and dropped. Analytics must never surface an error to
+      // a visitor, and a 429 here would say more than it is worth.
+      if (count >= PAGEVIEW_MAX_PER_WINDOW) return c.json({ success: true });
+      await kv.set(key, {
+        windowStart: fresh ? new Date(now).toISOString() : rec.windowStart,
+        count: count + 1,
+      }).catch(() => {});
+    }
     const country = c.req.header("cf-ipcountry") || c.req.header("x-vercel-ip-country") || "";
     const city = c.req.header("cf-ipcity") || "";
-    const { error } = await db().from("visitors_f5961d0c").insert({ visitor_id: visitorId, user_agent: userAgent || "", referrer: referrer || "", country: country || null, city: city || null });
+    const { error } = await db().from("visitors_f5961d0c").insert({
+      visitor_id: String(visitorId ?? "").trim().slice(0, 120),
+      user_agent: String(userAgent ?? "").slice(0, 400),
+      referrer: String(referrer ?? "").slice(0, 500),
+      country: country.slice(0, 8) || null,
+      city: city.slice(0, 80) || null,
+    });
     if (error) throw error;
     return c.json({ success: true });
   } catch (e: any) { return c.json({ error: "Failed to track page view", details: e.message }, 500); }
@@ -3493,11 +3776,15 @@ app.post("/make-server-f5961d0c/creator-links/:creatorId", async (c) => {
     const creatorId = c.req.param("creatorId");
     const { data: creator, error } = await db().from("creator_signups_f5961d0c").select("id, instagram, email, city").eq("id", creatorId).single();
     if (error || !creator) return c.json({ error: "Creator not found" }, 404);
-    const token = token32();
-    const existing = await kv.get(`ctokenref_${creatorId}`);
-    if (existing?.token) await kv.del(`ctoken_${existing.token}`);
-    await kv.set(`ctoken_${token}`, { creatorId, instagram: creator.instagram, email: creator.email, city: creator.city, createdAt: new Date().toISOString() });
-    await kv.set(`ctokenref_${creatorId}`, { token, creatorId, createdAt: new Date().toISOString() });
+    // Deliberately no longer a rotation. This used to mint a fresh token32 and
+    // delete the old one -- and because claims, submissions, earnings and
+    // payout requests are all keyed by the token STRING, that silently orphaned
+    // every row the creator had. Their balance read zero and their history was
+    // gone, from a button labelled "generate link".
+    //
+    // It now hands back the creator's durable token, creating one only if they
+    // have never had one.
+    const token = await ensureCreatorPortalToken(creator);
     return c.json({ success: true, token });
   } catch (e: any) { return c.json({ error: "Failed to generate link", details: e.message }, 500); }
 });
@@ -3517,11 +3804,9 @@ app.post("/make-server-f5961d0c/business-links/:businessId", async (c) => {
     const businessId = c.req.param("businessId");
     const { data: biz, error } = await db().from("business_signups_f5961d0c").select("id, business_name, city").eq("id", businessId).single();
     if (error || !biz) return c.json({ error: "Business not found" }, 404);
-    const token = token32();
-    const existing = await kv.get(`biztokenref_${businessId}`);
-    if (existing?.token) await kv.del(`biztoken_${existing.token}`);
-    await kv.set(`biztoken_${token}`, { businessId, businessName: biz.business_name, city: biz.city, createdAt: new Date().toISOString() });
-    await kv.set(`biztokenref_${businessId}`, { token, businessId, createdAt: new Date().toISOString() });
+    // Same reasoning as the creator route above: rotating here killed the link
+    // already in the owner's inbox for no gain. Durable token, created once.
+    const token = await ensureBusinessPortalToken(biz);
     return c.json({ success: true, token });
   } catch (e: any) { return c.json({ error: "Failed to generate business link", details: e.message }, 500); }
 });
@@ -3538,7 +3823,7 @@ app.get("/make-server-f5961d0c/business-links", async (c) => {
 // ─── Admin: private link ──────────────────────────────────────────────────────
 app.post("/make-server-f5961d0c/admin/generate-link", async (c) => {
   try {
-    const token = token32();
+    const token = secureToken(24);
     await kv.set("admin_private_token", { token, createdAt: new Date().toISOString() });
     return c.json({ success: true, token });
   } catch (e: any) { return c.json({ error: "Failed to generate admin link", details: e.message }, 500); }
@@ -3548,8 +3833,16 @@ app.get("/make-server-f5961d0c/admin/verify", async (c) => {
   try {
     const token = c.req.query("token");
     if (!token) return c.json({ valid: false }, 400);
+    // Unauthenticated by necessity -- it is half the handshake -- which makes it
+    // the one place the private admin link can be guessed at. Throttled, and
+    // compared in constant time.
+    if (await adminAttemptLimited(c, "verify")) {
+      return c.json({ valid: false, error: "Too many attempts. Try again in a few minutes." }, 429);
+    }
     const stored = await kv.get("admin_private_token");
-    return c.json({ valid: stored?.token === token });
+    const valid = !!stored?.token && timingSafeEqual(String(stored.token), String(token));
+    if (valid) await clearAdminAttempts(c, "verify");
+    return c.json({ valid });
   } catch (e: any) { return c.json({ valid: false }, 500); }
 });
 
@@ -3557,9 +3850,17 @@ app.get("/make-server-f5961d0c/admin/verify", async (c) => {
 app.post("/make-server-f5961d0c/admin/set-tier", async (c) => {
   try {
     const { businessId, tier } = await c.req.json();
-    if (!businessId || !tier) return c.json({ error: "businessId and tier required" }, 400);
-    await db().from("business_signups_f5961d0c").update({ subscription_tier: tier }).eq("id", businessId);
-    return c.json({ success: true });
+    if (!businessId) return c.json({ error: "businessId required" }, 400);
+    // null clears the tier. Anything else has to be a plan that exists, or the
+    // quota reads it as an unknown name and silently falls back to one Reel --
+    // a typo here used to be indistinguishable from a Starter subscription.
+    const next = tier === null || tier === "" ? null : String(tier);
+    if (next !== null && !KNOWN_TIERS.includes(next)) {
+      return c.json({ error: `Unknown tier. Expected one of: ${KNOWN_TIERS.join(", ")}` }, 400);
+    }
+    await must("set-tier", db().from("business_signups_f5961d0c")
+      .update({ subscription_tier: next }).eq("id", businessId));
+    return c.json({ success: true, tier: next });
   } catch (e: any) { return c.json({ error: e.message }, 500); }
 });
 
@@ -3582,6 +3883,65 @@ app.post("/make-server-f5961d0c/admin/offer-feature", async (c) => {
   } catch (e: any) { return c.json({ error: e.message }, 500); }
 });
 
+// ─── Business Reel quota ──────────────────────────────────────────────────────
+// Mirrors src/app/lib/featureQuota.ts, which is what the portal renders from.
+// The two have to agree exactly: the client decides how many blank request
+// slots to draw and this decides whether a request that arrives may be filled,
+// so a rule in one and not the other either shows a business a slot it cannot
+// use or -- as was the case until now -- refuses nothing at all. Quota lived
+// only in the browser, which made the subscription decorative: a Starter
+// business could POST unlimited Feature requests and take for free what the
+// plan was supposed to meter.
+//
+// The allowance is per month, scoped the same way on both sides -- see the note
+// in lib/featureQuota.ts for why the boundary is the UTC calendar month.
+//
+// Derived from STRIPE_PLANS so a plan cannot be sellable and unmetered. "Scale"
+// has no Stripe price and is not sellable; it is kept only so a business
+// carrying that tier from before keeps the allowance it was given rather than
+// silently dropping to one Reel.
+const TIER_REELS: Record<string, number> = {
+  ...Object.fromEntries(STRIPE_PLANS.filter(p => p.tier).map(p => [p.tier as string, p.reels])),
+  Scale: 8,
+};
+
+// Spent: the business accepted the offer, or requested the Reel outright.
+const QUOTA_SPENT = ["pending", "available", "completed"];
+// Exists at all, as opposed to withdrawn.
+const QUOTA_LIVE = ["offered", ...QUOTA_SPENT];
+// A Feature already in flight. Re-requesting one of these would be a second
+// Reel off one slot, since the status it would move to is one it already counts
+// as spent.
+const QUOTA_REQUESTABLE = ["offered", "pending"];
+
+// Which month a Feature was granted in. offered_at is stamped by every path
+// that creates one; approved_at is the fallback for rows written before that
+// was true. No usable date counts as current, so a missing timestamp cannot
+// hand out a free Reel.
+function inQuotaMonth(f: any, now: Date): boolean {
+  const raw = f?.offered_at || f?.approved_at;
+  if (!raw) return true;
+  const d = new Date(raw);
+  if (isNaN(d.getTime())) return true;
+  return d.getUTCFullYear() === now.getUTCFullYear() && d.getUTCMonth() === now.getUTCMonth();
+}
+
+// Blank "request a Reel" slots left, matching openRequestSlots() on the client.
+// Open offers are subtracted because each already holds one of the remaining
+// Reels without having spent it.
+function openRequestSlotsFor(tier: string | null, allFeatures: any[], now = new Date()): number {
+  const status = (f: any) => String(f?.status ?? "");
+  const features = allFeatures.filter((f: any) => inQuotaMonth(f, now));
+  // Free (is_trial) and one-off (is_one_off) Features are granted on top of the
+  // tier allowance rather than drawn from it.
+  const grants = features.filter((f: any) =>
+    (!!f.is_trial || !!f.is_one_off) && QUOTA_LIVE.includes(status(f))).length;
+  const limit = (tier ? (TIER_REELS[tier] ?? 1) : 0) + grants;
+  const used = features.filter((f: any) => QUOTA_SPENT.includes(status(f))).length;
+  const offers = features.filter((f: any) => status(f) === "offered").length;
+  return Math.max(0, Math.max(0, limit - used) - offers);
+}
+
 // ─── Business portal: submit feature request (notes + decrement reels) ────────
 app.post("/make-server-f5961d0c/business-portal/submit-feature", async (c) => {
   try {
@@ -3592,24 +3952,55 @@ app.post("/make-server-f5961d0c/business-portal/submit-feature", async (c) => {
     // box indistinguishable from a business that had actually asked for the
     // creator's choice, in the admin dashboard and to the creator.
     const notes = String(requestNotes ?? "").trim();
+
+    // Read once and used by both branches: the tier and the business's own
+    // Features are what the quota is computed from, and the insert needs the
+    // profile columns anyway.
+    const [{ data: bizRow }, { data: ownFeatures }] = await Promise.all([
+      db().from("business_signups_f5961d0c")
+        .select("business_name, address, city, subscription_tier").eq("id", bizData.businessId).maybeSingle(),
+      db().from("features_f5961d0c")
+        .select("id, status, is_trial, is_one_off, offered_at, approved_at").eq("business_id", bizData.businessId),
+    ]);
+    const features = ownFeatures ?? [];
+    const tier = (bizRow as any)?.subscription_tier ?? null;
+
     let resultFeatureId = featureId || "";
     if (isNewRequest || !featureId) {
-      const bizInfoRes = await db().from("business_signups_f5961d0c").select("business_name, address, city").eq("id", bizData.businessId).single();
-      const bizInfo2 = bizInfoRes.data as any;
+      // 402 rather than 403: nothing is wrong with the request or the caller,
+      // they have simply spent everything the plan grants.
+      if (openRequestSlotsFor(tier, features) <= 0) {
+        return c.json({
+          error: tier
+            ? "You have used every Reel on your plan. Upgrade, or buy a one-time Feature to request another."
+            : "Choose a plan to request a Reel.",
+        }, 402);
+      }
       const newId = uid("feat_");
       resultFeatureId = newId;
-      await db().from("features_f5961d0c").insert({
-        id: newId, business_id: bizData.businessId, business_name: bizInfo2?.business_name || "",
-        address: bizInfo2?.address || "", city: bizInfo2?.city || "",
+      await must("submit-feature: create request", db().from("features_f5961d0c").insert({
+        id: newId, business_id: bizData.businessId, business_name: (bizRow as any)?.business_name || "",
+        address: (bizRow as any)?.address || "", city: (bizRow as any)?.city || "",
         status: "pending", request_notes: notes, submitted_by_business: true,
         submitted_at_biz: new Date().toISOString(), offered_at: new Date().toISOString(),
         category: "", payout_range: "",
-      });
+      }));
     } else {
-      await db().from("features_f5961d0c").update({
+      // Accepting an offer, or editing the notes on a request an admin has not
+      // picked up yet. Anything further along is refused: flipping a completed
+      // Feature back to pending was a second Reel for a slot already spent,
+      // which is the same free-work hole the quota check above closes.
+      const target = features.find((f: any) => String(f.id) === String(featureId));
+      if (!target) return c.json({ error: "Feature not found" }, 404);
+      if (!QUOTA_REQUESTABLE.includes(String(target.status ?? ""))) {
+        return c.json({ error: "That Reel is already underway and cannot be requested again." }, 409);
+      }
+      // business_id stays on the update as well as the lookup: two locks on a
+      // write that names a row by an id the client supplied.
+      await must("submit-feature: accept offer", db().from("features_f5961d0c").update({
         status: "pending", request_notes: notes,
         submitted_by_business: true, submitted_at_biz: new Date().toISOString(),
-      }).eq("id", featureId).eq("business_id", bizData.businessId);
+      }).eq("id", featureId).eq("business_id", bizData.businessId));
     }
     return c.json({ success: true, featureId: resultFeatureId });
   } catch (e: any) { return c.json({ error: e.message }, 500); }
@@ -3633,6 +4024,10 @@ app.post("/make-server-f5961d0c/admin/approve-business", async (c) => {
       payout_range: payoutRange,
       business_instagram: biz.instagram || "",
       status: "available",
+      // The quota dates a Feature by offered_at. This path was the one creation
+      // route that never set it, so a Feature approved here belonged to no
+      // month and was counted against every one of them.
+      offered_at: new Date().toISOString(),
     });
     if (featErr) throw featErr;
     return c.json({ success: true, featureId });
@@ -3699,7 +4094,7 @@ app.get("/make-server-f5961d0c/admin/features", async (c) => {
       id: r.id, businessId: r.business_id || "", businessName: r.business_name || "",
       address: r.address || "", city: r.city || "",
       category: r.category || "", payoutRange: r.payout_range || "",
-      status: r.status || "", approvedAt: r.approved_at,
+      status: r.status || "", approvedAt: r.approved_at, offeredAt: r.offered_at || null,
       isTrial: r.is_trial || false, isOneOff: r.is_one_off || false,
       requestNotes: r.request_notes || "",
       submittedByBusiness: r.submitted_by_business || false,
@@ -3801,7 +4196,9 @@ app.post("/make-server-f5961d0c/admin/report-reel", async (c) => {
 // ─── Admin: fetch reel metrics (oEmbed + placeholder) ────────────────────────
 app.post("/make-server-f5961d0c/admin/fetch-metrics", async (c) => {
   try {
-    const { submissionId, reelUrl } = await c.req.json();
+    const { submissionId, reelUrl: rawMetricsUrl } = await c.req.json();
+    const reelUrl = normalizeReelUrl(rawMetricsUrl);
+    if (!reelUrl) return c.json({ error: "That does not look like an Instagram Reel link." }, 400);
     let oembedData: any = {};
     let fetchError: string | null = null;
     try {
@@ -3834,7 +4231,9 @@ app.post("/make-server-f5961d0c/admin/fetch-metrics", async (c) => {
 // ─── Reel preview (server-side oEmbed fetch to avoid CORS) ───────────────────
 app.get("/make-server-f5961d0c/reel-preview", async (c) => {
   try {
-    const url = c.req.query("url");
+    const url = normalizeReelUrl(c.req.query("url"));
+    // Same rule as the submit route, so this cannot be pointed at an arbitrary
+    // string and used as a general purpose fetcher.
     if (!url) return c.json({ error: "url required" }, 400);
     const res = await fetch(`https://api.instagram.com/oembed/?url=${encodeURIComponent(url)}&maxwidth=400&omitscript=true`);
     if (!res.ok) return c.json({ thumbnail: null, author: null });
@@ -3877,19 +4276,28 @@ app.post("/make-server-f5961d0c/admin/reset-creator", async (c) => {
     // Clear SQL claims and submissions
     await db().from("creator_claims_f5961d0c").delete().eq("creator_token", token);
     await db().from("submissions_f5961d0c").delete().eq("token", token);
+    // And the ledger they justified. creatorBalance() derives from these two
+    // tables, so deleting the submissions and leaving the credits behind left
+    // the creator holding a balance with nothing standing behind it -- money
+    // owed for work the reset had just erased. Reward credits from the
+    // ambassador programme are left alone: those are earned against referrals,
+    // which this reset does not touch.
+    await db().from("creator_earnings_f5961d0c")
+      .delete().eq("creator_token", token).eq("source", "submission");
+    await db().from("creator_payout_requests_f5961d0c")
+      .delete().eq("creator_token", token).eq("status", "requested");
     // Store reset timestamp so the creator portal can clear localStorage
     await kv.set(`reset_${token}`, { resetAt: new Date().toISOString() });
     return c.json({ success: true });
   } catch (e: any) { return c.json({ error: "Failed to reset creator", details: e.message }, 500); }
 });
 
-// ─── Feature status list (service role key — other portals poll this) ────────
-app.get("/make-server-f5961d0c/features-status", async (c) => {
-  try {
-    const { data } = await db().from("features_f5961d0c").select("id, status, winner_instagram, completed_at");
-    return c.json({ features: data ?? [] });
-  } catch { return c.json({ features: [] }); }
-});
+// /features-status was an unauthenticated list of every Feature's status and
+// winning handle, reachable with the anon key that ships inside the client
+// bundle. Its comment said "other portals poll this"; nothing did -- the
+// creator portal reads /creator-portal/sync and the business portal reads
+// /business-portal, both scoped to the caller. Removed rather than guarded,
+// because a guarded route with no callers is just a later liability.
 
 // ─── Mark feature as completed (service role key — bypasses RLS) ─────────────
 app.post("/make-server-f5961d0c/feature-complete", async (c) => {
@@ -3939,8 +4347,13 @@ app.get("/make-server-f5961d0c/creator-portal", async (c) => {
     // it regardless, otherwise a gated Feature would vanish from under them.
     const confirmed = await creatorIsConfirmed(creatorData.creatorId);
     const claimedIds = new Set((claimsRes.data ?? []).map((cl: any) => cl.feature_id));
+    // Market and early-access gates. Every Feature in the table used to be sent
+    // to every creator, so somebody in Los Angeles was shown -- and could claim
+    // -- a shoot in San Francisco. A Feature they already hold stays visible
+    // regardless of either gate, or it would vanish from under them.
     const features = (featRes.data ?? [])
-      .filter((r: any) => visibleToCreator(r, confirmed) || claimedIds.has(r.id))
+      .filter((r: any) => claimedIds.has(r.id)
+        || (visibleToCreator(r, confirmed) && featureInCreatorCity(r, creatorData.city)))
       .map((r: any) => ({ id: r.id, businessId: r.business_id, businessName: r.business_name, address: r.address, city: r.city, category: r.category, payoutRange: r.payout_range, status: r.status, approvedAt: r.approved_at, winnerInstagram: r.winner_instagram || "", businessInstagram: r.business_instagram || "", adminNotes: r.admin_notes || "", earlyAccessUntil: r.early_access_until || null }));
     // SQL only — no KV merge needed
     const claimsMap: Record<string, any> = {};
@@ -3988,6 +4401,23 @@ app.post("/make-server-f5961d0c/creator-portal/claim", async (c) => {
     // Impersonation writes must land on the creator's own rows, not on the
     // short lived admin token, which expires in an hour and is in no index.
     const token = creatorData.realToken ?? rawToken;
+
+    // A featureId from the client is not evidence the Feature is open to this
+    // creator. Unchecked, any id could be registered interest in: one already
+    // completed, one still pending an admin, or one held back behind early
+    // access -- which is the same gate /creator-portal applies when deciding
+    // what to render, so the two would otherwise disagree about the same row.
+    const { data: feature } = await db().from("features_f5961d0c")
+      .select("id, status, city, early_access_until").eq("id", featureId).maybeSingle();
+    if (!feature) return c.json({ error: "That feature is no longer available" }, 404);
+    if (feature.status !== "available") return c.json({ error: "That feature is no longer available" }, 409);
+    if (!visibleToCreator(feature, await creatorIsConfirmed(creatorData.creatorId))) {
+      return c.json({ error: "That feature is not open yet. Confirm your profile to get early access." }, 403);
+    }
+    if (!featureInCreatorCity(feature, creatorData.city)) {
+      return c.json({ error: "That feature is not in your city." }, 403);
+    }
+
     const instagram = creatorData.instagram || "";
     const now = new Date().toISOString();
     await db().from("creator_claims_f5961d0c").upsert({ feature_id: featureId, creator_token: token, creator_instagram: instagram, status: "interested", claimed_at: now, interested_at: now }, { onConflict: "feature_id,creator_token" });
@@ -4048,6 +4478,34 @@ app.post("/make-server-f5961d0c/creator-portal/accept-feature", async (c) => {
     // Impersonation writes must land on the creator's own rows, not on the
     // short lived admin token, which expires in an hour and is in no index.
     const token = creatorData.realToken ?? rawToken;
+
+    // Accepting is only meaningful for a claim an admin has actually selected.
+    // The update below matches on (token, feature) alone, so without this a
+    // creator could mark themselves "interested" and then POST straight here,
+    // promoting their own claim to "claimed" and skipping selection entirely.
+    const { data: claim } = await db().from("creator_claims_f5961d0c")
+      .select("status, acceptance_expires_at").eq("creator_token", token).eq("feature_id", featureId).maybeSingle();
+    if (!claim) return c.json({ error: "You have not been selected for this feature." }, 404);
+    // The selection email promises "accept within 24 hours and it is yours".
+    // Nothing enforced that, so the window was decorative and a Feature could
+    // be accepted a month late. Released here as well as by the sweep, so a
+    // late accept does not depend on the sweep having already run.
+    if (claim.acceptance_expires_at && new Date(claim.acceptance_expires_at) <= new Date()) {
+      await releaseExpiredClaim(featureId, token, "accept");
+      return c.json({ error: "That window has closed and the feature has gone back to everyone else." }, 410);
+    }
+    if (claim.status !== "approved") {
+      // Re-accepting is a duplicate, not an attack -- a double tap on a slow
+      // connection lands here -- so it gets its own answer rather than the one
+      // written for somebody who was never selected.
+      return c.json(
+        claim.status === "claimed" || claim.status === "submitted"
+          ? { error: "You have already accepted this feature." }
+          : { error: "You have not been selected for this feature." },
+        409,
+      );
+    }
+
     const now = new Date();
     // Creators get 5 days to film and submit once they accept a Feature.
     const CLAIM_DAYS = 5;
@@ -4082,8 +4540,10 @@ app.post("/make-server-f5961d0c/creator-portal/unclaim", async (c) => {
 
 app.post("/make-server-f5961d0c/creator-portal/submit", async (c) => {
   try {
-    const { token: rawToken, featureId, reelUrl, instagram, handedOff, handoffReason } = await c.req.json();
-    if (!rawToken || !featureId || !reelUrl) return c.json({ error: "token, featureId, and reelUrl required" }, 400);
+    const { token: rawToken, featureId, reelUrl: rawReelUrl, instagram, handedOff, handoffReason } = await c.req.json();
+    if (!rawToken || !featureId || !rawReelUrl) return c.json({ error: "token, featureId, and reelUrl required" }, 400);
+    const reelUrl = normalizeReelUrl(rawReelUrl);
+    if (!reelUrl) return c.json({ error: "That does not look like an Instagram Reel link." }, 400);
     const creatorData = await creatorFromToken(rawToken);
     if (!creatorData) return c.json({ error: "Invalid or expired link" }, 401);
     // Impersonation writes must land on the creator's own rows, not on the
@@ -4091,6 +4551,20 @@ app.post("/make-server-f5961d0c/creator-portal/submit", async (c) => {
     const token = creatorData.realToken ?? rawToken;
     const creatorInstagram = creatorData.instagram || instagram || "";
     const creatorId = creatorData.creatorId || "";
+
+    // The Reel has to be for a Feature this creator actually holds, and the
+    // window to film it has to still be open. Neither was checked: any creator
+    // could submit against any Feature id, and a claim five days stale was as
+    // good as a fresh one.
+    const { data: ownClaim } = await db().from("creator_claims_f5961d0c")
+      .select("status, expires_at").eq("creator_token", token).eq("feature_id", featureId).maybeSingle();
+    if (!ownClaim || !["claimed", "submitted"].includes(String(ownClaim.status))) {
+      return c.json({ error: "You do not have this feature to submit for." }, 403);
+    }
+    if (ownClaim.expires_at && new Date(ownClaim.expires_at) <= new Date()) {
+      await releaseExpiredClaim(featureId, token, "submit");
+      return c.json({ error: "The window to submit this Reel has closed." }, 410);
+    }
 
     // The handoff question is required only when a card actually exists for this
     // pair. Creators who never opted in have no card and must not be asked
@@ -4182,8 +4656,11 @@ app.get("/make-server-f5961d0c/creator-portal/sync", async (c) => {
         payoutAmount: r.payout_amount || "", denied: !!r.denied,
         adminReportNote: r.admin_report_note || "", cashedOutAt: r.cashed_out_at || null,
       })),
+      // Same two gates as /creator-portal. Without them the poll would re-add a
+      // Feature the initial load correctly withheld.
       features: (featRes.data ?? [])
-        .filter((r: any) => visibleToCreator(r, syncConfirmed) || syncClaimed.has(r.id))
+        .filter((r: any) => syncClaimed.has(r.id)
+          || (visibleToCreator(r, syncConfirmed) && featureInCreatorCity(r, creatorData.city)))
         .map((r: any) => ({
           id: r.id, businessId: r.business_id, businessName: r.business_name,
           address: r.address, city: r.city, category: r.category,
@@ -4227,6 +4704,16 @@ app.post("/make-server-f5961d0c/creator-portal/complete-payout", async (c) => {
     // short lived admin token, which expires in an hour and is in no index.
     const token = creatorData.realToken ?? rawToken;
     const ig = creatorData.instagram || instagram || "";
+
+    // The feature update below cannot be scoped by token -- features_f5961d0c
+    // carries no creator column -- so ownership is proved here instead. Without
+    // it any creator could close any Feature by id, write themselves in as its
+    // winner and set its payout, none of which is scoped by the submission
+    // update that follows.
+    const { data: mine } = await db().from("submissions_f5961d0c")
+      .select("id").eq("token", token).eq("feature_id", featureId).limit(1);
+    if (!mine?.length) return c.json({ error: "That feature is not yours to close" }, 403);
+
     const now = new Date().toISOString();
     await db().from("submissions_f5961d0c")
       .update({ cashed_out_at: now })
@@ -4296,6 +4783,170 @@ async function sendClaimExpiryReminders(opts: { dryRun?: boolean } = {}) {
     results,
   };
 }
+
+// Reclaiming an expired claim. The reminder sweep above says a deadline is
+// coming; this is what happens when one passes, and until now nothing did --
+// so "accept within 24 hours or it goes back to everyone else" was a sentence
+// in an email with no code behind it, and a creator could sit on a Feature
+// indefinitely while it showed as taken to everybody else.
+//
+// The Feature goes back on the board only when nobody else is further along
+// with it: a claim that was already submitted is left alone, and so is a
+// Feature that has since been completed.
+async function releaseExpiredClaim(featureId: string, creatorToken: string, reason: "accept" | "submit") {
+  try {
+    // "unclaimed", not a new "expired": creator_claims lives in the untracked
+    // baseline schema, so whether its status column carries a CHECK -- and what
+    // is in it -- cannot be read from this repo. Every status written here is
+    // one the codebase already writes, and the portal already filters
+    // "unclaimed" out of the claims it renders. The reason it ended is kept in
+    // the event log rather than smuggled into a column that might reject it.
+    await must("release: unclaim", db().from("creator_claims_f5961d0c").update({
+      status: "unclaimed", unclaimed_at: new Date().toISOString(),
+    }).eq("feature_id", featureId).eq("creator_token", creatorToken));
+    const { data: who } = await db().from("creator_signups_f5961d0c")
+      .select("id").eq("id", (await creatorFromToken(creatorToken))?.creatorId ?? "").maybeSingle();
+    if (who?.id) await logCreatorEvent(who.id, "claim_expired", { featureId, reason });
+
+    // Anyone else still holding it means the Feature is not free.
+    const { data: others } = await db().from("creator_claims_f5961d0c")
+      .select("creator_token").eq("feature_id", featureId)
+      .in("status", ["approved", "claimed", "submitted"]);
+    if (others?.length) return { featureId, creatorToken, reason, released: false, held: others.length };
+
+    const { data: feature } = await db().from("features_f5961d0c")
+      .select("status").eq("id", featureId).maybeSingle();
+    // A completed Feature is finished business; putting it back would reopen
+    // work somebody has already been paid for.
+    if (!feature || feature.status === "completed") {
+      return { featureId, creatorToken, reason, released: false, held: 0 };
+    }
+    await must("release: reopen feature", db().from("features_f5961d0c").update({
+      status: "available", winner_instagram: "", claimed_by: "", claimed_at: null,
+    }).eq("id", featureId));
+    return { featureId, creatorToken, reason, released: true };
+  } catch (e: any) {
+    console.error("[claims] release failed:", e?.message ?? e);
+    return { featureId, creatorToken, reason, error: e?.message ?? String(e) };
+  }
+}
+
+async function sweepExpiredClaims(opts: { dryRun?: boolean } = {}) {
+  const now = new Date();
+  const { data: claims } = await db().from("creator_claims_f5961d0c")
+    .select("feature_id, creator_token, status, acceptance_expires_at, expires_at")
+    .in("status", ["approved", "claimed"]);
+
+  const results: any[] = [];
+  for (const cl of (claims ?? [])) {
+    // Which clock applies depends on where the claim is: an approved claim is
+    // waiting to be accepted, a claimed one is waiting for a Reel.
+    const kind: "accept" | "submit" = cl.status === "approved" ? "accept" : "submit";
+    const dueAt = kind === "accept" ? cl.acceptance_expires_at : cl.expires_at;
+    if (!dueAt || new Date(dueAt) > now) continue;
+    if (opts.dryRun) {
+      results.push({ featureId: cl.feature_id, kind, dueAt, wouldRelease: true });
+      continue;
+    }
+    results.push(await releaseExpiredClaim(cl.feature_id, cl.creator_token, kind));
+  }
+  return {
+    dryRun: !!opts.dryRun,
+    considered: (claims ?? []).length,
+    expired: results.length,
+    released: results.filter(r => r.released).length,
+    wouldRelease: results.filter(r => r.wouldRelease).length,
+    failed: results.filter(r => r.error).length,
+    results,
+  };
+}
+
+// ─── KV housekeeping ──────────────────────────────────────────────────────────
+// Nothing in this store has ever been cleaned up. Admin sessions expire after
+// twelve hours and stay as rows; login codes expire after ten minutes and stay
+// unless somebody used them; and the rate-limit buckets are keyed by hashed IP,
+// so without this they would grow by one row per visitor for ever -- an
+// unbounded table written by an unauthenticated public route, which is a slower
+// version of the problem the limiter exists to prevent.
+//
+// Prefix-scanned rather than queried by expiry: kv_store has one jsonb column
+// and no index inside it, so a scan is what is available. The prefixes below
+// are small by design; the pageview buckets are the only large one and they are
+// exactly what most needs clearing.
+const KV_PRUNE = [
+  // { prefix, staleAfterMs } -- how long past its window a row is dead weight.
+  { prefix: "adminrl_", ms: ADMIN_WINDOW_MIN * 60e3 },
+  { prefix: "pvrl_", ms: PAGEVIEW_WINDOW_MIN * 60e3 },
+  { prefix: "logincode_", ms: LOGIN_CODE_TTL_MIN * 60e3 },
+  { prefix: "admin_session_", ms: SESSION_HOURS * 3600e3 },
+];
+
+// The table is read directly rather than through kv_store.tsx: getByPrefix()
+// fetches `key, value` and then returns only the values, so the keys a delete
+// needs never come back -- and that file is marked autogenerated, so the fix is
+// here rather than in it.
+async function pruneKv(opts: { dryRun?: boolean } = {}) {
+  const now = Date.now();
+  const results: any[] = [];
+
+  for (const { prefix, ms } of KV_PRUNE) {
+    const { data, error } = await db().from("kv_store_f5961d0c")
+      .select("key, value").like("key", `${prefix}%`);
+    if (error) { results.push({ prefix, error: error.message }); continue; }
+
+    const stale: string[] = [];
+    for (const row of (data ?? [])) {
+      const v: any = (row as any).value ?? {};
+      // A row that cannot say how old it is stays. Deleting something we cannot
+      // date is how a live admin session or an unspent login code disappears
+      // out from under somebody.
+      const stamp = v.expiresAt || v.windowStart || v.createdAt;
+      if (!stamp) continue;
+      const age = now - new Date(stamp).getTime();
+      if (isNaN(age) || age <= ms) continue;
+      stale.push((row as any).key);
+    }
+
+    if (opts.dryRun || !stale.length) {
+      results.push({ prefix, total: (data ?? []).length, stale: stale.length, deleted: 0 });
+      continue;
+    }
+    // Chunked, because a delete filter naming every key at once becomes a URL
+    // long enough for PostgREST to refuse it.
+    let deleted = 0;
+    for (let i = 0; i < stale.length; i += 200) {
+      const chunk = stale.slice(i, i + 200);
+      const { error: delErr } = await db().from("kv_store_f5961d0c").delete().in("key", chunk);
+      if (delErr) { results.push({ prefix, error: delErr.message }); break; }
+      deleted += chunk.length;
+    }
+    results.push({ prefix, total: (data ?? []).length, stale: stale.length, deleted });
+  }
+
+  return {
+    dryRun: !!opts.dryRun,
+    deleted: results.reduce((n, r) => n + (r.deleted ?? 0), 0),
+    stale: results.reduce((n, r) => n + (r.stale ?? 0), 0),
+    failed: results.filter(r => r.error).length,
+    results,
+  };
+}
+
+app.post("/make-server-f5961d0c/admin/kv/prune", async (c) => {
+  try {
+    const body = await c.req.json().catch(() => ({}));
+    const out = await pruneKv({ dryRun: !!body.dryRun });
+    return c.json({ success: true, ...out });
+  } catch (e: any) { return c.json({ error: "KV prune failed", details: e.message }, 500); }
+});
+
+app.post("/make-server-f5961d0c/admin/claims/sweep-expired", async (c) => {
+  try {
+    const body = await c.req.json().catch(() => ({}));
+    const out = await sweepExpiredClaims({ dryRun: !!body.dryRun });
+    return c.json({ success: true, ...out });
+  } catch (e: any) { return c.json({ error: "Expiry sweep failed", details: e.message }, 500); }
+});
 
 app.post("/make-server-f5961d0c/admin/claims/expiry-reminders", async (c) => {
   try {
@@ -4538,8 +5189,22 @@ app.post("/make-server-f5961d0c/admin/referrals/pay-reward", async (c) => {
     if (!ref.reward_earned_at) return c.json({ error: "Reward has not been earned yet" }, 400);
 
     const { data: amb } = await db().from("ambassadors_f5961d0c").select("creator_token, creator_id").eq("ambassador_id", ref.ambassador_id).maybeSingle();
-    const token = amb?.creator_token;
+    // Resolved from the creator, not from ambassadors.creator_token: that
+    // column is a copy taken at opt-in, and crediting a stale string would put
+    // the reward on a token no balance is read from. The creator's own record
+    // is the authority, and ensureCreatorPortalToken returns exactly the token
+    // creatorBalance() sums over.
+    const { data: rewardCreator } = amb?.creator_id
+      ? await db().from("creator_signups_f5961d0c")
+          .select("id, instagram, email, city").eq("id", amb.creator_id).maybeSingle()
+      : { data: null };
+    const token = rewardCreator ? await ensureCreatorPortalToken(rewardCreator) : (amb?.creator_token || "");
     if (!token) return c.json({ error: "Ambassador has no active creator link" }, 400);
+    // Kept in step, so the next read of the column is not wrong in the same way.
+    if (amb?.creator_token !== token) {
+      await db().from("ambassadors_f5961d0c")
+        .update({ creator_token: token }).eq("ambassador_id", ref.ambassador_id);
+    }
 
     const amount = parseAmount(ref.reward_amount) || REFERRAL_REWARD;
     // Guarded on referral_id so paying twice cannot double-credit.
@@ -4666,7 +5331,7 @@ app.post("/make-server-f5961d0c/admin/deny-submission", async (c) => {
   try {
     const { submissionId, note } = await c.req.json();
     if (!submissionId) return c.json({ error: "submissionId required" }, 400);
-    const { data: sub } = await db().from("submissions_f5961d0c").select("feature_id").eq("id", submissionId).single();
+    const { data: sub } = await db().from("submissions_f5961d0c").select("feature_id, token").eq("id", submissionId).single();
     const { error } = await db().from("submissions_f5961d0c")
       .update({ admin_report_note: note || "", denied: true })
       .eq("id", submissionId);
@@ -4677,6 +5342,14 @@ app.post("/make-server-f5961d0c/admin/deny-submission", async (c) => {
         status: "available", winner_instagram: "", total_payout: "",
         claimed_by: "", claimed_at: null,
       }).eq("id", sub.feature_id));
+      // And release the claim behind it. Reopening the Feature while leaving
+      // the claim at "submitted" left the creator's portal still showing it as
+      // theirs, waiting on a decision that had already been made.
+      if (sub.token) {
+        await db().from("creator_claims_f5961d0c").update({
+          status: "unclaimed", unclaimed_at: new Date().toISOString(),
+        }).eq("feature_id", sub.feature_id).eq("creator_token", sub.token);
+      }
     }
     return c.json({ success: true });
   } catch (e: any) { return c.json({ error: e.message }, 500); }
@@ -4728,21 +5401,11 @@ app.post("/make-server-f5961d0c/creator-portal/update-email", async (c) => {
   } catch (e: any) { return c.json({ error: e.message }, 500); }
 });
 
-// ─── Creator portal: request payout ──────────────────────────────────────────
-app.post("/make-server-f5961d0c/creator-portal/payout", async (c) => {
-  try {
-    const { token: rawToken, submissionId, featureId, payoutRange } = await c.req.json();
-    if (!rawToken || !submissionId) return c.json({ error: "token and submissionId required" }, 400);
-    const creatorData = await creatorFromToken(rawToken);
-    if (!creatorData) return c.json({ error: "Invalid or expired link" }, 401);
-    // Impersonation writes must land on the creator's own rows, not on the
-    // short lived admin token, which expires in an hour and is in no index.
-    const token = creatorData.realToken ?? rawToken;
-    const { error } = await db().from("creator_payouts_f5961d0c").insert({ creator_token: token, submission_id: submissionId, feature_id: featureId, payout_range: payoutRange || "" });
-    if (error) throw error;
-    return c.json({ success: true });
-  } catch (e: any) { return c.json({ error: "Failed to record payout", details: e.message }, 500); }
-});
+// /creator-portal/payout wrote to creator_payouts_f5961d0c, a table nothing
+// reads: balances are derived from creator_earnings and
+// creator_payout_requests, and have been since the ledger replaced it. The
+// route had no callers either. Removed rather than left as a second, silently
+// diverging record of what a creator is owed.
 
 // ─── Business portal ──────────────────────────────────────────────────────────
 app.get("/make-server-f5961d0c/business-portal", async (c) => {
@@ -4775,9 +5438,12 @@ app.get("/make-server-f5961d0c/business-portal", async (c) => {
     result.instagram = (bizInfo as any)?.instagram || "";
     result.email = (bizInfo as any)?.email || "";
     result.planClicks = (bizInfo as any)?.plan_clicks || 0;
-    const featRes = await db().from("features_f5961d0c").select("id, category, payout_range, status, approved_at, business_notes, is_trial, is_one_off, request_notes, submitted_by_business").eq("business_id", bizId).order("offered_at", { ascending: false });
+    const featRes = await db().from("features_f5961d0c").select("id, category, payout_range, status, approved_at, offered_at, business_notes, is_trial, is_one_off, request_notes, submitted_by_business").eq("business_id", bizId).order("offered_at", { ascending: false });
     const featureIds: string[] = (featRes.data ?? []).map((f: any) => String(f.id));
-    result.publishedFeatures = (featRes.data ?? []).map((f: any) => ({ id: f.id, category: f.category, payoutRange: f.payout_range, status: f.status, approvedAt: f.approved_at || null, businessNotes: f.business_notes || "", isTrial: f.is_trial || false, isOneOff: f.is_one_off || false, requestNotes: f.request_notes || "", submittedByBusiness: f.submitted_by_business || false }));
+    // offeredAt goes over the wire because the quota is scoped to the current
+    // month and the client computes the same rule -- without the grant date it
+    // would count every Feature the business has ever had.
+    result.publishedFeatures = (featRes.data ?? []).map((f: any) => ({ id: f.id, category: f.category, payoutRange: f.payout_range, status: f.status, approvedAt: f.approved_at || null, offeredAt: f.offered_at || null, businessNotes: f.business_notes || "", isTrial: f.is_trial || false, isOneOff: f.is_one_off || false, requestNotes: f.request_notes || "", submittedByBusiness: f.submitted_by_business || false }));
     if (featureIds.length === 0) return c.json(result);
 
     const [subsRes, claimsRes] = await Promise.allSettled([
@@ -4833,11 +5499,13 @@ app.post("/make-server-f5961d0c/business-portal/track-plan-click", async (c) => 
     if (!bizToken) return c.json({ error: "bizToken required" }, 400);
     const bizData = await businessFromToken(bizToken);
     if (!bizData) return c.json({ error: "Invalid token" }, 401);
-    // Read-then-write server-side so the client cannot set an arbitrary count.
-    const { data: row } = await db().from("business_signups_f5961d0c").select("plan_clicks").eq("id", bizData.businessId).single();
-    const next = ((row as any)?.plan_clicks || 0) + 1;
-    await db().from("business_signups_f5961d0c").update({ plan_clicks: next }).eq("id", bizData.businessId);
-    return c.json({ success: true, planClicks: next });
+    // Incremented in the database, not read-modify-written here: two clicks
+    // landing together used to read the same value and write the same value,
+    // so one of them vanished and the metric quietly undercounted.
+    const { data: next, error } = await db()
+      .rpc("increment_plan_clicks_f5961d0c", { p_business_id: bizData.businessId });
+    if (error) throw error;
+    return c.json({ success: true, planClicks: next ?? null });
   } catch (e: any) { return c.json({ error: e.message }, 500); }
 });
 
@@ -4849,6 +5517,25 @@ app.post("/make-server-f5961d0c/business-portal/feedback", async (c) => {
     const bizData = await businessFromToken(bizToken);
     if (!bizData) return c.json({ error: "Invalid token" }, 401);
 
+    // The submission id arrives from the client, so it has to be proved to
+    // belong to this business before anything is written. Without this, one
+    // valid portal token was write access to every submission in the system --
+    // and an "approve" here calls markReelLive(), which stamps a winner onto
+    // somebody else's Feature and settles their creator's claim with it.
+    //
+    // Fetched once and reused below: re-reading after the update would be a
+    // second round trip for a row already in hand.
+    const { data: sub } = await db().from("submissions_f5961d0c")
+      .select("*").eq("id", submissionId).maybeSingle();
+    // 404 rather than 403 on both misses. Which submission ids exist is not
+    // this business's to learn, and separating the two answers would say.
+    if (!sub) return c.json({ error: "Submission not found" }, 404);
+    const { data: owner } = await db().from("features_f5961d0c")
+      .select("business_id").eq("id", sub.feature_id).maybeSingle();
+    if (!owner || String(owner.business_id) !== String(bizData.businessId)) {
+      return c.json({ error: "Submission not found" }, 404);
+    }
+
     // Save feedback
     await db().from("submissions_f5961d0c").update({
       business_approved: reaction === "approve",
@@ -4856,10 +5543,7 @@ app.post("/make-server-f5961d0c/business-portal/feedback", async (c) => {
     }).eq("id", submissionId);
 
     // 👍 Approve triggers the full approval flow — updates creator portal too
-    if (reaction === "approve") {
-      const { data: sub } = await db().from("submissions_f5961d0c").select("*").eq("id", submissionId).single();
-      if (sub && sub.status !== "approved") await markReelLive(sub);
-    }
+    if (reaction === "approve" && sub.status !== "approved") await markReelLive(sub);
 
     return c.json({ success: true });
   } catch (e: any) { return c.json({ error: "Failed to submit feedback", details: e.message }, 500); }

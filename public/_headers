@@ -1,0 +1,38 @@
+# Cloudflare Pages response headers.
+#
+# There was no _headers file at all until now: no CSP, no framing protection, no
+# referrer policy, no HSTS. ScanPage.tsx also claimed the site set X-Robots-Tag
+# on /a/* "for crawlers that never run this script" -- it did not, because this
+# file did not exist, so the only noindex on a scan page was one injected by the
+# very script a crawler would not run.
+
+/*
+  X-Frame-Options: DENY
+  X-Content-Type-Options: nosniff
+  Referrer-Policy: strict-origin-when-cross-origin
+  Permissions-Policy: geolocation=(), microphone=(), camera=(), payment=(), interest-cohort=()
+  Strict-Transport-Security: max-age=31536000; includeSubDomains; preload
+  # script-src carries 'unsafe-inline' because the Google Maps JS API injects
+  # inline script for the Places autocomplete on the scan and referral forms,
+  # and static Pages hosting has nowhere to mint a per-response nonce. Every
+  # other directive is as tight as the app actually needs. img-src stays broad
+  # on https: for Instagram's oEmbed thumbnails, whose CDN host varies per post.
+  Content-Security-Policy: default-src 'self'; base-uri 'self'; object-src 'none'; frame-ancestors 'none'; form-action 'self'; img-src 'self' data: blob: https:; style-src 'self' 'unsafe-inline'; font-src 'self' data:; script-src 'self' 'unsafe-inline' https://maps.googleapis.com https://maps.gstatic.com; connect-src 'self' https://*.supabase.co https://maps.googleapis.com https://maps.gstatic.com; frame-src https://www.instagram.com
+
+# Ambassador card scans. Per-creator links handed to one business at a time --
+# never anything a search engine should hold. Both the printed /a/CODE form and
+# the bare /CODE form the cards actually carry.
+/a/*
+  X-Robots-Tag: noindex, nofollow
+
+# The portals. Nothing here is public, and both are reached by signing in.
+/app
+  X-Robots-Tag: noindex, nofollow
+/app/*
+  X-Robots-Tag: noindex, nofollow
+/business
+  X-Robots-Tag: noindex, nofollow
+/business/*
+  X-Robots-Tag: noindex, nofollow
+/portal/*
+  X-Robots-Tag: noindex, nofollow

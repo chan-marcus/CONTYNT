@@ -1,24 +1,75 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <link rel="icon" type="image/png" href="/favicon.png" />
+    <link rel="apple-touch-icon" href="/favicon.png" />
 
-  <!DOCTYPE html>
-  <html lang="en">
-    <head>
-      
-      <meta charset="UTF-8" />
-      <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-      <link rel="icon" type="image/png" href="/favicon.png" />
-      <link rel="apple-touch-icon" href="/favicon.png" />
-      <title>CONTYNT | Local Creator Network</title>
-      <meta name="description" content="Connects short-form content creators with local spots to earn paid opportunities for creating authentic social media posts and grow their portfolios." />
-      
-      <style>html, body { height: 100%; margin: 0; } #root { height: 100%; }</style>
-      
-    </head>
+    <!--
+      These tags are duplicated by App.tsx at runtime, and that is on purpose.
 
-    <body>
-      
-      <div id="root"></div>
-      <script type="module" src="/src/main.tsx"></script>
-      
-    </body>
-  </html>
-  
+      Facebook, LinkedIn, Slack, iMessage and X do not run JavaScript. Every
+      social tag lived in a useEffect, so a crawler saw none of them: the title
+      and a description that did not match the one the app set, no Open Graph,
+      no Twitter card, no canonical. Every share of getcontynt.com rendered as a
+      bare link. They are static here so a crawler gets them, and App.tsx
+      rewrites the same values for the SPA routes that need a different title.
+
+      Keep the copy below identical to the `description` constant in
+      src/app/App.tsx -- two descriptions is how this drifted in the first place.
+    -->
+    <title>CONTYNT | Local Creator Network</title>
+    <meta
+      name="description"
+      content="Contynt connects Instagram Reels creators with local businesses that pay per post. No follower minimum. Sign up for early access in San Francisco, Los Angeles, and New York City."
+    />
+    <meta
+      name="keywords"
+      content="creator platform, get paid to post, instagram reels, local business marketing, content creator jobs, contynt"
+    />
+    <meta name="robots" content="index, follow" />
+    <link rel="canonical" href="https://getcontynt.com/" />
+
+    <!-- Open Graph -->
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content="CONTYNT" />
+    <meta property="og:url" content="https://getcontynt.com/" />
+    <meta property="og:title" content="CONTYNT — Get Paid to Post" />
+    <meta
+      property="og:description"
+      content="Contynt connects Instagram Reels creators with local businesses that pay per post. No follower minimum. Sign up for early access in San Francisco, Los Angeles, and New York City."
+    />
+    <meta property="og:image" content="https://getcontynt.com/og-image.png" />
+    <meta property="og:image:width" content="1200" />
+    <meta property="og:image:height" content="630" />
+    <meta property="og:image:alt" content="CONTYNT — Get Paid to Post" />
+
+    <!-- Twitter card -->
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content="CONTYNT — Get Paid to Post" />
+    <meta
+      name="twitter:description"
+      content="Contynt connects Instagram Reels creators with local businesses that pay per post. No follower minimum. Sign up for early access in San Francisco, Los Angeles, and New York City."
+    />
+    <meta name="twitter:image" content="https://getcontynt.com/og-image.png" />
+
+    <meta name="theme-color" content="#0a0a0a" />
+
+    <style>
+      html,
+      body {
+        height: 100%;
+        margin: 0;
+      }
+      #root {
+        height: 100%;
+      }
+    </style>
+  </head>
+
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

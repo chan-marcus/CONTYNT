@@ -1150,7 +1150,16 @@ export function CreatorPortal({ token, impersonating }: { token: string; imperso
     // The server sets the claim status and the expiry window; it returns the
     // authoritative expiresAt so the UI does not compute a second, divergent one.
     const res = await api("/creator-portal/accept-feature", { method: "POST", body: JSON.stringify({ token, featureId }) }).catch(() => null);
-    const expiresAt = (await res?.json().catch(() => null))?.expiresAt
+    const body = await res?.json().catch(() => null);
+    // Only a selected claim may be accepted, and the server is what decides
+    // that. It refuses a claim an admin has not picked -- and one accepted
+    // already, from another tab. Marking this claimed regardless, which is what
+    // ran before, showed the creator a Feature that was never theirs to film.
+    if (!res?.ok) {
+      setRequestError(body?.error || "Could not accept that feature. Please try again.");
+      return;
+    }
+    const expiresAt = body?.expiresAt
       // Fallback only; the server returns the authoritative expiry. Kept in
       // step with CLAIM_DAYS in the accept-feature route.
       ?? new Date(Date.now() + 5 * 24 * 60 * 60 * 1000).toISOString();
@@ -1172,7 +1181,8 @@ export function CreatorPortal({ token, impersonating }: { token: string; imperso
     setStats((p) => ({ ...p, activeClaims: Math.max(0, p.activeClaims - 1) }));
     api("/creator-portal/unclaim", { method: "POST", body: JSON.stringify({ token, featureId }) }).catch(() => {});
   };
-  const submitReel = (featureId: string, reelUrl: string, handedOff: boolean | null = null, handoffReason = "") => {
+  const submitReel = async (featureId: string, reelUrl: string, handedOff: boolean | null = null, handoffReason = "") => {
+    const prev = claims;
     // Update UI immediately — submitted still counts as In Progress, don't decrement
     setClaims((p) => {
       const updated = { ...p, [featureId]: { featureId, status: "submitted" as const, reelUrl } };
@@ -1181,8 +1191,24 @@ export function CreatorPortal({ token, impersonating }: { token: string; imperso
     });
     const instagram = creator?.instagram || "";
     const body = JSON.stringify({ token, featureId, reelUrl, instagram, handedOff, handoffReason });
-    api("/creator-portal/submit", { method: "POST", body })
-      .catch(() => {});
+    // The server checks the link, the claim and the filming window, so this can
+    // now be refused -- a Reel submitted after the deadline, or against a
+    // Feature the creator does not hold. Swallowing that, which is what the
+    // bare .catch() here did, left the card reading "submitted" for a Reel that
+    // was never recorded and would never be reviewed.
+    try {
+      const res = await api("/creator-portal/submit", { method: "POST", body });
+      if (!res.ok) {
+        const d = await res.json().catch(() => null);
+        setClaims(prev);
+        saveLocalClaims(prev);
+        setRequestError(d?.error || "Could not submit that Reel. Please try again.");
+      }
+    } catch {
+      setClaims(prev);
+      saveLocalClaims(prev);
+      setRequestError("Could not reach the server. Please try again.");
+    }
   };
   // One consolidated poll replaces the four separate PostgREST polls this
   // component used to run. The server scopes claims and submissions to this
@@ -1397,6 +1423,12 @@ export function CreatorPortal({ token, impersonating }: { token: string; imperso
             </button>
             {!isImpersonating && (
               <button onClick={() => {
+                // Revoke the session on the server, not just in this browser.
+                // Clearing storage alone left the token live for ever -- it
+                // carries no expiry -- so anyone still holding a copy kept full
+                // access after the creator thought they had signed out. Fire
+                // and forget: a failed revoke must not trap them in the portal.
+                api("/creator-portal/logout", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ token }) }).catch(() => {});
                 try { localStorage.removeItem(CREATOR_TOKEN_KEY); } catch { /* private mode */ }
                 // Straight to the login screen with no token in the URL, so a
                 // back button press cannot restore the session just cleared.

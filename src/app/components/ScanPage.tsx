@@ -49,6 +49,9 @@ export function ScanPage({ code }: { code: string }) {
   const [instagram, setInstagram] = useState("");
   const [busy, setBusy] = useState(false);
   const [done, setDone] = useState(false);
+  // False when the server could not write the lead. It parks the details either
+  // way, so this changes what the confirmation promises, not whether one shows.
+  const [savedCleanly, setSavedCleanly] = useState(true);
   // Second step, for the same reason the referral form has one: this matches
   // existing businesses, so a session handed straight over would be a way into
   // an account belonging to somebody else.
@@ -120,6 +123,11 @@ export function ScanPage({ code }: { code: string }) {
       // extra step rather than a wait -- and it is what stops the form being a
       // way into a business that is already on file.
       if (d?.needsVerification) { setStep("code"); setBusy(false); return; }
+      // saved === false means the write failed outright. The server parks the
+      // details so nothing is lost and an admin can pick it up, but the owner
+      // must not be told a code is on its way -- so the confirmation says we
+      // have their details and stops there.
+      setSavedCleanly(d?.saved !== false);
       // The lead saved but no code went out, which is a worse landing rather
       // than a lost signup: the confirmation stands.
       setDone(true);
@@ -151,10 +159,16 @@ export function ScanPage({ code }: { code: string }) {
   }
 
   if (done) {
+    // Two endings, because there are two outcomes. When the lead saved, the
+    // email is a promise we can keep. When it did not, the server has parked
+    // the details for an admin -- so the owner is not dead-ended, but neither
+    // is they told to wait on an inbox for something that is not coming.
     return <Shell>
-      <h1 className="text-xl font-bold mb-2">You're in</h1>
+      <h1 className="text-xl font-bold mb-2">{savedCleanly ? "You're in" : "Got your details"}</h1>
       <p className="text-sm text-neutral-400">
-        We'll email your dashboard link, and the Reel as soon as it goes live.
+        {savedCleanly
+          ? "We'll email your dashboard link, and the Reel as soon as it goes live."
+          : "We've got them and someone will be in touch shortly to finish setting you up."}
       </p>
     </Shell>;
   }

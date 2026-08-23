@@ -40,7 +40,7 @@ interface Signup { id: string; instagram: string; email: string; city: string; c
 interface BusinessSignup { id: string; businessName: string; instagram: string; email: string; city: string; address: string; preferredContact: string; createdAt: string; referralSource?: string | null; referralCode?: string | null; referredByHandle?: string | null; }
 interface Submission { id: string; featureId: string; creatorInstagram: string; reelUrl: string; status: string; submittedAt: string; reportNote?: string; metrics?: any; businessFeedback?: { reaction: "approve" | "report"; note?: string; submittedAt: string; businessName?: string }; }
 interface PageView { visitorId: string; referrer: string; timestamp: string; country?: string; city?: string; }
-interface Feature { id: string; businessId: string; businessName: string; category: string; payoutRange: string; status: string; total_payout?: string; claimed_by?: string; winner_instagram?: string; claimed_at?: string; isTrial?: boolean; isOneOff?: boolean; requestNotes?: string; submittedByBusiness?: boolean; }
+interface Feature { id: string; businessId: string; businessName: string; category: string; payoutRange: string; status: string; total_payout?: string; claimed_by?: string; winner_instagram?: string; claimed_at?: string; isTrial?: boolean; isOneOff?: boolean; requestNotes?: string; submittedByBusiness?: boolean; offeredAt?: string | null; approvedAt?: string | null; }
 interface BusinessSignupExtended extends BusinessSignup { subscriptionTier?: string; subscriptionEndsAt?: string | null; }
 interface Claim { featureId: string; creatorToken: string; creatorInstagram: string; status: string; claimedAt: string; reelUrl?: string; approvedAt?: string; expiresAt?: string; acceptanceExpiresAt?: string; lastViewed?: string; }
 
@@ -314,8 +314,9 @@ function BusinessCard({ signup, approved, onApprove, onImpersonate, impersonatin
   const [offering, setOffering] = useState<null | "trial" | "oneoff">(null);
 
   const tierLimit = TIER_LIMITS[tier] || 0;
+  // Both scoped to the current month by lib/featureQuota, so this card and the
+  // business's own portal report the same allowance.
   const totalReels = quotaLimit(tierLimit, bizFeatures || []);
-  // Count offered/pending/available/completed features this month as "used"
   const reelsUsed = countQuotaUsed(bizFeatures || []);
 
   const offerFeature = async (kind: "trial" | "oneoff") => {
@@ -726,7 +727,13 @@ function SubmissionCard({ sub, onApprove, approving, businessName, featurePayout
 
 // ─── Main Analytics component ─────────────────────────────────────────────────
 export function Analytics({ adminToken }: { adminToken?: string } = {}) {
-  const [isAuthenticated, setIsAuthenticated] = useState(!!adminToken);
+  // Starts false even when a token is in the URL. It used to start true, so
+  // `?admin=anything` rendered the dashboard shell before a single byte had
+  // been verified -- and nothing set it back when verification failed, so the
+  // shell stayed up until an API call happened to 401. The server has always
+  // been the real guard; this makes the client stop pretending otherwise.
+  const [isAuthenticated, setIsAuthenticated] = useState(false);
+  const [verifying, setVerifying] = useState(!!adminToken);
   const [password, setPassword] = useState("");
   const [passwordError, setPasswordError] = useState("");
   const [sessionExpired, setSessionExpired] = useState(false);
@@ -1015,17 +1022,27 @@ export function Analytics({ adminToken }: { adminToken?: string } = {}) {
 
   useEffect(() => {
     if (adminToken) {
-      // Verify admin private link token
-      apiFetch(`/admin/verify?token=${adminToken}`).then((r) => r.json()).then((d) => {
-        if (d.valid) {
-          // The private link doubles as the session token for later admin calls.
-          sessionStorage.setItem("analytics_token", adminToken);
-          setIsAuthenticated(true);
-          setAdminTokenVerified(true);
-        }
-      });
+      // Verify admin private link token. Resolved either way -- an invalid one
+      // has to land on the login sheet, not on a shell waiting for a 401.
+      apiFetch(`/admin/verify?token=${encodeURIComponent(adminToken)}`)
+        .then((r) => r.json())
+        .then((d) => {
+          if (d?.valid) {
+            // The private link doubles as the session token for later admin calls.
+            sessionStorage.setItem("analytics_token", adminToken);
+            setIsAuthenticated(true);
+            setAdminTokenVerified(true);
+          } else {
+            // Falls back to whatever session already exists, so an admin who is
+            // signed in and follows a stale link is not thrown out.
+            setIsAuthenticated(!!sessionStorage.getItem("analytics_token"));
+          }
+        })
+        .catch(() => setIsAuthenticated(!!sessionStorage.getItem("analytics_token")))
+        .finally(() => setVerifying(false));
     } else {
       setIsAuthenticated(!!sessionStorage.getItem("analytics_token"));
+      setVerifying(false);
     }
   }, [adminToken]);
 
@@ -1113,6 +1130,10 @@ export function Analytics({ adminToken }: { adminToken?: string } = {}) {
           claimed_at: f.claimed_at || "",
           isTrial: f.isTrial ?? f.is_trial ?? false,
           isOneOff: f.isOneOff ?? f.is_one_off ?? false,
+          // Dates the Feature to a month. The quota is monthly, so a card
+          // without this counts every Feature the business has ever had.
+          offeredAt: f.offeredAt ?? f.offered_at ?? null,
+          approvedAt: f.approvedAt ?? f.approved_at ?? null,
           requestNotes: f.requestNotes || f.request_notes || "",
           submittedByBusiness: f.submittedByBusiness ?? f.submitted_by_business ?? false,
           admin_notes: f.admin_notes || "",
@@ -1265,6 +1286,16 @@ export function Analytics({ adminToken }: { adminToken?: string } = {}) {
     const d = await res.json();
     if (res.ok) setAdminLink(`${window.location.origin}?admin=${d.token}`);
   };
+
+  // A valid private link should not flash the password sheet on its way in.
+  // Only ever shown while /admin/verify is in flight, which is one round trip.
+  if (verifying) {
+    return (
+      <div className="fixed inset-0 bg-neutral-950 z-[9999] flex items-center justify-center px-6">
+        <p className="text-sm text-neutral-500">Checking your link…</p>
+      </div>
+    );
+  }
 
   if (!isAuthenticated) {
     return (

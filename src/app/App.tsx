@@ -48,11 +48,31 @@ export default function App() {
   // creator's portal does not end up stuck in it on their next visit.
   const impersonating = params.get("imp") === "1";
 
+  // A token in the address bar stays there: in history, in the tab, in any
+  // screenshot, and in anything the visitor copies and sends on. It is a bearer
+  // credential with no expiry, so once it is safely in storage the URL is
+  // rewritten without it. replaceState rather than pushState, so Back does not
+  // walk them into the version of the URL that still carries it.
+  //
+  // Impersonation is deliberately left alone: that token is never persisted, so
+  // stripping it from the URL would sign the admin straight back out.
+  const stripTokenFromUrl = (param: string) => {
+    try {
+      const url = new URL(window.location.href);
+      if (!url.searchParams.has(param)) return;
+      url.searchParams.delete(param);
+      window.history.replaceState({}, "", `${url.pathname}${url.search}${url.hash}`);
+    } catch { /* older browsers keep the URL they have */ }
+  };
+
   // A verified login is remembered, so creators do not sign in every visit and
   // never need a unique link. Tokens arriving in the URL are persisted too, but
   // an impersonation token never is.
   if (creatorToken && !impersonating) {
-    try { localStorage.setItem(CREATOR_TOKEN_KEY, creatorToken); } catch { /* private mode */ }
+    try {
+      localStorage.setItem(CREATOR_TOKEN_KEY, creatorToken);
+      stripTokenFromUrl("creator");
+    } catch { /* private mode */ }
   }
   let storedCreator: string | null = null;
   try { storedCreator = localStorage.getItem(CREATOR_TOKEN_KEY); } catch { /* private mode */ }
@@ -62,7 +82,10 @@ export default function App() {
   // remembered on exactly the same terms: persisted unless an admin is
   // impersonating, and never for an impersonation token.
   if (bizToken && !impersonating) {
-    try { localStorage.setItem(BIZ_TOKEN_KEY, bizToken); } catch { /* private mode */ }
+    try {
+      localStorage.setItem(BIZ_TOKEN_KEY, bizToken);
+      stripTokenFromUrl("biz");
+    } catch { /* private mode */ }
   }
   let storedBiz: string | null = null;
   try { storedBiz = localStorage.getItem(BIZ_TOKEN_KEY); } catch { /* private mode */ }

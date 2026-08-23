@@ -49,7 +49,9 @@ interface Reel {
 }
 interface RequestingCreator { featureId: string; instagram: string; requestedAt: string; }
 interface InProgressCreator { featureId: string; instagram: string; approvedAt: string; expiresAt: string; }
-interface PublishedFeature { id: string; category: string; payoutRange: string; status: string; approvedAt?: string; businessNotes?: string; isTrial?: boolean; isOneOff?: boolean; requestNotes?: string; submittedByBusiness?: boolean; }
+// offeredAt is what dates a Feature to a month, and the quota is per month --
+// see lib/featureQuota. Without it every count would run over all time.
+interface PublishedFeature { id: string; category: string; payoutRange: string; status: string; approvedAt?: string | null; offeredAt?: string | null; businessNotes?: string; isTrial?: boolean; isOneOff?: boolean; requestNotes?: string; submittedByBusiness?: boolean; }
 interface BizData {
   businessName: string; city: string; address?: string; instagram?: string; email?: string;
   reels: Reel[]; requestingCreators: RequestingCreator[]; inProgressCreators: InProgressCreator[];
@@ -222,9 +224,11 @@ function RequestSlotCard({ bizToken, reelsLeft, reelsLimit, onSubmitted }: {
   const [expanded, setExpanded] = useState(false);
   const [requestNotes, setRequestNotes] = useState("");
   const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState("");
 
   const submit = async () => {
     setSubmitting(true);
+    setError("");
     const notesVal = requestNotes.trim();
     // The server creates the row (and owns the id) from the business the token
     // belongs to, so business_id can't be spoofed from the client.
@@ -232,10 +236,19 @@ function RequestSlotCard({ bizToken, reelsLeft, reelsLimit, onSubmitted }: {
       method: "POST", headers: { ...AUTH, "Content-Type": "application/json" },
       body: JSON.stringify({ bizToken, requestNotes: notesVal, isNewRequest: true }),
     }).catch(() => null);
-    const newId = (await res?.json().catch(() => null))?.featureId || "";
+    const body = await res?.json().catch(() => null);
+    const newId = body?.featureId || "";
     setSubmitting(false);
+    if (!newId) {
+      // The quota is enforced server-side too, so this slot can be refused --
+      // by a second tab that spent the last Reel, or a plan that lapsed between
+      // the page loading and this click. Collapsing silently, which is what
+      // this did before, reads as a request that went through.
+      setError(body?.error || "Could not send that request. Try again.");
+      return;
+    }
     setExpanded(false);
-    if (newId) onSubmitted(newId, notesVal);
+    onSubmitted(newId, notesVal);
   };
 
   // Same weight as an offered FeatureNoteCard. Both are actionable rows, so an
@@ -272,6 +285,7 @@ function RequestSlotCard({ bizToken, reelsLeft, reelsLimit, onSubmitted }: {
               className="w-full px-3 py-2.5 text-sm bg-neutral-800 border border-white/15 rounded-xl text-white placeholder:text-neutral-500 focus:outline-none resize-none" />
             <p className="text-[11px] text-neutral-600">Optional. Leave blank and we'll let the creator choose.</p>
           </div>
+          {error && <p className="text-xs text-red-400">{error}</p>}
           <div className="flex justify-end">
             <button onClick={submit} disabled={submitting}
               className="w-10 h-10 flex items-center justify-center bg-white text-neutral-900 rounded-xl hover:bg-neutral-100 transition-all disabled:opacity-50">
@@ -291,6 +305,7 @@ function FeatureNoteCard({ feature: f, bizPortalData: data, bizToken, onNoteSave
   const [expanded, setExpanded] = useState(false);
   const [requestNotes, setRequestNotes] = useState("");
   const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState("");
   const [submitted, setSubmitted] = useState(f.submittedByBusiness || false);
   const hasInProgress = data.inProgressCreators?.some(c => c.featureId === f.id);
   const isCompleted = f.status === "completed";
@@ -311,18 +326,28 @@ function FeatureNoteCard({ feature: f, bizPortalData: data, bizToken, onNoteSave
 
   const submitRequest = async () => {
     setSubmitting(true);
+    setError("");
     // Server-side the update is scoped by business_id as well as feature id, so
     // one business cannot submit against another's feature.
-    await fetch(`${BASE}/business-portal/submit-feature`, {
+    const res = await fetch(`${BASE}/business-portal/submit-feature`, {
       method: "POST", headers: { ...AUTH, "Content-Type": "application/json" },
       body: JSON.stringify({
         bizToken, featureId: f.id,
         requestNotes: requestNotes.trim(),
       }),
-    }).catch(() => {});
+    }).catch(() => null);
+    const body = await res?.json().catch(() => null);
+    setSubmitting(false);
+    // The server refuses an offer that is no longer requestable -- already
+    // accepted in another tab, or withdrawn. This used to mark itself accepted
+    // regardless of what came back, so the card said the offer was taken when
+    // nothing had been written.
+    if (!res?.ok) {
+      setError(body?.error || "Could not accept that offer. Try again.");
+      return;
+    }
     setSubmitted(true);
     setExpanded(false);
-    setSubmitting(false);
     onSubmitted?.(f.id);
   };
 
@@ -384,6 +409,7 @@ function FeatureNoteCard({ feature: f, bizPortalData: data, bizToken, onNoteSave
               className="w-full px-3 py-2.5 text-sm bg-neutral-800 border border-white/15 rounded-xl text-white placeholder:text-neutral-500 focus:outline-none resize-none" />
             <p className="text-[11px] text-neutral-600">Optional. Leave blank and we'll let the creator choose.</p>
           </div>
+          {error && <p className="text-xs text-red-400">{error}</p>}
           <div className="flex justify-end">
             <button onClick={e => { e.stopPropagation(); submitRequest(); }} disabled={submitting}
               className="w-10 h-10 flex items-center justify-center bg-white text-neutral-900 rounded-xl hover:bg-neutral-100 transition-all disabled:opacity-50">
@@ -772,6 +798,13 @@ export function BusinessPortal({ token }: { token: string }) {
             <span className="text-xs text-neutral-500">Business Portal</span>
             <button
               onClick={() => {
+                // Revoke server-side too, for the same reason the creator
+                // portal does: the token has no expiry, so clearing storage
+                // alone left it usable by anyone still holding a copy.
+                fetch(`${BASE}/business-portal/logout`, {
+                  method: "POST", headers: { ...AUTH, "Content-Type": "application/json" },
+                  body: JSON.stringify({ token }),
+                }).catch(() => {});
                 try { localStorage.removeItem(BIZ_TOKEN_KEY); } catch { /* private mode */ }
                 // Replaced rather than pushed, and stripped of ?biz=, so Back
                 // does not walk straight into the session just signed out of.

@@ -1,0 +1,13 @@
+# The marketing site is meant to be indexed. Everything behind a token or a
+# sign-in is not.
+User-agent: *
+Allow: /
+Disallow: /app
+Disallow: /business
+Disallow: /portal/
+# Ambassador card scan pages, in both the printed /a/CODE form and the bare
+# /CODE form. Six characters from the card alphabet, which omits I, L, O, U,
+# 0 and 1 -- so this cannot swallow a real word or a route added later.
+Disallow: /a/
+
+Sitemap: https://getcontynt.com/sitemap.xml
