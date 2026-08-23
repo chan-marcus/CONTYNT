@@ -450,6 +450,7 @@ export function BusinessPortal({ token }: { token: string }) {
   // Which plan is mid-checkout, so only the pressed button shows it.
   const [buying, setBuying] = useState<string | null>(null);
   const [buyError, setBuyError] = useState("");
+  const [openingBilling, setOpeningBilling] = useState(false);
 
   // Named tab title, matching the creator portal. App.tsx's title effect never
   // runs on this route: it returns <BusinessPortal> before reaching it.
@@ -472,6 +473,22 @@ export function BusinessPortal({ token }: { token: string }) {
   // The server decides which business is buying, from the portal token. Nothing
   // here names a business id, because a body that did would let anyone put a
   // subscription on somebody else's account.
+  // Everything about an existing subscription -- card, invoices, cancelling --
+  // lives in Stripe's own portal rather than being rebuilt here. Cancelling
+  // there ends the plan at the period end, which is the deal already promised.
+  const openBilling = async () => {
+    setOpeningBilling(true); setBuyError("");
+    try {
+      const res = await fetch(`${BASE}/business-portal/billing`, {
+        method: "POST", headers: { ...AUTH, "Content-Type": "application/json" },
+        body: JSON.stringify({ bizToken: token }),
+      });
+      const d = await res.json().catch(() => null);
+      if (!res.ok || !d?.url) { setBuyError(d?.error || "Could not open billing."); setOpeningBilling(false); return; }
+      window.location.assign(d.url);
+    } catch { setBuyError("Could not reach the server."); setOpeningBilling(false); }
+  };
+
   const startCheckout = async (tier: string) => {
     setBuying(tier); setBuyError("");
     try {
@@ -1029,6 +1046,17 @@ export function BusinessPortal({ token }: { token: string }) {
                 ))}
               </div>
               {buyError && <p className="text-center text-xs text-red-400">{buyError}</p>}
+              {data.subscriptionTier && (
+                <div className="text-center">
+                  <button onClick={openBilling} disabled={openingBilling}
+                    className="text-xs text-neutral-300 underline underline-offset-4 hover:text-white transition-colors disabled:opacity-50">
+                    {openingBilling ? "Opening billing…" : "Manage billing"}
+                  </button>
+                  <p className="text-[11px] text-neutral-500 mt-1">
+                    Change your card, see invoices, or cancel. A cancelled plan runs to the end of the month you have paid for.
+                  </p>
+                </div>
+              )}
               <p className="text-center text-xs text-neutral-500">Cancel anytime. No contracts.</p>
 
               {/* One-off purchase — secondary to the subscription plans above,
