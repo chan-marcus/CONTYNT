@@ -2027,7 +2027,9 @@ function renderSelectedEmail(row: any, feature: any, link: string, hoursToAccept
 
 You have been selected for the feature at ${where}.
 
-Accept it within ${hoursToAccept} hours and it is yours to film. Leave it and it goes back to everyone else.
+Accept it within ${hoursToAccept} hours and it is yours to film.
+
+Leave it and it goes back to everyone else.
 
 Accept it here:
 ${prettyLink(link)}
@@ -2040,7 +2042,8 @@ San Francisco`;
 `      <p style="margin:0 0 16px 0;font-size:21px;line-height:1.35;font-weight:700;color:#0a0a0a;">You have been selected</p>
       <p style="margin:0 0 14px 0;">Hi ${esc(first)},</p>
       <p style="margin:0 0 14px 0;">You have been selected for the feature at <strong>${esc(where)}</strong>.</p>
-      <p style="margin:0;">Accept it within ${hoursToAccept} hours and it is yours to film. Leave it and it goes back to everyone else.</p>
+      <p style="margin:0 0 14px 0;">Accept it within ${hoursToAccept} hours and it is yours to film.</p>
+      <p style="margin:0;">Leave it and it goes back to everyone else.</p>
 ${emailButton(link, "Accept the feature")}
       <p style="margin:0 0 6px 0;font-size:13px;color:#8a8a8a;">Or paste this into your browser:</p>
       <p style="margin:0;font-size:13px;word-break:break-all;"><a href="${esc(link)}" style="color:#525252;">${esc(prettyLink(link))}</a></p>`,
