@@ -518,6 +518,9 @@ async function creatorIsConfirmed(creatorId: string | undefined): Promise<boolea
 
 // ─── Creator verification ─────────────────────────────────────────────────────
 const VERIFY_DAYS = 90;
+// Short, because this is a person who just told us their link does not work.
+// Long enough that a public form cannot be used to mail somebody repeatedly.
+const RESEND_COOLDOWN_MIN = 10;
 // Where the tokenized link points, and the origin every page served under
 // /portal builds its own URLs from -- the resend form below posts back through
 // whichever of the two origins minted the link, so the two cannot disagree.
@@ -739,18 +742,46 @@ app.post("/make-server-f5961d0c/portal/verify/resend", async (c) => {
     if (!email) return done();
 
     const { data: row } = await db().from("creator_signups_f5961d0c")
-      .select("id, email, email_bounced_at, email_complained_at").ilike("email", email).maybeSingle();
+      .select("id, email, instagram, instagram_handle, email_bounced_at, email_complained_at, verify_email_sent_at")
+      .ilike("email", email).maybeSingle();
 
     // Requests from a creator we stopped emailing are accepted and dropped.
     if (row && !row.email_bounced_at && !row.email_complained_at) {
+      // A public form that mails whoever is on file is worth throttling: without
+      // it, anyone who knows an address can have us mail that person on repeat.
+      // The reply below never varies, so a throttled request looks exactly like
+      // a sent one and this leaks nothing.
+      const lastSent = row.verify_email_sent_at ? new Date(row.verify_email_sent_at).getTime() : 0;
+      if (Date.now() - lastSent < RESEND_COOLDOWN_MIN * 60_000) return done();
+
+      // Sent before the new token is stored, so a send that fails leaves the
+      // link the creator already has working. The other order is how this
+      // behaved until now: it retired their link, told them a new one was on the
+      // way, and mailed nothing -- leaving them worse off for having asked.
       const token = secureToken(32);
+      const link = verifyLinkFor(token);
+      const rendered = renderVerificationEmail(row, link);
+
+      if (!POSTMARK_SERVER_TOKEN) {
+        await logCreatorEvent(row.id, "verify_link_resend_failed", { reason: "POSTMARK_SERVER_TOKEN not set" });
+        return done();
+      }
+      const sent = await postmarkSend({ to: row.email, ...rendered, stream: POSTMARK_STREAM });
+      if (!sent.ok) {
+        // Logged rather than swallowed: the creator is now waiting on an email
+        // that is not coming, and this is the only place that says so.
+        await logCreatorEvent(row.id, "verify_link_resend_failed", { error: sent.error });
+        return done();
+      }
+
       await must("verify: reissue token", db().from("creator_signups_f5961d0c").update({
         verify_token: token,
         verify_token_expires_at: new Date(Date.now() + VERIFY_DAYS * 864e5).toISOString(),
+        verify_email_sent_at: new Date().toISOString(),
       }).eq("id", row.id));
-      await logCreatorEvent(row.id, "verify_link_requested", { link: verifyLinkFor(token) });
-      // TODO(send): no queue or mail transport exists yet. Phase 4 wires this to
-      // Postmark; until then the reissued link is recoverable from creator_events.
+      await logCreatorEvent(row.id, "verify_link_requested", {
+        link, messageId: sent.payload?.MessageID ?? null, via: "resend_form",
+      });
     }
     return done();
   } catch { return done(); }
