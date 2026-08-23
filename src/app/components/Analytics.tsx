@@ -995,6 +995,36 @@ export function Analytics({ adminToken }: { adminToken?: string } = {}) {
     finally { setSendBusy(false); }
   }, []);
 
+  // Configures the Stripe Customer Portal: which plans a business may switch
+  // between, and that cancelling runs to the end of the paid period. Previews
+  // by default, because it writes to a live Stripe account.
+  const syncPortal = useCallback(async (dryRun: boolean) => {
+    setSendBusy(true);
+    try {
+      const res = await apiFetch("/admin/stripe/sync-portal", {
+        method: "POST", body: JSON.stringify({ dryRun }),
+      });
+      const d = await res.json().catch(() => null);
+      if (!res.ok || !d?.success) { setStripeResult(d?.error || "Portal setup failed."); return; }
+      if (d.dryRun) {
+        setStripeResult(
+          `Preview — customer portal\n\n` +
+          `Existing configuration: ${d.existingConfig || "none yet"}` +
+          `${d.existingLivemode === null || d.existingLivemode === undefined ? "" : ` (${d.existingLivemode ? "live" : "test"} mode)`}\n\n` +
+          `Would allow switching between:\n` +
+          (d.plans || []).map((p: any) => `  ${p.tier} — ${p.priceId} (${p.livemode ? "live" : "test"})`).join("\n") +
+          `\n\nAnd would set cancellation to run to the end of the paid period.`);
+        return;
+      }
+      setStripeResult(
+        `Customer portal ${d.reused ? "updated" : "created"}\n\n` +
+        `Configuration: ${d.configurationId} (${d.livemode ? "⚠️ LIVE" : "test"} mode)\n` +
+        `Plan switching: on\nCancellation: at period end\n\n` +
+        (d.plans || []).map((p: any) => `  ${p.tier} — ${p.priceId}`).join("\n"));
+    } catch { setStripeResult("Could not reach the server."); }
+    finally { setSendBusy(false); }
+  }, []);
+
   const ambAction = async (id: string, path: string, body: object) => {
     setAmbBusy(id);
     await apiFetch(path, { method: "POST", body: JSON.stringify(body) }).catch(() => {});
@@ -1617,6 +1647,31 @@ export function Analytics({ adminToken }: { adminToken?: string } = {}) {
                 Check also reports which mode the key is in and whether a webhook endpoint is
                 listening. A key and an endpoint in different modes look identical in Stripe's
                 dashboard and never fire for each other.
+              </p>
+            </div>
+
+            <div className="border-t border-white/10 pt-5">
+              <h2 className="text-lg font-semibold text-white mb-1">Customer portal</h2>
+              <p className="text-sm text-neutral-400 mb-3">
+                What a business can do from "Manage billing". Stripe's default allows updating a
+                card and cancelling immediately — not switching plans, and not the end-of-period
+                cancellation this app promises everywhere else.
+              </p>
+              <div className="flex flex-wrap gap-2">
+                <button onClick={() => syncPortal(true)} disabled={sendBusy}
+                  title="Show what would be configured, without writing to Stripe"
+                  className="px-3 py-2 bg-white/10 text-neutral-300 rounded-lg hover:bg-white/15 transition-all text-sm disabled:opacity-40">
+                  Check portal
+                </button>
+                <button onClick={() => syncPortal(false)} disabled={sendBusy}
+                  className="px-3 py-2 bg-indigo-500/20 border border-indigo-400/40 text-indigo-100 rounded-lg hover:bg-indigo-500/30 transition-all text-sm disabled:opacity-40">
+                  Set up portal
+                </button>
+              </div>
+              <p className="text-xs text-neutral-500 mt-2">
+                Turns on switching between Starter, Growth and Pro with prorated billing, and sets
+                cancellation to run to the end of the paid period. Run it after the prices exist,
+                and again after switching to live keys — a configuration belongs to one mode.
               </p>
             </div>
 

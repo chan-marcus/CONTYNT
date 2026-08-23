@@ -1452,7 +1452,20 @@ app.post("/make-server-f5961d0c/business-portal/billing", async (c) => {
     if (!customer) return c.json({ error: "No billing set up yet. Choose a plan first." }, 409);
 
     const back = `${SITE_ORIGIN}/business?biz=${encodeURIComponent(String(bizToken))}`;
-    const made = await stripeCall("POST", "billing_portal/sessions", { customer, return_url: back });
+    // The configuration is what carries plan switching and cancel-at-period-end.
+    // Without one Stripe falls back to the dashboard default, which has neither.
+    const portalConfig = await kv.get("stripe_portal_config").catch(() => null);
+    let made = await stripeCall("POST", "billing_portal/sessions", {
+      customer, return_url: back,
+      ...(portalConfig?.id ? { configuration: portalConfig.id } : {}),
+    });
+    // A configuration from the other mode is rejected by name. Retrying without
+    // it opens the dashboard-default portal, which is worse than the configured
+    // one and far better than a business being unable to reach billing at all.
+    if (!made.ok && portalConfig?.id) {
+      await logBusinessEvent(biz.id, "billing_portal_config_rejected", { configuration: portalConfig.id, error: made.error });
+      made = await stripeCall("POST", "billing_portal/sessions", { customer, return_url: back });
+    }
     if (!made.ok) return c.json({ error: made.error }, 502);
     await logBusinessEvent(biz.id, "billing_portal_opened", {});
     return c.json({ success: true, url: made.data.url });
@@ -1533,6 +1546,111 @@ app.post("/make-server-f5961d0c/admin/stripe/sync-subscriptions", async (c) => {
       results,
     });
   } catch (e: any) { return c.json({ error: "Subscription sync failed", details: e.message }, 500); }
+});
+
+// The Customer Portal, configured from here rather than by hand in the Stripe
+// dashboard.
+//
+// Two things this settles that the dashboard default does not. Plan switching
+// is off by default, so "Manage billing" opened a portal that could update a
+// card and cancel but not move Starter -> Growth, which is the one change a
+// growing business actually wants to make. And cancellation defaults to
+// immediate, which contradicts what this app promises everywhere else: the plan
+// is paid for to the end of the period and runs until then. mode=at_period_end
+// is that promise, written where Stripe enforces it rather than where somebody
+// remembers it.
+//
+// A configuration belongs to one mode. The id minted against a test key is
+// meaningless to a live key, so the stored record carries its livemode and the
+// session below falls back to no configuration rather than failing outright --
+// which is what the first portal open after a live cutover would otherwise do.
+app.post("/make-server-f5961d0c/admin/stripe/sync-portal", async (c) => {
+  try {
+    const body = await c.req.json().catch(() => ({}));
+    const dryRun = !!body.dryRun;
+    if (!STRIPE_SECRET_KEY) return c.json({ error: "STRIPE_SECRET_KEY is not set on the server." }, 400);
+
+    // Only the recurring plans. The one-off Feature is a payment, not a
+    // subscription, and offering it as something to switch to would be a way to
+    // turn a paying subscription into a single Reel.
+    const wanted = STRIPE_PLANS.filter(p => p.interval && p.tier);
+    const resolved: any[] = [];
+    for (const plan of wanted) {
+      const found = await stripeCall("GET", "prices", {
+        lookup_keys: [plan.lookupKey], limit: 1, active: true, expand: ["data.product"],
+      });
+      if (!found.ok) return c.json({ error: found.error }, 502);
+      const price = found.data?.data?.[0];
+      if (!price) {
+        return c.json({
+          error: `No price in Stripe for ${plan.label}. Press "Create Stripe prices" first — a portal cannot offer a plan that does not exist yet.`,
+        }, 409);
+      }
+      resolved.push({
+        tier: plan.tier, label: plan.label, amount: plan.amount,
+        priceId: price.id,
+        productId: typeof price.product === "string" ? price.product : price.product?.id,
+        livemode: !!price.livemode,
+      });
+    }
+
+    const stored = await kv.get("stripe_portal_config").catch(() => null);
+    if (dryRun) {
+      return c.json({
+        success: true, dryRun: true,
+        existingConfig: stored?.id ?? null,
+        existingLivemode: stored?.livemode ?? null,
+        plans: resolved.map(r => ({ tier: r.tier, priceId: r.priceId, livemode: r.livemode })),
+      });
+    }
+
+    const payload = {
+      business_profile: { headline: "CONTYNT — manage your plan" },
+      features: {
+        subscription_update: {
+          enabled: true,
+          default_allowed_updates: ["price"],
+          // Prorated, so a mid-month upgrade is charged the difference rather
+          // than a second full month, and a downgrade credits what is unused.
+          proration_behavior: "create_prorations",
+          products: resolved.map(r => ({ product: r.productId, prices: [r.priceId] })),
+        },
+        subscription_cancel: {
+          enabled: true,
+          mode: "at_period_end",
+          cancellation_reason: {
+            enabled: true,
+            options: ["too_expensive", "missing_features", "switched_service", "unused", "other"],
+          },
+        },
+        payment_method_update: { enabled: true },
+        invoice_history: { enabled: true },
+      },
+    };
+
+    // Updated in place when one already exists, so re-running this does not
+    // leave a trail of stale configurations behind.
+    const reuse = stored?.id && resolved.every(r => r.livemode === stored.livemode);
+    const path = reuse ? `billing_portal/configurations/${stored.id}` : "billing_portal/configurations";
+    const made = await stripeCall("POST", path, payload);
+    if (!made.ok) return c.json({ error: made.error }, 502);
+
+    await kv.set("stripe_portal_config", {
+      id: made.data.id,
+      livemode: !!made.data.livemode,
+      updatedAt: new Date().toISOString(),
+    });
+
+    return c.json({
+      success: true,
+      configurationId: made.data.id,
+      livemode: !!made.data.livemode,
+      reused: !!reuse,
+      planSwitching: true,
+      cancelMode: "at_period_end",
+      plans: resolved.map(r => ({ tier: r.tier, priceId: r.priceId })),
+    });
+  } catch (e: any) { return c.json({ error: "Portal setup failed", details: e.message }, 500); }
 });
 
 // Stripe signs every webhook. Without checking it, this endpoint is a public
