@@ -225,7 +225,7 @@ function RequestSlotCard({ bizToken, reelsLeft, reelsLimit, onSubmitted }: {
 
   const submit = async () => {
     setSubmitting(true);
-    const notesVal = requestNotes.trim() || "No specific requests, creator's choice";
+    const notesVal = requestNotes.trim();
     // The server creates the row (and owns the id) from the business the token
     // belongs to, so business_id can't be spoofed from the client.
     const res = await fetch(`${BASE}/business-portal/submit-feature`, {
@@ -317,7 +317,7 @@ function FeatureNoteCard({ feature: f, bizPortalData: data, bizToken, onNoteSave
       method: "POST", headers: { ...AUTH, "Content-Type": "application/json" },
       body: JSON.stringify({
         bizToken, featureId: f.id,
-        requestNotes: requestNotes.trim() || "No specific requests, creator's choice",
+        requestNotes: requestNotes.trim(),
       }),
     }).catch(() => {});
     setSubmitted(true);
@@ -393,10 +393,13 @@ function FeatureNoteCard({ feature: f, bizPortalData: data, bizToken, onNoteSave
         </div>
       )}
 
-      {(submitted || isPending) && (
+      {/* Only when they actually wrote something. A business that left the box
+          empty was shown a sentence it had not written, in the place its own
+          words go. */}
+      {(submitted || isPending) && (requestNotes.trim() || f.requestNotes) && (
         <div className="px-5 pb-4">
           <p className="text-xs text-neutral-500 bg-white/5 rounded-xl px-3 py-2">
-            {requestNotes.trim() || f.requestNotes || "No specific requests, creator's choice"}
+            {requestNotes.trim() || f.requestNotes}
           </p>
         </div>
       )}
