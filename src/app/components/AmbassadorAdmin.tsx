@@ -14,7 +14,7 @@ export interface AmbassadorAdminData {
   referrals: {
     id: string; ambassadorId: string; businessName: string; businessEmail: string;
     creatorInstagram: string; referralCode: string; status: string;
-    rewardStatus: string; rewardAmount: number; createdAt: string;
+    rewardStatus: string; rewardAmount: number; createdAt: string; unrecorded?: boolean;
     subscriptionActiveAt: string | null; firstPaymentAt: string | null;
     retained30dAt: string | null; rewardEarnedAt: string | null; rewardPaidAt: string | null;
   }[];
@@ -123,7 +123,8 @@ export function AmbassadorAdmin({ data, onAdvance, onPayReward, onToggle, busy }
                   {(byAmbassador[a.ambassadorId] ?? []).map(r => (
                     // Paid is the only state worth colouring: it is the one that
                     // has cost money and cannot be undone.
-                    <span key={r.id} title={`${pretty(r.status)} · reward ${r.rewardStatus}`}
+                    <span key={r.id}
+                      title={`${pretty(r.status)} · reward ${r.rewardStatus}${r.unrecorded ? " · inferred from the business, no referral row" : ""}`}
                       className={`text-[10px] px-2 py-0.5 rounded-md border ${
                         r.rewardStatus === "paid"
                           ? "bg-green-500/10 text-green-300 border-green-500/25"

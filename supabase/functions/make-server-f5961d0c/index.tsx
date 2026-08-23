@@ -1382,6 +1382,7 @@ app.post("/make-server-f5961d0c/scan/:code/lead", async (c) => {
     // submitted without a key still has a chance of attaching rather than
     // always minting a twin.
     let business: any = null;
+    let createdBusiness = false;
     if (placeId) {
       const { data } = await db().from("business_signups_f5961d0c")
         .select("id, lead_status, place_id").eq("place_id", placeId).maybeSingle();
@@ -1418,6 +1419,7 @@ app.post("/make-server-f5961d0c/scan/:code/lead", async (c) => {
         await db().from("business_signups_f5961d0c").update(patch).eq("id", business.id);
       }
     } else {
+      createdBusiness = true;
       // Unknown: create it, flagged unverified. Nothing puts a Feature on the
       // board for it, so it stays invisible to creators until an admin works it.
       // instagram and city are NOT NULL with no default, so both are always sent.
@@ -1425,14 +1427,10 @@ app.post("/make-server-f5961d0c/scan/:code/lead", async (c) => {
         business_name: businessName,
         instagram: handle,
         email,
-        // The owner's own answer or nothing. The form stopped asking, and
-        // falling back to the creator's city would file every lead from a
-        // creator filming one town over under the wrong place -- worse than
-        // empty, because city is what feature matching runs on and a wrong
-        // answer is not visibly missing. The column is NOT NULL, so "".
         // Whatever the form sent, else whatever Google's address yields, else
-        // nothing. Still never the creator's own city: they may be filming a
-        // town over, and a wrong answer here is not visibly missing.
+        // nothing. Never the creator's own city: they may be filming a town
+        // over, and a wrong answer here is not visibly missing the way an
+        // empty one is. The column is NOT NULL, so "".
         city: city || cityFromFormattedAddress(placeAddress),
         address: placeAddress || "",
         place_id: placeId,
@@ -1451,6 +1449,40 @@ app.post("/make-server-f5961d0c/scan/:code/lead", async (c) => {
       await db().from("business_signups_f5961d0c")
         .update({ referred_by_creator: creator.id })
         .eq("id", business.id).is("referred_by_creator", null);
+    }
+
+    // A scan recorded attribution on the business and a row in
+    // ambassador_leads, and nothing in ambassador_referrals -- which is the
+    // table the Ambassadors tab counts and lists. So a creator who handed over
+    // a card and signed the business up right there read as "Referred 0", with
+    // no way to see the business they had just brought in. The referral link
+    // route writes this row; the scan route has to as well, or the two doors
+    // into the same programme disagree about what happened.
+    if (business?.id) {
+      const amb = await ambassadorByAnyCode(code);
+      if (amb?.ambassador_id) {
+        const { data: existing } = await db().from("ambassador_referrals_f5961d0c")
+          .select("id").eq("ambassador_id", amb.ambassador_id).eq("business_id", business.id).limit(1);
+        if (!existing?.length) {
+          const now = new Date().toISOString();
+          await must("scan lead: record referral", db().from("ambassador_referrals_f5961d0c").insert({
+            ambassador_id: amb.ambassador_id,
+            creator_id: amb.creator_id,
+            creator_instagram: amb.creator_instagram || "",
+            referral_code: amb.referral_code || code,
+            referral_url: amb.referral_url,
+            business_id: business.id,
+            business_name: businessName,
+            business_email: email,
+            // Distinct from the link route's "ambassador", so the two ways in
+            // stay tellable apart in the data even though they now agree.
+            referral_source: "ambassador_scan",
+            status: createdBusiness ? "business_created" : "lead_created",
+            reward_amount: REFERRAL_REWARD,
+            business_created_at: createdBusiness ? now : null,
+          }));
+        }
+      }
     }
 
     // Unique on (business_id, email), so a second submission is a no-op rather
@@ -3574,13 +3606,48 @@ app.post("/make-server-f5961d0c/creator-portal/complete-payout", async (c) => {
 // ─── Admin: ambassador management ────────────────────────────────────────────
 app.get("/make-server-f5961d0c/admin/ambassadors", async (c) => {
   try {
-    const [ambRes, refRes, creatorRes] = await Promise.all([
+    const [ambRes, refRes, creatorRes, bizRes] = await Promise.all([
       db().from("ambassadors_f5961d0c").select("*").order("created_at", { ascending: false }),
       db().from("ambassador_referrals_f5961d0c").select("*").order("created_at", { ascending: false }),
       db().from("creator_signups_f5961d0c").select("id, instagram, email, city"),
+      db().from("business_signups_f5961d0c")
+        .select("id, business_name, email, referred_by_creator, referral_code, referral_source, created_at")
+        .not("referred_by_creator", "is", null),
     ]);
     const ambassadors = ambRes.data ?? [];
-    const referrals = refRes.data ?? [];
+    const stored = refRes.data ?? [];
+
+    // Card scans wrote attribution onto the business and no referral row, so
+    // every business signed up at the counter was missing from this screen. The
+    // scan route records the row now, but the ones already taken never will, and
+    // a creator should not have to be told their referral is real but invisible.
+    //
+    // Synthesised here rather than written: this is a read, and inventing rows
+    // in a GET would make the repair depend on somebody opening a page. They
+    // carry no reward status, so nothing here can pay anybody -- they exist to
+    // be seen and then worked by an admin.
+    const ambByCreator: Record<string, any> = {};
+    for (const a of ambassadors) if (a.creator_id) ambByCreator[a.creator_id] = a;
+    const haveRow = new Set(stored.map((r: any) => `${r.ambassador_id}|${r.business_id}`));
+    const synthesised = (bizRes.data ?? []).flatMap((b: any) => {
+      const amb = ambByCreator[b.referred_by_creator];
+      if (!amb?.ambassador_id) return [];
+      if (haveRow.has(`${amb.ambassador_id}|${b.id}`)) return [];
+      return [{
+        id: `synth_${b.id}`,
+        ambassador_id: amb.ambassador_id, creator_id: amb.creator_id,
+        creator_instagram: amb.creator_instagram || "",
+        referral_code: b.referral_code || amb.referral_code,
+        business_id: b.id, business_name: b.business_name, business_email: b.email,
+        referral_source: b.referral_source || "ambassador_scan",
+        status: "business_created", reward_status: "pending", reward_amount: REFERRAL_REWARD,
+        created_at: b.created_at,
+        subscription_active_at: null, first_payment_at: null, retained_30d_at: null,
+        reward_earned_at: null, reward_paid_at: null, business_created_at: b.created_at,
+        unrecorded: true,
+      }];
+    });
+    const referrals = [...stored, ...synthesised];
     const creators: Record<string, any> = {};
     for (const r of (creatorRes.data ?? [])) creators[r.id] = r;
 
@@ -3618,6 +3685,9 @@ app.get("/make-server-f5961d0c/admin/ambassadors", async (c) => {
         creatorInstagram: r.creator_instagram, referralCode: r.referral_code,
         status: r.status, rewardStatus: r.reward_status, rewardAmount: parseAmount(r.reward_amount),
         createdAt: r.created_at,
+        // True for a referral this screen inferred from the business rather
+        // than read from the referrals table, so the UI can say so.
+        unrecorded: !!r.unrecorded,
         subscriptionActiveAt: r.subscription_active_at, firstPaymentAt: r.first_payment_at,
         retained30dAt: r.retained_30d_at, rewardEarnedAt: r.reward_earned_at, rewardPaidAt: r.reward_paid_at,
       })),
