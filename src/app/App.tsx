@@ -19,7 +19,6 @@ import { ReferralLanding } from "./components/ReferralLanding";
 import { CreatorSubmissionPending } from "./components/CreatorSubmissionPending";
 import { BusinessPortal } from "./components/BusinessPortal";
 import { BusinessLogin, BIZ_TOKEN_KEY } from "./components/BusinessLogin";
-import { LoginChooser } from "./components/LoginChooser";
 import { AmbassadorPrintSheet, AmbassadorQrScreen } from "./components/AmbassadorCards";
 import { ScanPage } from "./components/ScanPage";
 import { projectId, publicAnonKey } from "/utils/supabase/info";
@@ -69,21 +68,22 @@ export default function App() {
   try { storedBiz = localStorage.getItem(BIZ_TOKEN_KEY); } catch { /* private mode */ }
   const activeBiz = bizToken || storedBiz;
 
-  // /app is the creator entrance, /business the owner's, /login the chooser
-  // between them. Trailing slashes are stripped so /app/ is not treated as a
-  // different route.
+  // /app is the creator entrance and /business the owner's. There used to be a
+  // chooser at /login asking which you wanted before either could ask for your
+  // email; /app answers that itself now, by recognising a business address and
+  // sending it on. The old path is forwarded rather than dropped, so a link
+  // someone kept still arrives somewhere.
   const path = window.location.pathname.replace(/\/+$/, "") || "/";
   const isAppPath = path === "/app";
   const isBusinessPath = path === "/business";
-  const isLoginPath = path === "/login";
 
   // Every hook must run on every render, so these route tests are computed up
   // front and the effect below is hoisted above the returns that follow.
-  const creatorRedirect = !isAppPath && !!(creatorToken || view === "login" || view === "confirm" || view === "cards" || view === "qr");
+  const creatorRedirect = !isAppPath && !!(creatorToken || path === "/login" || view === "login" || view === "confirm" || view === "cards" || view === "qr");
   const businessRedirect = !isBusinessPath && !!bizToken;
   const isRedirecting = creatorRedirect || businessRedirect;
   const isLanding = !referralCode && !adminToken && !isRedirecting
-    && !isAppPath && !isBusinessPath && !isLoginPath
+    && !isAppPath && !isBusinessPath
     && view !== "submission"
     && !/^\/[ABCDEFGHJKMNPQRSTVWXYZ23456789]{6}$/i.test(path);
 
@@ -242,7 +242,6 @@ export default function App() {
     if (activeBiz) return <BusinessPortal token={activeBiz} />;
     return <BusinessLogin />;
   }
-  if (isLoginPath) return <LoginChooser />;
   if (view === "submission") return <CreatorSubmissionPending />;
 
   // Bare code last, so any real route added later wins over a string that
