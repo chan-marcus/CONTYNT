@@ -865,6 +865,24 @@ export function Analytics({ adminToken }: { adminToken?: string } = {}) {
     finally { setSendBusy(false); }
   }, []);
 
+  const backfillReferrals = useCallback(async (dryRun: boolean) => {
+    setAmbBusy("backfill");
+    try {
+      const res = await apiFetch("/admin/ambassadors/backfill-referrals", {
+        method: "POST", body: JSON.stringify({ dryRun }),
+      });
+      const d = await res.json().catch(() => null);
+      if (!res.ok || !d?.success) { window.alert(d?.error || "Backfill failed."); return; }
+      const names = (d.results || []).filter((r: any) => r.created || r.wouldCreate)
+        .map((r: any) => `${r.businessName || r.businessId} → @${(r.creator || "").replace(/^@+/, "")}`);
+      window.alert(dryRun
+        ? `Would record ${d.wouldCreate} referral${d.wouldCreate === 1 ? "" : "s"}:\n\n${names.join("\n") || "(none)"}\n\nSkipped ${d.skipped} already recorded.`
+        : `Recorded ${d.created} referral${d.created === 1 ? "" : "s"}. Skipped ${d.skipped}, failed ${d.failed}.`);
+      if (!dryRun) await loadAmbassadors();
+    } catch { window.alert("Could not reach the server."); }
+    finally { setAmbBusy(null); }
+  }, [loadAmbassadors]);
+
   const ambAction = async (id: string, path: string, body: object) => {
     setAmbBusy(id);
     await apiFetch(path, { method: "POST", body: JSON.stringify(body) }).catch(() => {});
@@ -1410,6 +1428,7 @@ export function Analytics({ adminToken }: { adminToken?: string } = {}) {
                 onAdvance={(id, stage) => ambAction(id, "/admin/referrals/advance", { referralId: id, stage })}
                 onPayReward={(id) => ambAction(id, "/admin/referrals/pay-reward", { referralId: id })}
                 onToggle={(id, enabled) => ambAction(id, "/admin/ambassadors/toggle", { ambassadorId: id, enabled })}
+                onBackfill={backfillReferrals}
               />
             : <p className="text-neutral-400 text-sm">Loading ambassadors…</p>
         )}

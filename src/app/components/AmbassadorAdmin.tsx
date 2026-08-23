@@ -31,11 +31,12 @@ const STAGES: { key: string; label: string; field: keyof AmbassadorAdminData["re
 const money = (n: number) => `$${(n ?? 0).toFixed(2).replace(/\.00$/, "")}`;
 const pretty = (s: string) => (s || "").replace(/_/g, " ");
 
-export function AmbassadorAdmin({ data, onAdvance, onPayReward, onToggle, busy }: {
+export function AmbassadorAdmin({ data, onAdvance, onPayReward, onToggle, onBackfill, busy }: {
   data: AmbassadorAdminData;
   onAdvance: (referralId: string, stage: string) => void;
   onPayReward: (referralId: string) => void;
   onToggle: (ambassadorId: string, enabled: boolean) => void;
+  onBackfill: (dryRun: boolean) => void;
   busy: string | null;
 }) {
   const [creatorFilter, setCreatorFilter] = useState("");
@@ -94,6 +95,27 @@ export function AmbassadorAdmin({ data, onAdvance, onPayReward, onToggle, busy }
           </div>
         ))}
       </div>
+
+      {/* Only while there is something to repair. A referral this screen inferred
+          can be seen but not advanced or paid, because every stage keys off a
+          real ambassador_referrals row. */}
+      {data.referrals.some(r => r.unrecorded) && (
+        <div className="flex flex-wrap items-center gap-3 bg-yellow-500/[0.07] border border-yellow-500/25 rounded-xl px-4 py-3">
+          <p className="text-xs text-yellow-200 flex-1 min-w-0">
+            {data.referrals.filter(r => r.unrecorded).length} referral
+            {data.referrals.filter(r => r.unrecorded).length === 1 ? " was" : "s were"} taken by card scan before
+            they were recorded. Shown here, but they cannot be advanced or paid until the rows exist.
+          </p>
+          <button onClick={() => onBackfill(true)} disabled={!!busy}
+            className="px-3 py-1.5 text-xs rounded-lg bg-white/5 border border-white/15 text-neutral-200 hover:border-white/30 transition-all disabled:opacity-40 whitespace-nowrap">
+            Preview
+          </button>
+          <button onClick={() => onBackfill(false)} disabled={!!busy}
+            className="px-3 py-1.5 text-xs rounded-lg bg-yellow-500/20 border border-yellow-500/40 text-yellow-100 font-semibold hover:bg-yellow-500/30 transition-all disabled:opacity-40 whitespace-nowrap">
+            Record them
+          </button>
+        </div>
+      )}
 
       {/* ── Ambassadors ── */}
       <div className="space-y-2">

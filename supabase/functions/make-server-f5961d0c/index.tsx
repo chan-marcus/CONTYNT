@@ -3695,6 +3695,84 @@ app.get("/make-server-f5961d0c/admin/ambassadors", async (c) => {
   } catch (e: any) { return c.json({ error: e.message }, 500); }
 });
 
+// Turns the inferred referrals into real ones. The Ambassadors tab can show a
+// business attributed to a creator that has no row, but a shown row cannot be
+// advanced through Subscription, First payment or a reward -- those all key off
+// ambassador_referrals.id. This writes the rows, once, on purpose.
+//
+// Idempotent: it only ever inserts where (ambassador, business) has nothing, so
+// running it twice creates nothing the second time.
+app.post("/make-server-f5961d0c/admin/ambassadors/backfill-referrals", async (c) => {
+  try {
+    const body = await c.req.json().catch(() => ({}));
+    const dryRun = !!body.dryRun;
+
+    const [ambRes, refRes, bizRes] = await Promise.all([
+      db().from("ambassadors_f5961d0c").select("*"),
+      db().from("ambassador_referrals_f5961d0c").select("ambassador_id, business_id"),
+      db().from("business_signups_f5961d0c")
+        .select("id, business_name, email, referred_by_creator, referral_code, referral_source, created_at")
+        .not("referred_by_creator", "is", null),
+    ]);
+
+    const ambByCreator: Record<string, any> = {};
+    for (const a of (ambRes.data ?? [])) if (a.creator_id) ambByCreator[a.creator_id] = a;
+    const haveRow = new Set((refRes.data ?? []).map((r: any) => `${r.ambassador_id}|${r.business_id}`));
+
+    const results: any[] = [];
+    for (const b of (bizRes.data ?? [])) {
+      const amb = ambByCreator[b.referred_by_creator];
+      // A business attributed to somebody who is not an ambassador any more is
+      // reported rather than skipped silently: it is a real gap, and inventing
+      // an ambassador_id for it would be worse than saying so.
+      if (!amb?.ambassador_id) {
+        results.push({ businessId: b.id, businessName: b.business_name, skipped: "no ambassador for that creator" });
+        continue;
+      }
+      if (haveRow.has(`${amb.ambassador_id}|${b.id}`)) {
+        results.push({ businessId: b.id, businessName: b.business_name, skipped: "already recorded" });
+        continue;
+      }
+      if (dryRun) {
+        results.push({ businessId: b.id, businessName: b.business_name, creator: amb.creator_instagram || "", wouldCreate: true });
+        continue;
+      }
+      try {
+        await must("backfill: referral row", db().from("ambassador_referrals_f5961d0c").insert({
+          ambassador_id: amb.ambassador_id,
+          creator_id: amb.creator_id,
+          creator_instagram: amb.creator_instagram || "",
+          referral_code: b.referral_code || amb.referral_code,
+          referral_url: amb.referral_url,
+          business_id: b.id, business_name: b.business_name, business_email: b.email,
+          referral_source: b.referral_source || "ambassador_scan",
+          // Stage and reward are left where a fresh referral starts. Nothing is
+          // marked converted or earned by a backfill: an admin works it from
+          // here exactly as they would a referral taken today.
+          status: "business_created",
+          reward_amount: REFERRAL_REWARD,
+          business_created_at: b.created_at,
+        }));
+        // Guards a second business attributed to the same pair inside one run.
+        haveRow.add(`${amb.ambassador_id}|${b.id}`);
+        results.push({ businessId: b.id, businessName: b.business_name, creator: amb.creator_instagram || "", created: true });
+      } catch (e: any) {
+        results.push({ businessId: b.id, businessName: b.business_name, error: e?.message ?? String(e) });
+      }
+    }
+
+    return c.json({
+      success: true, dryRun,
+      considered: (bizRes.data ?? []).length,
+      created: results.filter(r => r.created).length,
+      wouldCreate: results.filter(r => r.wouldCreate).length,
+      skipped: results.filter(r => r.skipped).length,
+      failed: results.filter(r => r.error).length,
+      results,
+    });
+  } catch (e: any) { return c.json({ error: "Backfill failed", details: e.message }, 500); }
+});
+
 app.post("/make-server-f5961d0c/admin/ambassadors/toggle", async (c) => {
   try {
     const { ambassadorId, enabled } = await c.req.json();
