@@ -92,7 +92,7 @@ export function FinalCTA() {
             </div>
             <div className="text-left">
               <label className="block text-white mb-2 text-sm md:text-base" style={{ fontWeight: 400 }}>
-                Email <span className="italic text-neutral-400">(for new Feature alerts)</span>
+                Email <span className="italic text-neutral-400">(for new feature alerts)</span>
               </label>
               <input
                 type="email"

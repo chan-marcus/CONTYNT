@@ -46,7 +46,7 @@ export function Features() {
             Preview of Available Features
           </h2>
           <p className="text-base md:text-lg text-neutral-500 max-w-2xl mx-auto" style={{ fontWeight: 400 }}>
-            See how Features appear on Contynt
+            See how features appear on Contynt
           </p>
         </motion.div>
 
@@ -100,7 +100,7 @@ export function Features() {
 
                 {/* CTA */}
                 <button className="w-full px-6 py-3 bg-neutral-400 text-white rounded-lg hover:bg-neutral-500 transition-all duration-200 group-hover:shadow-lg" style={{ fontWeight: 500 }}>
-                  Claim Feature
+                  Claim feature
                 </button>
               </div>
             </motion.div>

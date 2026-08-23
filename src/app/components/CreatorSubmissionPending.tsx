@@ -2,7 +2,7 @@ import { motion } from "motion/react";
 import { CheckCircle, Lock, DollarSign } from "lucide-react";
 
 const steps = [
-  { label: "Claim Feature", state: "done" },
+  { label: "Claim feature", state: "done" },
   { label: "Reel Submitted", state: "done" },
   { label: "Under Review", state: "active" },
   { label: "Payout Released", state: "locked", icon: "💰" },
