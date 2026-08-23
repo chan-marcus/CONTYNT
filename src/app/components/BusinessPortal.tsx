@@ -1018,25 +1018,44 @@ export function BusinessPortal({ token }: { token: string }) {
               }).catch(() => {});
             }
           }}
-            className="w-full flex items-center justify-center gap-4 bg-gradient-to-r from-blue-600/20 via-purple-600/20 to-blue-600/20 border border-blue-500/30 rounded-2xl px-6 py-5 hover:from-blue-600/30 hover:via-purple-600/30 hover:to-blue-600/30 hover:border-blue-500/50 transition-all text-center relative group">
+            /* Muted once they are on a plan. The colour here is doing sales
+               work, and pitching a subscription to somebody who already pays
+               for one reads as though we have not noticed. Still open-able,
+               because billing and the upgrade tiers live inside it. */
+            className={`w-full flex items-center justify-center gap-4 rounded-2xl px-6 py-5 transition-all text-center relative group border ${
+              data.subscriptionTier
+                ? "bg-white/5 border-white/10 hover:border-white/20"
+                : "bg-gradient-to-r from-blue-600/20 via-purple-600/20 to-blue-600/20 border-blue-500/30 hover:from-blue-600/30 hover:via-purple-600/30 hover:to-blue-600/30 hover:border-blue-500/50"
+            }`}>
             <div className="flex-1 text-center">
               {/* Leads with the outcome and the strongest real incentive rather
                   than with the price. "Simple pricing" described our billing,
                   which is not something a business wants; 40% off for life is
                   already the offer inside the panel, so it belongs on the part
                   they actually read. */}
-              <h2 className="text-lg font-bold text-white">Want new Reels every month?</h2>
-              <p className="text-sm text-blue-300/90 mt-1">
-                Founding partners lock in <span className="font-semibold text-white">40% off for life</span>.
-              </p>
-              <p className="text-sm text-blue-300/90">Plans from {PLANS[0].price}/month.</p>
+              {data.subscriptionTier ? (
+                <>
+                  <h2 className="text-lg font-bold text-white">You're on {data.subscriptionTier}</h2>
+                  <p className="text-sm text-neutral-400 mt-1">Change your plan, update your card, or see invoices.</p>
+                </>
+              ) : (
+                <>
+                  <h2 className="text-lg font-bold text-white">Want new Reels every month?</h2>
+                  <p className="text-sm text-blue-300/90 mt-1">
+                    Founding partners lock in <span className="font-semibold text-white">40% off for life</span>.
+                  </p>
+                  <p className="text-sm text-blue-300/90">Plans from {PLANS[0].price}/month.</p>
+                </>
+              )}
             </div>
-            <ChevronDown className={`w-5 h-5 text-blue-400 shrink-0 transition-transform duration-300 ${plansExpanded ? "rotate-180" : ""}`} />
+            <ChevronDown className={`w-5 h-5 shrink-0 transition-transform duration-300 ${data.subscriptionTier ? "text-neutral-500" : "text-blue-400"} ${plansExpanded ? "rotate-180" : ""}`} />
           </button>
 
           {plansExpanded && (
             <div className="pt-4 space-y-6">
-              <p className="text-center text-xs text-neutral-400">🔒 Founding partner pricing. Early adopters lock in 40% off for life!</p>
+              {!data.subscriptionTier && (
+                <p className="text-center text-xs text-neutral-400">🔒 Founding partner pricing. Early adopters lock in 40% off for life!</p>
+              )}
               <div className="grid grid-cols-1 md:grid-cols-3 gap-4 items-stretch">
                 {PLANS.map(plan => (
                   <div key={plan.name} className="flex flex-col">
