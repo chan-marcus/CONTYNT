@@ -10,7 +10,7 @@ const trustFeatures = [
   {
     icon: Clock,
     title: "72-Hour Minimum",
-    description: "Keep content live for visibility period",
+    description: "Keep your Reel up for at least 72 hours",
   },
   {
     icon: CheckCircle,

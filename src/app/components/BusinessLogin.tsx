@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect } from "react";
 import { motion } from "motion/react";
-import { Mail, ArrowLeft, AlertCircle, Loader2 } from "lucide-react";
+import { ArrowLeft, AlertCircle, Loader2 } from "lucide-react";
 import { projectId, publicAnonKey } from "/utils/supabase/info";
 
 const BASE = `https://${projectId}.supabase.co/functions/v1/make-server-f5961d0c`;
@@ -66,17 +66,13 @@ export function BusinessLogin() {
       <header className="border-b border-white/10 px-5 py-4">
         <div className="max-w-sm mx-auto flex items-center justify-between">
           <a href="/" className="text-sm font-semibold tracking-[0.2em] hover:opacity-80 transition-opacity">C O N T Y N T</a>
-          <span className="text-xs text-neutral-500">For Businesses</span>
+          <span className="text-xs text-neutral-500">Sign In</span>
         </div>
       </header>
 
       <main className="flex-1 w-full max-w-sm mx-auto px-5 py-12">
         <motion.div initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.35 }}
           className="space-y-6">
-          <div className="inline-flex items-center justify-center w-12 h-12 rounded-2xl bg-white/5 border border-white/10">
-            <Mail className="w-5 h-5 text-neutral-300" />
-          </div>
-
           {step === "email" ? (
             <>
               <div className="space-y-2">

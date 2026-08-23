@@ -2364,7 +2364,25 @@ app.post("/make-server-f5961d0c/creator-login/request", async (c) => {
 
     const { data: creator } = await db().from("creator_signups_f5961d0c")
       .select("id, email, email_bounced_at, email_complained_at").ilike("email", addr).maybeSingle();
-    if (!creator) return done();
+
+    // An owner who followed "Log In" from the marketing site lands on the
+    // creator screen, because that is where the button now points. Rather than
+    // telling them they are in the wrong place -- or worse, telling them
+    // nothing -- a business address gets a business code, and verify below
+    // hands back a business token. The reply is byte-identical either way, so
+    // this stays useless as an oracle: nothing here reveals which of the two an
+    // address is, or whether it is on file at all.
+    if (!creator) {
+      const { data: biz } = await db().from("business_signups_f5961d0c")
+        .select("id, email, email_bounced_at, email_complained_at").ilike("email", addr).maybeSingle();
+      if (!biz) return done();
+      if (biz.email_bounced_at || biz.email_complained_at) return done();
+      await issueLoginCode({
+        audience: "business", addr, to: biz.email, subjectId: biz.id,
+        log: (type, payload) => logBusinessEvent(biz.id, type, payload),
+      });
+      return done();
+    }
     if (creator.email_bounced_at || creator.email_complained_at) return done();
 
     await issueLoginCode({
@@ -2386,7 +2404,27 @@ app.post("/make-server-f5961d0c/creator-login/verify", async (c) => {
     if (!addr || !supplied) return c.json({ error: "Enter the code we emailed you." }, 400);
 
     const checked = await consumeLoginCode("creator", addr, supplied);
-    if ("error" in checked) return c.json({ error: checked.error }, checked.status as any);
+    if ("error" in checked) {
+      // No creator code matched. The address may have been issued a business
+      // one by the request route above, in which case this is an owner who
+      // arrived at the wrong door -- sign them in and say where to go. Only a
+      // correct code gets that answer, so it tells an attacker nothing they
+      // could not already learn by guessing a six digit code.
+      const asBiz = await consumeLoginCode("business", addr, supplied);
+      if (!("error" in asBiz)) {
+        const { data: biz } = await db().from("business_signups_f5961d0c")
+          .select("id, business_name, city").eq("id", asBiz.subjectId).maybeSingle();
+        if (biz) {
+          const bizToken = await ensureBusinessPortalToken(biz);
+          await logBusinessEvent(biz.id, "login_succeeded", { via: "creator_screen" });
+          return c.json({
+            success: true, portal: "business", token: bizToken,
+            businessName: biz.business_name || "",
+          });
+        }
+      }
+      return c.json({ error: checked.error }, checked.status as any);
+    }
 
     const { data: creator } = await db().from("creator_signups_f5961d0c")
       .select("*").eq("id", checked.subjectId).maybeSingle();
@@ -2399,7 +2437,7 @@ app.post("/make-server-f5961d0c/creator-login/verify", async (c) => {
     await logCreatorEvent(creator.id, "login_succeeded", {});
 
     return c.json({
-      success: true, token,
+      success: true, portal: "creator", token,
       needsConfirm: creator.verification_status !== "confirmed",
     });
   } catch (e: any) { return c.json({ error: "Could not sign you in", details: e.message }, 500); }
