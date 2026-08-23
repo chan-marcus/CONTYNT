@@ -17,7 +17,20 @@
   # and static Pages hosting has nowhere to mint a per-response nonce. Every
   # other directive is as tight as the app actually needs. img-src stays broad
   # on https: for Instagram's oEmbed thumbnails, whose CDN host varies per post.
-  Content-Security-Policy: default-src 'self'; base-uri 'self'; object-src 'none'; frame-ancestors 'none'; form-action 'self'; img-src 'self' data: blob: https:; style-src 'self' 'unsafe-inline'; font-src 'self' data:; script-src 'self' 'unsafe-inline' https://maps.googleapis.com https://maps.gstatic.com; connect-src 'self' https://*.supabase.co https://maps.googleapis.com https://maps.gstatic.com; frame-src https://www.instagram.com
+  #
+  # The three third-party origins are all load bearing, and each was found by
+  # shipping without it and watching the browser refuse:
+  #   fonts.googleapis.com   the @import at the top of src/styles/fonts.css.
+  #                          Blocked, the whole site silently falls back to a
+  #                          system sans-serif -- it does not error, it just
+  #                          stops being the typeface anyone designed.
+  #   fonts.gstatic.com      the actual font files that stylesheet points at.
+  #                          Allowing the CSS without this gets you nothing.
+  #   cloudflareinsights.com the Web Analytics beacon Cloudflare injects into
+  #                          every Pages response. Not something the app asks
+  #                          for, so it is easy to forget it needs a home here.
+  # worker-src allows blob: because the Maps Places element spawns one.
+  Content-Security-Policy: default-src 'self'; base-uri 'self'; object-src 'none'; frame-ancestors 'none'; form-action 'self'; img-src 'self' data: blob: https:; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' data: https://fonts.gstatic.com; script-src 'self' 'unsafe-inline' https://maps.googleapis.com https://maps.gstatic.com https://static.cloudflareinsights.com; connect-src 'self' https://*.supabase.co https://maps.googleapis.com https://maps.gstatic.com https://cloudflareinsights.com; worker-src 'self' blob:; frame-src https://www.instagram.com
 
 # Ambassador card scans. Per-creator links handed to one business at a time --
 # never anything a search engine should hold. Both the printed /a/CODE form and
