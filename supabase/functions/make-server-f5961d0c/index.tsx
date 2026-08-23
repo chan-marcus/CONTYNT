@@ -3753,12 +3753,29 @@ app.post("/make-server-f5961d0c/signup", async (c) => {
 // rather than minting a twin, so signing up twice updates the details on file
 // instead of splitting a business across two rows -- which would split its
 // Features, its quota and its portal with it.
+// The browser key for Places, for forms that are not behind a referral code or
+// a scan. Public by nature: it ships inside whichever page uses it either way,
+// and what protects it is the HTTP referrer restriction on the key itself, not
+// the obscurity of the endpoint handing it over. Two other routes already
+// return this same value to anonymous callers.
+app.get("/make-server-f5961d0c/public-config", (c) =>
+  c.json({ placesKey: Deno.env.get("GOOGLE_PLACES_KEY") || "" }));
+
 app.post("/make-server-f5961d0c/business-signup", async (c) => {
   try {
-    const { businessName, instagram, email, city, address, preferredContact } = await c.req.json();
+    const { businessName, instagram, email, city, address, preferredContact,
+            placeId: placeIdRaw, placeAddress: placeAddressRaw } = await c.req.json();
     const handle = normalizeHandle(instagram);
     if (!handle) return c.json({ error: "Enter a valid Instagram handle." }, 400);
     if (!email || !city) return c.json({ error: "Email and city are required." }, 400);
+
+    // The form no longer asks for an address in its own field -- picking the
+    // business from Places supplies it. Kept as a fallback rather than replaced
+    // outright, because a business whose name has no Places match still types
+    // a name and still has to be able to sign up.
+    const placeId = String(placeIdRaw ?? "").trim().slice(0, 200) || null;
+    const placeAddress = String(placeAddressRaw ?? "").trim().slice(0, 300) || null;
+    const finalAddress = String(address ?? "").trim() || placeAddress || "";
 
     // Compared normalised in memory rather than with ilike: rows predating this
     // hold "@name" and full profile URLs as well as bare handles, and none of
@@ -3779,7 +3796,11 @@ app.post("/make-server-f5961d0c/business-signup", async (c) => {
       // detail an admin filled in. business_name is left alone when the row
       // already has one: a real name beats a handle.
       const patch: Record<string, unknown> = { instagram: handle, email, city };
-      if (address) patch.address = address;
+      if (finalAddress) patch.address = finalAddress;
+      // Written even on a re-signup: an existing row created before this form
+      // had Places has no place_id, and this is the moment one arrives.
+      if (placeId) patch.place_id = placeId;
+      if (placeAddress) patch.place_address = placeAddress;
       if (preferredContact) patch.preferred_contact = preferredContact;
       if (!String(match.business_name ?? "").trim()) patch.business_name = `@${handle}`;
       await must("business signup: attach to existing", db()
@@ -3795,7 +3816,8 @@ app.post("/make-server-f5961d0c/business-signup", async (c) => {
       // every one of those read blank.
       business_name: businessName?.trim() || `@${handle}`,
       instagram: handle,
-      email, city, address: address || "", preferred_contact: preferredContact || "",
+      email, city, address: finalAddress, preferred_contact: preferredContact || "",
+      place_id: placeId, place_address: placeAddress,
     }).select("id").single();
     if (error) throw error;
     return c.json({ success: true, message: "Thank you! We'll be in touch.", id: data.id, matched: false });

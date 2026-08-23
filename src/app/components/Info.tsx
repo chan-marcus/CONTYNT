@@ -1,16 +1,43 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { motion, AnimatePresence } from "motion/react";
 import { projectId, publicAnonKey } from "/utils/supabase/info";
+import { usePlacesElement } from "../lib/usePlacesElement";
 
 export function Info() {
   const [businessName, setBusinessName] = useState("");
   const [instagram, setInstagram] = useState("");
   const [email, setEmail] = useState("");
   const [city, setCity] = useState("");
-  const [address, setAddress] = useState("");
   const [preferredContact, setPreferredContact] = useState("");
+  // Business Address used to be its own field, which asked a business to type
+  // what Google already knows and gave us a free-text string nothing could be
+  // matched on. Picking the business by name now supplies the address and the
+  // place_id with it -- and place_id is what lets a later signup, a referral or
+  // a card scan recognise this as the same business rather than minting a twin.
+  const [placesKey, setPlacesKey] = useState("");
+  const [placeId, setPlaceId] = useState("");
+  const [placeAddress, setPlaceAddress] = useState("");
+  const placesHost = useRef<HTMLDivElement | null>(null);
   const [successMessage, setSuccessMessage] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
+
+  useEffect(() => {
+    // Without a key the plain input below stands in and the signup is still
+    // captured, so this failing is not worth surfacing to a business.
+    fetch(`https://${projectId}.supabase.co/functions/v1/make-server-f5961d0c/public-config`,
+      { headers: { Authorization: `Bearer ${publicAnonKey}` } })
+      .then(r => r.json())
+      .then(d => setPlacesKey(d?.placesKey || ""))
+      .catch(() => {});
+  }, []);
+
+  const placesReady = usePlacesElement(
+    placesKey || undefined, placesHost,
+    (p) => { setPlaceId(p.placeId); setPlaceAddress(p.address); if (p.name) setBusinessName(p.name); },
+    (v) => { setBusinessName(v); setPlaceId(""); setPlaceAddress(""); },
+    // This modal is white whatever the machine is set to.
+    "light",
+  );
 
   useEffect(() => {
     // Disable scrolling when component mounts
@@ -24,6 +51,13 @@ export function Info() {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    // The Places widget is a web component, not an <input>, so the browser's
+    // own required check no longer covers this field. Without this the form
+    // would happily post an empty business name.
+    if (!businessName.trim()) {
+      setSuccessMessage("Please enter your business name.");
+      return;
+    }
     setIsSubmitting(true);
     setSuccessMessage("");
 
@@ -41,7 +75,8 @@ export function Info() {
             instagram,
             email,
             city,
-            address,
+            placeId,
+            placeAddress,
             preferredContact,
           }),
         }
@@ -55,7 +90,8 @@ export function Info() {
         setInstagram("");
         setEmail("");
         setCity("");
-        setAddress("");
+        setPlaceId("");
+        setPlaceAddress("");
         setPreferredContact("");
       } else {
         setSuccessMessage(data.error || "Something went wrong. Please try again.");
@@ -104,14 +140,28 @@ export function Info() {
               We're onboarding a small group of businesses
             </p>
             <form onSubmit={handleSubmit} className="space-y-3">
-              <input
-                type="text"
-                value={businessName}
-                onChange={(e) => setBusinessName(e.target.value)}
-                className="w-full px-4 py-3 border border-neutral-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-neutral-900 focus:border-transparent bg-white"
-                placeholder="Business Name"
-                required
+              {/* Bordered to match the plain inputs below it, since the widget
+                  draws no border of its own and otherwise reads as a floating
+                  row of text. No overflow-hidden here on purpose: the widget
+                  renders its prediction list as a child, and clipping the box
+                  clips the predictions with it -- the field still accepts
+                  typing, so it looks like Places is returning nothing. */}
+              <div
+                ref={placesHost}
+                className={placesReady
+                  ? "contynt-places-host border border-neutral-300 rounded-lg bg-white"
+                  : "hidden"}
               />
+              {!placesReady && (
+                <input
+                  type="text"
+                  value={businessName}
+                  onChange={(e) => setBusinessName(e.target.value)}
+                  className="w-full px-4 py-3 border border-neutral-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-neutral-900 focus:border-transparent bg-white"
+                  placeholder="Business Name"
+                  required
+                />
+              )}
               <input
                 type="text"
                 value={instagram}
@@ -121,14 +171,6 @@ export function Info() {
                 autoCapitalize="none"
                 autoCorrect="off"
                 spellCheck={false}
-                required
-              />
-              <input
-                type="text"
-                value={address}
-                onChange={(e) => setAddress(e.target.value)}
-                className="w-full px-4 py-3 border border-neutral-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-neutral-900 focus:border-transparent bg-white"
-                placeholder="Business Address"
                 required
               />
               <input
