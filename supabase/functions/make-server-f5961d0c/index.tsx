@@ -2059,7 +2059,7 @@ function renderClaimExpiryEmail(row: any, feature: any, link: string, opts: {
   // The verb and its preposition travel together, or the sentence reads
   // "accept it for Poop Cafe".
   const what = opts.kind === "accept"
-    ? { head: "Your feature is about to go back", act: "accept the feature", prep: "at",
+    ? { head: "Your feature is about to expire", act: "accept the feature", prep: "at",
         lost: "it goes back to everyone else", cta: "Accept the feature" }
     : { head: "Your feature is about to expire", act: "submit your Reel", prep: "for",
         lost: "the feature is released", cta: "Submit your Reel" };
