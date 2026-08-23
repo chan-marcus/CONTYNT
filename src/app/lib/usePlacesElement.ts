@@ -14,6 +14,12 @@ export function usePlacesElement(
   host: React.RefObject<HTMLDivElement | null>,
   onPlace: (p: { placeId: string; address: string; name: string }) => void,
   onText: (v: string) => void,
+  // The widget declares color-scheme: light dark on itself, so it follows the
+  // machine's setting and a parent's color-scheme cannot override it. On a
+  // dark-mode machine that put a black bar inside the white business modal.
+  // Passed as a primitive rather than an options object so it can go in the
+  // dependency array without re-running the effect on every render.
+  colorScheme?: "light" | "dark",
 ) {
   const [ready, setReady] = useState(false);
 
@@ -37,6 +43,7 @@ export function usePlacesElement(
           includedPrimaryTypes: ["establishment"],
         });
         el.style.width = "100%";
+        if (colorScheme) el.style.colorScheme = colorScheme;
         // Without this the widget renders as a bare magnifier with no prompt,
         // which reads as a broken field next to the email input.
         el.placeholder = "Business name";
@@ -77,7 +84,7 @@ export function usePlacesElement(
     })();
 
     return () => { cancelled = true; };
-  }, [key]);
+  }, [key, colorScheme]);
 
   return ready;
 }
