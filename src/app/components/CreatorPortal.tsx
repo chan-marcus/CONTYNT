@@ -1619,11 +1619,22 @@ export function CreatorPortal({ token, impersonating }: { token: string; imperso
           <div className="w-full flex flex-col gap-4">
             {/* Above the cards rather than below: the question a creator opens
                 this tab with is "is any of this near me", and the list answers
-                it one address at a time. Only unclaimed Features are pinned --
-                the ones already held are in progress, not somewhere to go. */}
+                it one address at a time.
+
+                Anything in progress is pinned too, and pinned brighter. An
+                earlier cut showed only unclaimed Features, which meant pressing
+                Request made the pin vanish -- the one moment a creator most
+                wants to see where the thing is, and the map answered by
+                dropping it. */}
             <FeaturesMap
               apiKey={placesKey}
-              features={features.filter(f => f.status === "available" && !claims[f.id])}
+              features={features
+                .filter(f => {
+                  const c = claims[f.id];
+                  if (c) return ["interested", "admin_approved", "claimed", "submitted"].includes(c.status as string);
+                  return f.status === "available";
+                })
+                .map(f => ({ ...f, inProgress: !!claims[f.id] }))}
             />
             {(() => {
               const hasAvailable = features.some(f => f.status === "available" && !claims[f.id]);
