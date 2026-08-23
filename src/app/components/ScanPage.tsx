@@ -95,6 +95,16 @@ export function ScanPage({ code }: { code: string }) {
       });
       const d = await res.json().catch(() => null);
       if (!res.ok) { setError(d?.error || "Could not send that. Try again."); setBusy(false); return; }
+      // Straight into the portal. The owner is at their own counter with the
+      // creator standing there; there is nothing to gain by telling them to go
+      // and wait for an email. setBusy stays true while the browser navigates,
+      // so the button cannot be pressed twice.
+      if (d?.portalToken) {
+        window.location.replace(`${window.location.origin}/business?biz=${encodeURIComponent(d.portalToken)}`);
+        return;
+      }
+      // No token means the lead saved but the portal could not be opened, which
+      // is a worse landing rather than a lost signup: the confirmation stands.
       setDone(true);
     } catch { setError("Could not reach the server. Try again."); }
     setBusy(false);
