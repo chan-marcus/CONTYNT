@@ -41,7 +41,7 @@ interface BusinessSignup { id: string; businessName: string; instagram: string; 
 interface Submission { id: string; featureId: string; creatorInstagram: string; reelUrl: string; status: string; submittedAt: string; reportNote?: string; metrics?: any; businessFeedback?: { reaction: "approve" | "report"; note?: string; submittedAt: string; businessName?: string }; }
 interface PageView { visitorId: string; referrer: string; timestamp: string; country?: string; city?: string; }
 interface Feature { id: string; businessId: string; businessName: string; category: string; payoutRange: string; status: string; total_payout?: string; claimed_by?: string; winner_instagram?: string; claimed_at?: string; isTrial?: boolean; isOneOff?: boolean; requestNotes?: string; submittedByBusiness?: boolean; }
-interface BusinessSignupExtended extends BusinessSignup { subscriptionTier?: string; }
+interface BusinessSignupExtended extends BusinessSignup { subscriptionTier?: string; subscriptionEndsAt?: string | null; }
 interface Claim { featureId: string; creatorToken: string; creatorInstagram: string; status: string; claimedAt: string; reelUrl?: string; approvedAt?: string; expiresAt?: string; acceptanceExpiresAt?: string; lastViewed?: string; }
 
 // ─── Card wrappers for mobile-friendly layout ─────────────────────────────────
@@ -360,6 +360,13 @@ function BusinessCard({ signup, approved, onApprove, onImpersonate, impersonatin
             business that walked in on its own does not carry an empty row --
             and a referral whose creator record has gone still says so rather
             than silently reading as unreferred. */}
+        {/* A cancelled plan still runs to the end of the period it paid for, so
+            the tier alone does not say a business is leaving. */}
+        {signup.subscriptionEndsAt && (
+          <p className="text-xs text-yellow-300">
+            Cancels {new Date(signup.subscriptionEndsAt).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })} — plan runs until then
+          </p>
+        )}
         {(signup.referralSource || signup.referredByHandle) && (
           <p className="text-xs text-purple-300 flex items-center gap-1.5">
             <Award className="w-3 h-3 shrink-0" />
@@ -930,7 +937,16 @@ export function Analytics({ adminToken }: { adminToken?: string } = {}) {
       const status = a.error ? `Stripe key rejected: ${a.error}`
         : `${mode} · charges ${a.chargesEnabled ? "enabled" : "NOT enabled"} · payouts ${a.payoutsEnabled ? "enabled" : "NOT enabled"}`;
 
-      window.alert(`${dryRun ? "Preview" : "Stripe prices"}\n\n${status}\n\n${lines.join("\n")}`);
+      // Listed with the same key, so an endpoint missing here is in the other
+      // mode -- which looks identical to a correctly configured one in Stripe's
+      // dashboard, and never receives a thing.
+      const hooks = d.webhooks || [];
+      const hookLines = hooks.length === 0
+        ? ["No webhook endpoint visible to this key. If Stripe shows one, it is in the other mode and will never fire for these payments."]
+        : hooks.map((w: any) => w.error ? `webhooks: ${w.error}`
+            : `${w.status} · ${w.hasCheckoutCompleted ? "listening for checkout.session.completed" : "NOT listening for checkout.session.completed"}\n  ${w.url}`);
+
+      window.alert(`${dryRun ? "Preview" : "Stripe prices"}\n\n${status}\n\nWebhooks\n${hookLines.join("\n")}\n\n${lines.join("\n")}`);
     } catch { window.alert("Could not reach the server."); }
     finally { setSendBusy(false); }
   }, []);
