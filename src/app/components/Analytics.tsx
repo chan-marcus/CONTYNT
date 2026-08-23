@@ -925,8 +925,8 @@ export function Analytics({ adminToken }: { adminToken?: string } = {}) {
       // Stated up front, because a test key and a pending live account fail in
       // different ways and the fix for one is not the fix for the other.
       const a = d.account || {};
-      const mode = d.livemode === null ? "no prices yet, so mode unknown"
-        : d.livemode ? "LIVE mode" : "TEST mode";
+      const mode = d.livemode === null ? "mode unknown"
+        : d.livemode ? "⚠️ LIVE mode — real money" : "TEST mode";
       const status = a.error ? `Stripe key rejected: ${a.error}`
         : `${mode} · charges ${a.chargesEnabled ? "enabled" : "NOT enabled"} · payouts ${a.payoutsEnabled ? "enabled" : "NOT enabled"}`;
 
