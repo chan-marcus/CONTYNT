@@ -2067,7 +2067,9 @@ function renderClaimExpiryEmail(row: any, feature: any, link: string, opts: {
   const text =
 `Hi ${first},
 
-You have ${hrs} left to ${what.act} ${what.prep} ${where}. After that ${what.lost}.
+You have ${hrs} left to ${what.act} ${what.prep} ${where}.
+
+After that ${what.lost}.
 
 ${prettyLink(link)}
 
@@ -2078,7 +2080,8 @@ San Francisco`;
     body:
 `      <p style="margin:0 0 16px 0;font-size:21px;line-height:1.35;font-weight:700;color:#0a0a0a;">${esc(what.head)}</p>
       <p style="margin:0 0 14px 0;">Hi ${esc(first)},</p>
-      <p style="margin:0;">You have <strong>${hrs}</strong> left to ${esc(what.act)} ${esc(what.prep)} ${esc(where)}. After that ${esc(what.lost)}.</p>
+      <p style="margin:0 0 14px 0;">You have <strong>${hrs}</strong> left to ${esc(what.act)} ${esc(what.prep)} ${esc(where)}.</p>
+      <p style="margin:0;">After that ${esc(what.lost)}.</p>
 ${emailButton(link, what.cta)}
       <p style="margin:0 0 6px 0;font-size:13px;color:#8a8a8a;">Or paste this into your browser:</p>
       <p style="margin:0;font-size:13px;word-break:break-all;"><a href="${esc(link)}" style="color:#525252;">${esc(prettyLink(link))}</a></p>`,
