@@ -1152,19 +1152,28 @@ app.post("/make-server-f5961d0c/admin/stripe/sync-prices", async (c) => {
     // Which account this key belongs to, and what it can do. A pending account
     // and a test key look identical from in here otherwise, and the two need
     // opposite responses: one is waiting on Stripe, the other on a key swap.
-    const acct = await stripeCall("GET", "account");
+    // Balance rather than account, because the Account object carries no
+    // livemode flag and a Price only exists after the thing this check is
+    // supposed to happen before. Balance always exists and always says.
+    const [acct, balance] = await Promise.all([
+      stripeCall("GET", "account"),
+      stripeCall("GET", "balance"),
+    ]);
     const account = acct.ok ? {
       chargesEnabled: !!acct.data?.charges_enabled,
       payoutsEnabled: !!acct.data?.payouts_enabled,
       detailsSubmitted: !!acct.data?.details_submitted,
       country: acct.data?.country ?? null,
     } : { error: acct.error };
+    const accountLivemode = balance.ok ? !!balance.data?.livemode : null;
 
     const results = [];
     for (const plan of STRIPE_PLANS) results.push(await ensureStripePrice(plan, dryRun));
-    // livemode comes off a Stripe object rather than being guessed from the key
-    // prefix, which changed format and is not something to parse.
-    const livemode = results.map((r: any) => r.livemode).find((v: any) => v !== undefined) ?? null;
+    // The account's own mode wins; a price's is only a fallback for the case
+    // where balance could not be read. Neither is guessed from the key prefix,
+    // which has changed format before and is not worth parsing.
+    const priceLivemode = results.map((r: any) => r.livemode).find((v: any) => v !== undefined) ?? null;
+    const livemode = accountLivemode ?? priceLivemode;
     return c.json({
       success: true, dryRun, account, livemode,
       created: results.filter(r => (r as any).created).length,
