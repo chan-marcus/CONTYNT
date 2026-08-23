@@ -851,6 +851,20 @@ export function Analytics({ adminToken }: { adminToken?: string } = {}) {
     finally { setSendBusy(false); }
   }, [loadReadiness]);
 
+  const testFeatureDrop = useCallback(async (to: string, featureCount: number) => {
+    setSendBusy(true);
+    try {
+      const res = await apiFetch("/admin/feature-drop/test", {
+        method: "POST", body: JSON.stringify({ to, featureCount }),
+      });
+      const d = await res.json().catch(() => null);
+      setSendResult(!res.ok || !d?.success
+        ? (d?.error || "Test send failed.")
+        : `Test drop sent to ${d.to}, saying ${d.featureCount} ${d.featureCount === 1 ? "Feature" : "Features"}. Subject: "${d.subject}"`);
+    } catch { setSendResult("Could not reach the server."); }
+    finally { setSendBusy(false); }
+  }, []);
+
   const ambAction = async (id: string, path: string, body: object) => {
     setAmbBusy(id);
     await apiFetch(path, { method: "POST", body: JSON.stringify(body) }).catch(() => {});
@@ -1410,7 +1424,7 @@ export function Analytics({ adminToken }: { adminToken?: string } = {}) {
                       className="text-xs text-neutral-500 hover:text-neutral-300">Dismiss</button>
                   </div>
                 )}
-                <CreatorReadiness data={readyData} onSend={sendVerification} onSendFeatureDrop={sendFeatureDrop} busy={sendBusy}
+                <CreatorReadiness data={readyData} onSend={sendVerification} onSendFeatureDrop={sendFeatureDrop} onTestFeatureDrop={testFeatureDrop} busy={sendBusy}
                   health={emailHealth} onTest={sendTestEmail} testing={testingEmail} testResult={testEmailResult} />
               </div>
             : <p className="text-neutral-400 text-sm">Loading readiness…</p>

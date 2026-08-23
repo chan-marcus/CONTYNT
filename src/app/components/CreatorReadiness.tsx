@@ -215,10 +215,11 @@ function ReachChips({ email, dm }: { email: boolean; dm: boolean }) {
   );
 }
 
-export function CreatorReadiness({ data, onSend, onSendFeatureDrop, busy, health, onTest, testing, testResult }: {
+export function CreatorReadiness({ data, onSend, onSendFeatureDrop, onTestFeatureDrop, busy, health, onTest, testing, testResult }: {
   data: ReadinessData;
   onSend: (creatorIds: string[], reminderOnly: boolean, dryRun: boolean) => void;
   onSendFeatureDrop: (creatorIds: string[], dryRun: boolean, featureCount: number) => void;
+  onTestFeatureDrop: (to: string, featureCount: number) => void;
   busy: boolean;
   health: EmailHealth | null;
   onTest: (to: string) => void;
@@ -360,6 +361,20 @@ export function CreatorReadiness({ data, onSend, onSendFeatureDrop, busy, health
             Cancelling the prompt is the way out -- it is the confirm step too,
             since this is the one button here that mails people already on board
             and cannot be recalled. */}
+        {/* Proves the whole path -- template, Postmark, stream, signature -- on
+            one address, before it is pointed at creators. Needs no selection,
+            because it mails nobody on the list. */}
+        <button
+          onClick={() => {
+            const to = window.prompt("Send a test drop to which address?\n\nThe real email, to you only. No creator is touched.", "");
+            if (to === null || !to.trim()) return;
+            const n = askFeatureCount(1, true);
+            if (n !== null) onTestFeatureDrop(to.trim(), n);
+          }}
+          disabled={busy || !canSend} title={sendBlocked}
+          className="flex items-center gap-1.5 px-3 py-2 text-xs rounded-xl bg-white/5 border border-white/15 text-neutral-200 hover:border-white/30 transition-all disabled:opacity-40">
+          <Megaphone className="w-3.5 h-3.5" />Test drop on me
+        </button>
         <button onClick={() => { const n = askFeatureCount(ids.length, true); if (n !== null) onSendFeatureDrop(ids, true, n); }}
           disabled={busy || !ids.length}
           title="Show what would go out, without sending"
