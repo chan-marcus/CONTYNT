@@ -34,7 +34,7 @@ const apiFetch = async (path: string, opts?: RequestInit) => {
   return res;
 };
 
-type Tab = "creators" | "businesses" | "reels" | "pageviews" | "ambassadors" | "readiness";
+type Tab = "creators" | "businesses" | "reels" | "pageviews" | "ambassadors" | "readiness" | "billing";
 
 interface Signup { id: string; instagram: string; email: string; city: string; createdAt: string; totalEarned?: number; pendingEarnings?: number; availableEarnings?: number; }
 interface BusinessSignup { id: string; businessName: string; instagram: string; email: string; city: string; address: string; preferredContact: string; createdAt: string; referralSource?: string | null; referralCode?: string | null; referredByHandle?: string | null; }
@@ -43,6 +43,13 @@ interface PageView { visitorId: string; referrer: string; timestamp: string; cou
 interface Feature { id: string; businessId: string; businessName: string; category: string; payoutRange: string; status: string; total_payout?: string; claimed_by?: string; winner_instagram?: string; claimed_at?: string; isTrial?: boolean; isOneOff?: boolean; requestNotes?: string; submittedByBusiness?: boolean; offeredAt?: string | null; approvedAt?: string | null; }
 interface BusinessSignupExtended extends BusinessSignup { subscriptionTier?: string; subscriptionEndsAt?: string | null; }
 interface Claim { featureId: string; creatorToken: string; creatorInstagram: string; status: string; claimedAt: string; reelUrl?: string; approvedAt?: string; expiresAt?: string; acceptanceExpiresAt?: string; lastViewed?: string; }
+
+// Renders a subscription period end. Deliberately UTC: these timestamps sit on
+// UTC midnight, and toLocaleDateString in any timezone behind Greenwich moves
+// them to the previous day -- so a plan paid through the 23rd read as the 22nd
+// on every screen in San Francisco.
+const endsOn = (iso: string) =>
+  new Date(iso).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric", timeZone: "UTC" });
 
 // ─── Card wrappers for mobile-friendly layout ─────────────────────────────────
 function igHandle(raw: string) {
@@ -365,7 +372,7 @@ function BusinessCard({ signup, approved, onApprove, onImpersonate, impersonatin
             the tier alone does not say a business is leaving. */}
         {signup.subscriptionEndsAt && (
           <p className="text-xs text-yellow-300">
-            Cancels {new Date(signup.subscriptionEndsAt).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })} — plan runs until then
+            Cancels {endsOn(signup.subscriptionEndsAt)} — plan runs until then
           </p>
         )}
         {(signup.referralSource || signup.referredByHandle) && (
@@ -740,7 +747,12 @@ export function Analytics({ adminToken }: { adminToken?: string } = {}) {
   const [adminTokenVerified, setAdminTokenVerified] = useState(false);
   const [tab, setTab] = useState<Tab>("creators");
   const [signups, setSignups] = useState<Signup[]>([]);
-  const [businessSignups, setBusinessSignups] = useState<BusinessSignup[]>([]);
+  // Extended rather than BusinessSignup: /admin/businesses has always returned
+  // the subscription fields and BusinessCard has always read them through an
+  // `any` prop, so this widens the type to match what the endpoint actually
+  // sends. It also gives BusinessSignupExtended its first real use -- it was
+  // declared and then never referenced.
+  const [businessSignups, setBusinessSignups] = useState<BusinessSignupExtended[]>([]);
   const [submissions, setSubmissions] = useState<Submission[]>([]);
   const [pageViews, setPageViews] = useState<PageView[]>([]);
   const [stats, setStats] = useState<{ totalSignups: number; totalBusinessSignups: number } | null>(null);
@@ -768,6 +780,11 @@ export function Analytics({ adminToken }: { adminToken?: string } = {}) {
   const [testEmailResult, setTestEmailResult] = useState("");
   const [sendBusy, setSendBusy] = useState(false);
   const [sendResult, setSendResult] = useState("");
+  // Stripe results used to arrive as window.alert. They are multi-line reports
+  // about money -- account mode, which webhooks are listening, what each
+  // business is paying -- and an alert cannot be scrolled, copied out of, or
+  // compared against the table it describes. They render in the tab now.
+  const [stripeResult, setStripeResult] = useState("");
   const [payoutRequests, setPayoutRequests] = useState<any[]>([]);
   const [settling, setSettling] = useState<string | null>(null);
   const [ambBusy, setAmbBusy] = useState<string | null>(null);
@@ -929,7 +946,7 @@ export function Analytics({ adminToken }: { adminToken?: string } = {}) {
         method: "POST", body: JSON.stringify({ dryRun }),
       });
       const d = await res.json().catch(() => null);
-      if (!res.ok || !d?.success) { window.alert(d?.error || "Stripe price sync failed."); return; }
+      if (!res.ok || !d?.success) { setStripeResult(d?.error || "Stripe price sync failed."); return; }
       const lines = (d.results || []).map((r: any) =>
         r.error ? `${r.plan}: ${r.error}`
         : r.existed ? `${r.plan}: already in Stripe (${r.priceId})`
@@ -953,8 +970,8 @@ export function Analytics({ adminToken }: { adminToken?: string } = {}) {
         : hooks.map((w: any) => w.error ? `webhooks: ${w.error}`
             : `${w.status} · ${w.hasCheckoutCompleted ? "listening for checkout.session.completed" : "NOT listening for checkout.session.completed"}\n  ${w.url}`);
 
-      window.alert(`${dryRun ? "Preview" : "Stripe prices"}\n\n${status}\n\nWebhooks\n${hookLines.join("\n")}\n\n${lines.join("\n")}`);
-    } catch { window.alert("Could not reach the server."); }
+      setStripeResult(`${dryRun ? "Preview" : "Stripe prices"}\n\n${status}\n\nWebhooks\n${hookLines.join("\n")}\n\n${lines.join("\n")}`);
+    } catch { setStripeResult("Could not reach the server."); }
     finally { setSendBusy(false); }
   }, []);
 
@@ -967,14 +984,14 @@ export function Analytics({ adminToken }: { adminToken?: string } = {}) {
         method: "POST", body: JSON.stringify({ dryRun }),
       });
       const d = await res.json().catch(() => null);
-      if (!res.ok || !d?.success) { window.alert(d?.error || "Subscription sync failed."); return; }
+      if (!res.ok || !d?.success) { setStripeResult(d?.error || "Subscription sync failed."); return; }
       const lines = (d.results || []).map((r: any) =>
         r.error ? `${r.business}: ${r.error}`
         : r.unchanged ? `${r.business}: already correct (${r.status})`
         : `${r.business}: ${r.status} → tier ${r.to?.tier ?? "none"}${r.to?.endsAt ? `, ends ${String(r.to.endsAt).slice(0, 10)}` : ""}`);
-      window.alert(`${dryRun ? "Preview" : "Synced from Stripe"}\n\n${lines.join("\n") || "(no businesses with a Stripe customer)"}`);
+      setStripeResult(`${dryRun ? "Preview" : "Synced from Stripe"}\n\n${lines.join("\n") || "(no businesses with a Stripe customer)"}`);
       if (!dryRun) await fetchAll();
-    } catch { window.alert("Could not reach the server."); }
+    } catch { setStripeResult("Could not reach the server."); }
     finally { setSendBusy(false); }
   }, []);
 
@@ -1317,12 +1334,20 @@ export function Analytics({ adminToken }: { adminToken?: string } = {}) {
     );
   }
 
+  // Sorted so a cancellation is the first thing read: those are the rows with a
+  // deadline, and the only ones where being a day late costs anything.
+  const subscribedBusinesses = businessSignups
+    .filter(b => b.subscriptionTier)
+    .sort((a, b) => (a.subscriptionEndsAt ? 0 : 1) - (b.subscriptionEndsAt ? 0 : 1)
+      || (a.businessName || "").localeCompare(b.businessName || ""));
+
   const tabs: { key: Tab; label: string; count?: number }[] = [
     { key: "creators", label: "Creators", count: signups.length },
     { key: "businesses", label: "Businesses", count: businessSignups.length },
     { key: "reels", label: "Submitted Reels", count: submissions.length },
     { key: "ambassadors", label: "Ambassadors", count: ambData?.overview.totalAmbassadors },
     { key: "readiness", label: "Creator Readiness", count: readyData?.funnel.confirmed },
+    { key: "billing", label: "Billing", count: subscribedBusinesses.length },
     { key: "pageviews", label: "Page Views" },
   ];
 
@@ -1347,24 +1372,6 @@ export function Analytics({ adminToken }: { adminToken?: string } = {}) {
             <button onClick={generateAdminLink}
               className="flex items-center gap-1.5 px-3 py-2 bg-white text-neutral-900 rounded-lg hover:bg-neutral-100 transition-all text-sm">
               <Link className="w-3.5 h-3.5" />Generate Private Link
-            </button>
-            <button onClick={() => syncSubscriptions(true)} disabled={sendBusy}
-              title="Compare every business against Stripe, without writing"
-              className="flex items-center gap-1.5 px-3 py-2 bg-white/10 text-neutral-300 rounded-lg hover:bg-white/15 transition-all text-sm disabled:opacity-40">
-              Check subscriptions
-            </button>
-            <button onClick={() => syncSubscriptions(false)} disabled={sendBusy}
-              className="flex items-center gap-1.5 px-3 py-2 bg-indigo-500/20 border border-indigo-400/40 text-indigo-100 rounded-lg hover:bg-indigo-500/30 transition-all text-sm disabled:opacity-40">
-              Sync from Stripe
-            </button>
-            <button onClick={() => syncStripePrices(true)} disabled={sendBusy}
-              title="Show which plan prices exist in Stripe, without creating any"
-              className="flex items-center gap-1.5 px-3 py-2 bg-white/10 text-neutral-300 rounded-lg hover:bg-white/15 transition-all text-sm disabled:opacity-40">
-              Check Stripe prices
-            </button>
-            <button onClick={() => syncStripePrices(false)} disabled={sendBusy}
-              className="flex items-center gap-1.5 px-3 py-2 bg-indigo-500/20 border border-indigo-400/40 text-indigo-100 rounded-lg hover:bg-indigo-500/30 transition-all text-sm disabled:opacity-40">
-              Create Stripe prices
             </button>
             <button onClick={() => { sessionStorage.removeItem("analytics_token"); setIsAuthenticated(false); }}
               className="px-3 py-2 bg-white/10 text-neutral-300 rounded-lg hover:bg-white/15 transition-all text-sm">
@@ -1535,6 +1542,101 @@ export function Analytics({ adminToken }: { adminToken?: string } = {}) {
         )}
 
         {/* ── Page Views tab ── */}
+        {!loading && tab === "billing" && (
+          <div className="space-y-5">
+            {/* What Stripe currently says, before anyone presses anything. The
+                buttons below only make sense against this: "Sync from Stripe"
+                is worth pressing when a row here disagrees with the dashboard,
+                and pointless when they already match. */}
+            <div>
+              <h2 className="text-lg font-semibold text-white mb-1">Subscriptions</h2>
+              <p className="text-sm text-neutral-400 mb-3">
+                What this app believes each business is paying. Stripe is the source of truth —
+                these rows are only as fresh as the last webhook that arrived.
+              </p>
+              {subscribedBusinesses.length === 0 ? (
+                <p className="text-neutral-400 text-sm bg-white/5 border border-white/10 rounded-xl px-4 py-3">
+                  No business has a plan yet.
+                </p>
+              ) : (
+                <div className="space-y-2">
+                  {subscribedBusinesses.map(b => (
+                    <div key={b.id} className="bg-white/5 border border-white/10 rounded-xl px-4 py-3 flex flex-col sm:flex-row sm:items-center gap-2">
+                      <span className="text-sm text-white flex-1 truncate">{b.businessName}</span>
+                      <span className="text-xs px-2 py-0.5 rounded-full bg-indigo-500/20 border border-indigo-400/40 text-indigo-100 shrink-0">
+                        {b.subscriptionTier}
+                      </span>
+                      {b.subscriptionEndsAt ? (
+                        <span className="text-xs text-amber-300 bg-amber-500/10 border border-amber-500/20 px-2 py-0.5 rounded-full shrink-0">
+                          Cancels {endsOn(b.subscriptionEndsAt)}
+                        </span>
+                      ) : (
+                        <span className="text-xs text-neutral-500 shrink-0">renewing</span>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
+              <div className="flex flex-wrap gap-2 mt-3">
+                <button onClick={() => syncSubscriptions(true)} disabled={sendBusy}
+                  title="Compare every business against Stripe, without writing"
+                  className="px-3 py-2 bg-white/10 text-neutral-300 rounded-lg hover:bg-white/15 transition-all text-sm disabled:opacity-40">
+                  Check subscriptions
+                </button>
+                <button onClick={() => syncSubscriptions(false)} disabled={sendBusy}
+                  className="px-3 py-2 bg-indigo-500/20 border border-indigo-400/40 text-indigo-100 rounded-lg hover:bg-indigo-500/30 transition-all text-sm disabled:opacity-40">
+                  Sync from Stripe
+                </button>
+              </div>
+              <p className="text-xs text-neutral-500 mt-2">
+                Check first — it writes nothing. Sync repairs the rows above when a webhook was
+                sent to the wrong mode, went to an endpoint added after the payment, or failed
+                every retry. Nothing else notices that, because the missing event is the only
+                thing that would have said so.
+              </p>
+            </div>
+
+            <div className="border-t border-white/10 pt-5">
+              <h2 className="text-lg font-semibold text-white mb-1">Plan prices</h2>
+              <p className="text-sm text-neutral-400 mb-3">
+                The Prices the plan buttons check out against. Creating them is idempotent on
+                lookup key, so a second run reuses what is already in Stripe.
+              </p>
+              <div className="flex flex-wrap gap-2">
+                <button onClick={() => syncStripePrices(true)} disabled={sendBusy}
+                  title="Show which plan prices exist in Stripe, without creating any"
+                  className="px-3 py-2 bg-white/10 text-neutral-300 rounded-lg hover:bg-white/15 transition-all text-sm disabled:opacity-40">
+                  Check Stripe prices
+                </button>
+                <button onClick={() => syncStripePrices(false)} disabled={sendBusy}
+                  className="px-3 py-2 bg-indigo-500/20 border border-indigo-400/40 text-indigo-100 rounded-lg hover:bg-indigo-500/30 transition-all text-sm disabled:opacity-40">
+                  Create Stripe prices
+                </button>
+              </div>
+              <p className="text-xs text-neutral-500 mt-2">
+                Check also reports which mode the key is in and whether a webhook endpoint is
+                listening. A key and an endpoint in different modes look identical in Stripe's
+                dashboard and never fire for each other.
+              </p>
+            </div>
+
+            {stripeResult && (
+              <div className="border-t border-white/10 pt-5">
+                <div className="flex items-center justify-between gap-3 mb-2">
+                  <h3 className="text-sm font-semibold text-white">Last result</h3>
+                  <button onClick={() => setStripeResult("")}
+                    className="text-xs text-neutral-400 hover:text-neutral-200 transition-all">
+                    Dismiss
+                  </button>
+                </div>
+                <pre className="bg-black/40 border border-white/10 rounded-xl px-4 py-3 text-xs text-neutral-300 font-mono whitespace-pre-wrap break-words overflow-x-auto">
+{stripeResult}
+                </pre>
+              </div>
+            )}
+          </div>
+        )}
+
         {!loading && tab === "pageviews" && (
           <div>
             <h2 className="text-lg font-semibold text-white mb-4">Recent Page Views</h2>
