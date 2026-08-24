@@ -391,6 +391,7 @@ function HelpTip({ label, text, align = "center" }: {
   label: string; text: string; align?: "left" | "center" | "right";
 }) {
   const [open, setOpen] = useState(false);
+  const wrap = useRef<HTMLSpanElement | null>(null);
 
   // Fixed alignment rather than measuring at open time. A measured clamp reads
   // getBoundingClientRect, which is viewport relative, so the moment anything
@@ -401,18 +402,41 @@ function HelpTip({ label, text, align = "center" }: {
             : align === "left"  ? "left-0"
             : "left-1/2 -translate-x-1/2";
 
+  // Touch has no hover, so it also has no mouseleave. A tip opened by tapping
+  // could only be closed by hitting the same 14px target again -- while the tip
+  // itself sat on top of the tiles either side of it, including the Earned tile
+  // that opens the wallet. Tapping anywhere else now dismisses it, which is what
+  // every other overlay on a phone does.
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (e: Event) => {
+      if (!wrap.current?.contains(e.target as Node)) setOpen(false);
+    };
+    // Capture, so it still fires for handlers that stop propagation on the way up.
+    document.addEventListener("pointerdown", onDown, true);
+    return () => document.removeEventListener("pointerdown", onDown, true);
+  }, [open]);
+
   return (
-    <span className="relative inline-flex">
+    <span ref={wrap} className="relative inline-flex">
       <button
         type="button"
         aria-label={label}
+        aria-expanded={open}
         // Stops the click reaching a clickable tile behind it.
         onClick={(e) => { e.stopPropagation(); setOpen(v => !v); }}
-        onMouseEnter={() => setOpen(true)}
-        onMouseLeave={() => setOpen(false)}
-        onBlur={() => setOpen(false)}
+        // Guarded on pointerType. A touch fires a synthetic mouseenter
+        // immediately before the click, so opening on hover and toggling on
+        // click cancelled each other out: tapping "?" set open true and then
+        // straight back to false, and nothing ever appeared. Only a real mouse
+        // opens on hover now; touch goes through the click alone.
+        onPointerEnter={(e) => { if (e.pointerType === "mouse") setOpen(true); }}
+        onPointerLeave={(e) => { if (e.pointerType === "mouse") setOpen(false); }}
         onKeyDown={(e) => { if (e.key === "Escape") setOpen(false); }}
-        className="w-3.5 h-3.5 rounded-full border border-white/25 text-[9px] leading-none text-neutral-400 hover:text-white hover:border-white/50 transition-colors flex items-center justify-center"
+        // The circle stays 14px because it sits inside a line of 12px text, but
+        // 14px is half the smallest target a thumb can reliably hit. The pseudo
+        // element widens the touch area to ~30px without moving anything.
+        className="relative w-3.5 h-3.5 rounded-full border border-white/25 text-[9px] leading-none text-neutral-400 hover:text-white hover:border-white/50 transition-colors flex items-center justify-center touch-manipulation after:absolute after:-inset-2 after:content-['']"
       >
         ?
       </button>
