@@ -134,6 +134,23 @@ function EmailHealthPanel({ health, onTest, testing, testResult }: {
   );
 }
 
+// instagram.com/<handle>, or nothing.
+//
+// Handles are stored bare, but this column falls back to a free-text instagram
+// field on older rows, which can hold a full profile URL or something that was
+// never a handle at all. Those are left as plain text: a link built out of
+// "https://instagram.com/https://instagram.com/x" only leads to a 404, and a
+// dead link is worse than no link because it looks like the creator is gone.
+//
+// Same shape the server's normalizeHandle accepts, so what is linkable here and
+// what is a valid handle there cannot drift apart.
+function instagramUrl(raw: string): string | null {
+  const h = String(raw ?? "").trim()
+    .replace(/^https?:\/\//i, "").replace(/^www\./i, "").replace(/^instagram\.com\//i, "")
+    .replace(/[?#].*$/, "").replace(/\/+$/, "").replace(/^@+/, "");
+  return /^[A-Za-z0-9._]{1,30}$/.test(h) ? `https://instagram.com/${h}` : null;
+}
+
 const TIER_STYLE: Record<string, string> = {
   "Ready+": "bg-purple-500/15 text-purple-300 border-purple-400/30",
   "Ready":  "bg-green-500/15 text-green-400 border-green-500/25",
@@ -437,7 +454,18 @@ export function CreatorReadiness({ data, onSend, onSendFeatureDrop, onTestFeatur
                     aria-label={`Select ${r.handle}`} />
                 </td>
                 <td className="px-3 py-2.5">
-                  <span className="text-white">@{r.handle || "—"}</span>
+                  {(() => {
+                    const url = instagramUrl(r.handle);
+                    return url ? (
+                      <a href={url} target="_blank" rel="noopener noreferrer"
+                        title={`Open @${r.handle} on Instagram`}
+                        className="text-white hover:text-blue-300 underline-offset-2 hover:underline transition-colors">
+                        @{r.handle}
+                      </a>
+                    ) : (
+                      <span className="text-white">@{r.handle || "—"}</span>
+                    );
+                  })()}
                   {r.bounced && <span className="ml-1.5 text-[10px] text-red-400">bounced</span>}
                 </td>
                 <td className="px-3 py-2.5 text-neutral-400 max-w-[220px] truncate" title={r.email}>
