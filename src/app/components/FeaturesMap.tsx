@@ -10,9 +10,10 @@ interface MapFeature {
   category: string;
   payoutRange: string;
   placeId?: string | null;
-  // Requested, approved, held or submitted -- anything the creator is already
-  // partway through, as opposed to merely on offer.
-  inProgress?: boolean;
+  // Three states rather than two. "Requested" is asked-for and not yet granted,
+  // which is a different thing from a Feature the creator is holding -- one is
+  // waiting on somebody else, the other is waiting on them.
+  pinState?: "requested" | "active" | "available";
 }
 
 // Coordinates are resolved from the business's place_id first, and only from
@@ -84,23 +85,38 @@ const MAP_STYLE = [
   { featureType: "water", elementType: "labels.text.fill", stylers: [{ color: "#3f4757" }] },
 ];
 
-// Two pins, because the two states are not equally interesting. A Feature the
-// creator is already partway through is the one with a deadline attached; the
-// rest are options. So in-progress gets the portal's blue at full strength and
-// a larger body, and available sits back in slate at reduced weight -- readable
-// as a group, but clearly the background against which the blue one reads.
+// Three pins, because the three states are not equally interesting and they
+// are not equally urgent either.
 //
-// Drawn rather than dropped in as Google's default red teardrop, and given a
-// white stroke so both stay legible against dark water and dark parkland.
+//   active     held, approved or submitted -- the creator owes somebody a Reel,
+//              and there is a clock on it. Full-strength brand blue, biggest.
+//   requested  asked for, not yet granted. Same hue so it still reads as "mine",
+//              lighter because nothing is owed yet and it may not be granted.
+//   available  on offer to anyone. Slate: the background the blues read against.
+//
+// Same hue for the first two on purpose. Two unrelated colours would say these
+// are unrelated states; a lighter tint says the same thing, earlier.
 const PIN_PATH = "M12 0C7.03 0 3 4.03 3 9c0 6.75 9 15 9 15s9-8.25 9-15c0-4.97-4.03-9-9-9z";
 
-const PIN_IN_PROGRESS = {
+const PIN_ACTIVE = {
   path: PIN_PATH,
   fillColor: "#3b82f6",
   fillOpacity: 1,
   strokeColor: "#ffffff",
   strokeWeight: 1.6,
   scale: 1.35,
+  anchor: { x: 12, y: 24 },
+};
+
+const PIN_REQUESTED = {
+  path: PIN_PATH,
+  fillColor: "#93c5fd",
+  fillOpacity: 1,
+  // Darker outline than the fill, or a pale pin on pale road geometry loses its
+  // edge entirely.
+  strokeColor: "#1e3a8a",
+  strokeWeight: 1.2,
+  scale: 1.2,
   anchor: { x: 12, y: 24 },
 };
 
@@ -113,6 +129,11 @@ const PIN_AVAILABLE = {
   scale: 1.05,
   anchor: { x: 12, y: 24 },
 };
+
+const PIN_FOR = { active: PIN_ACTIVE, requested: PIN_REQUESTED, available: PIN_AVAILABLE };
+// Active above requested above available, so the one with a clock on it is
+// never the pin hidden behind another.
+const PIN_Z = { active: 3, requested: 2, available: 1 };
 
 export function FeaturesMap({ apiKey, features }: { apiKey?: string; features: MapFeature[] }) {
   const host = useRef<HTMLDivElement | null>(null);
@@ -131,7 +152,7 @@ export function FeaturesMap({ apiKey, features }: { apiKey?: string; features: M
   // Only the place ids matter for whether this needs to redraw. Keyed on them
   // rather than on the array identity, which is new on every portal poll and
   // would otherwise rebuild the map every few seconds.
-  const addressKey = features.map(f => `${f.placeId || f.address || ""}:${f.inProgress ? 1 : 0}`).join("|");
+  const addressKey = features.map(f => `${f.placeId || f.address || ""}:${f.pinState ?? "available"}`).join("|");
 
   useEffect(() => {
     if (!apiKey || features.length === 0) { setState("empty"); return; }
@@ -222,12 +243,10 @@ export function FeaturesMap({ apiKey, features }: { apiKey?: string; features: M
         markersRef.current = [];
 
         for (const { f, pos } of located) {
+          const st = f.pinState ?? "available";
           const marker = new Marker({
             map, position: pos, title: f.businessName,
-            icon: f.inProgress ? PIN_IN_PROGRESS : PIN_AVAILABLE,
-            // Above the greys whatever order they were plotted in, so an
-            // in-progress pin is never half-hidden behind an option.
-            zIndex: f.inProgress ? 2 : 1,
+            icon: PIN_FOR[st], zIndex: PIN_Z[st],
           });
           marker.addListener("click", () => {
             info.setContent(
@@ -235,7 +254,7 @@ export function FeaturesMap({ apiKey, features }: { apiKey?: string; features: M
                  <div style="font-weight:600;font-size:13px;color:#0a0a0a">${escapeHtml(f.businessName)}</div>
                  ${f.category ? `<div style="font-size:12px;color:#525252;margin-top:2px">${escapeHtml(f.category)}</div>` : ""}
                  ${f.payoutRange ? `<div style="font-size:12px;color:#2563eb;font-weight:600;margin-top:4px">${escapeHtml(f.payoutRange)}</div>` : ""}
-                 ${f.inProgress ? `<div style="font-size:11px;color:#525252;margin-top:4px">In progress</div>` : ""}
+                 ${st === "available" ? "" : `<div style="font-size:11px;color:#525252;margin-top:4px">${st === "requested" ? "Requested" : "In progress"}</div>`}
                </div>`);
             info.open({ map, anchor: marker });
           });
@@ -258,7 +277,7 @@ export function FeaturesMap({ apiKey, features }: { apiKey?: string; features: M
         }
 
         setCount(located.length);
-        setInProgressCount(located.filter(l => l.f.inProgress).length);
+        setInProgressCount(located.filter(l => (l.f.pinState ?? "available") !== "available").length);
         setState("ready");
       } catch {
         // A referrer-restricted key, a blocked script, a CSP that forgot
