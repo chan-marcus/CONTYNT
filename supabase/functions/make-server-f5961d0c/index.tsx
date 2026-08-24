@@ -1242,8 +1242,34 @@ function stripeForm(obj: Record<string, any>, prefix = ""): string[] {
   return out;
 }
 
+// Which kind of key is in STRIPE_SECRET_KEY, judged by prefix alone -- nothing
+// here reads or logs the value itself.
+//
+//   sk_ / rk_   secret and restricted keys. Both work server side.
+//   pk_         publishable. Public by design, meant for browsers, and rejected
+//               by every endpoint this server calls.
+//
+// The publishable key is the one on screen in the Stripe dashboard; the secret
+// is hidden behind "Reveal". So copying the wrong one is the easy mistake, and
+// Stripe answers it with a message that never names which key you used --
+// repeated once per call, which reads like six separate faults.
+function stripeKeyProblem(): string {
+  if (!STRIPE_SECRET_KEY) return "STRIPE_SECRET_KEY is not set on the server.";
+  if (STRIPE_SECRET_KEY.startsWith("pk_")) {
+    const mode = STRIPE_SECRET_KEY.startsWith("pk_live_") ? "live" : "test";
+    return `STRIPE_SECRET_KEY holds a publishable key (pk_${mode}_...). `
+      + `That one is public and cannot make these calls. You need the secret key `
+      + `(sk_${mode}_...) from Stripe > Developers > API keys -- it is hidden until you `
+      + `press "Reveal". Nothing was exposed: a publishable key is meant to be public.`;
+  }
+  return "";
+}
+
 async function stripeCall(method: "GET" | "POST", path: string, body?: Record<string, any>) {
-  if (!STRIPE_SECRET_KEY) return { ok: false as const, error: "STRIPE_SECRET_KEY is not set on the server.", data: null };
+  // Checked before the request rather than after: this cannot succeed, and
+  // failing here says which key is wrong instead of relaying Stripe's answer.
+  const keyProblem = stripeKeyProblem();
+  if (keyProblem) return { ok: false as const, error: keyProblem, data: null };
   const url = `https://api.stripe.com/v1/${path}`;
   const init: RequestInit = {
     method,
@@ -1325,7 +1351,8 @@ app.post("/make-server-f5961d0c/admin/stripe/sync-prices", async (c) => {
   try {
     const body = await c.req.json().catch(() => ({}));
     const dryRun = !!body.dryRun;
-    if (!STRIPE_SECRET_KEY) return c.json({ error: "STRIPE_SECRET_KEY is not set on the server." }, 400);
+    const keyProblem = stripeKeyProblem();
+    if (keyProblem) return c.json({ error: keyProblem }, 400);
     // Which account this key belongs to, and what it can do. A pending account
     // and a test key look identical from in here otherwise, and the two need
     // opposite responses: one is waiting on Stripe, the other on a key swap.
@@ -1500,7 +1527,8 @@ app.post("/make-server-f5961d0c/admin/stripe/sync-subscriptions", async (c) => {
   try {
     const body = await c.req.json().catch(() => ({}));
     const dryRun = !!body.dryRun;
-    if (!STRIPE_SECRET_KEY) return c.json({ error: "STRIPE_SECRET_KEY is not set on the server." }, 400);
+    const keyProblem = stripeKeyProblem();
+    if (keyProblem) return c.json({ error: keyProblem }, 400);
 
     const { data: rows } = await db().from("business_signups_f5961d0c")
       .select("id, business_name, subscription_tier, subscription_ends_at, stripe_customer_id")
@@ -1568,7 +1596,8 @@ app.post("/make-server-f5961d0c/admin/stripe/sync-portal", async (c) => {
   try {
     const body = await c.req.json().catch(() => ({}));
     const dryRun = !!body.dryRun;
-    if (!STRIPE_SECRET_KEY) return c.json({ error: "STRIPE_SECRET_KEY is not set on the server." }, 400);
+    const keyProblem = stripeKeyProblem();
+    if (keyProblem) return c.json({ error: keyProblem }, 400);
 
     // Only the recurring plans. The one-off Feature is a payment, not a
     // subscription, and offering it as something to switch to would be a way to
