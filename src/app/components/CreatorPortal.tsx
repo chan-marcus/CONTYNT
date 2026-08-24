@@ -1634,7 +1634,18 @@ export function CreatorPortal({ token, impersonating }: { token: string; imperso
                   if (c) return ["interested", "admin_approved", "claimed", "submitted"].includes(c.status as string);
                   return f.status === "available";
                 })
-                .map(f => ({ ...f, inProgress: !!claims[f.id] }))}
+                // "interested" is what the Request button sets and what the card
+                // labels "Requested" -- asked for, not yet granted. The rest are
+                // Features the creator is actually holding.
+                .map(f => {
+                  const st = claims[f.id]?.status as string | undefined;
+                  return {
+                    ...f,
+                    pinState: !st ? "available" as const
+                      : st === "interested" ? "requested" as const
+                      : "active" as const,
+                  };
+                })}
             />
             {(() => {
               const hasAvailable = features.some(f => f.status === "available" && !claims[f.id]);
