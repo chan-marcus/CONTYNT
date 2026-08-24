@@ -147,7 +147,11 @@ export function FeaturesMap({ apiKey, features }: { apiKey?: string; features: M
   const fittedRef = useRef(false);
   const [state, setState] = useState<"idle" | "loading" | "ready" | "empty" | "failed">("idle");
   const [count, setCount] = useState(0);
-  const [inProgressCount, setInProgressCount] = useState(0);
+  // Counted per state rather than as "mine vs not". Requested and in progress
+  // are different commitments -- one is waiting on somebody else, the other is
+  // waiting on the creator -- and rolling them together made a tab of five
+  // requests read as five Reels owed.
+  const [byState, setByState] = useState({ requested: 0, active: 0, available: 0 });
 
   // Only the place ids matter for whether this needs to redraw. Keyed on them
   // rather than on the array identity, which is new on every portal poll and
@@ -286,7 +290,11 @@ export function FeaturesMap({ apiKey, features }: { apiKey?: string; features: M
         }
 
         setCount(located.length);
-        setInProgressCount(located.filter(l => (l.f.pinState ?? "available") !== "available").length);
+        setByState({
+          requested: located.filter(l => l.f.pinState === "requested").length,
+          active: located.filter(l => l.f.pinState === "active").length,
+          available: located.filter(l => (l.f.pinState ?? "available") === "available").length,
+        });
         setState("ready");
       } catch {
         // A referrer-restricted key, a blocked script, a CSP that forgot
@@ -309,11 +317,19 @@ export function FeaturesMap({ apiKey, features }: { apiKey?: string; features: M
       <div className="flex items-center gap-1.5 px-4 py-2.5 border-b border-white/10">
         <MapPin className="w-3.5 h-3.5 text-blue-400" strokeWidth={2} />
         <span className="text-xs text-neutral-300 font-medium">
-          {state === "ready"
-            ? (inProgressCount > 0
-                ? `${inProgressCount} in progress · ${count - inProgressCount} available`
-                : `${count} feature${count === 1 ? "" : "s"} near you`)
-            : "Loading map…"}
+          {/* Only the states actually present are named. "0 available" is noise
+              on a tab where everything has been claimed, and the plain count
+              reads better than "0 requested - 0 in progress - 4 available" when
+              nothing has been asked for yet. */}
+          {state !== "ready"
+            ? "Loading map…"
+            : byState.requested === 0 && byState.active === 0
+              ? `${count} feature${count === 1 ? "" : "s"} near you`
+              : [
+                  byState.requested > 0 ? `${byState.requested} requested` : "",
+                  byState.active > 0 ? `${byState.active} in progress` : "",
+                  byState.available > 0 ? `${byState.available} available` : "",
+                ].filter(Boolean).join(" · ")}
         </span>
       </div>
       <div className="relative">
