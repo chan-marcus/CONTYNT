@@ -26,6 +26,12 @@ interface Feature {
 
 interface Claim { featureId: string; status: "interested" | "admin_approved" | "claimed" | "submitted" | "approved" | "cashed_out" | "denied"; reelUrl?: string; stripeLink?: string; payoutAmount?: string; deniedNote?: string; approvedAt?: string; expiresAt?: string; acceptanceExpiresAt?: string; }
 interface PayoutInfo { stripeLink: string; payoutAmount: string; submissionId: string; }
+interface Payout {
+  id: string; amount: number; method: string; handle: string;
+  status: string; requestedAt: string; paidAt?: string | null;
+  notReceivedAt?: string | null; issueResolvedAt?: string | null;
+}
+
 interface PortalStats {
   completed: number; activeClaims: number; totalPayout: number; creatorScore?: number;
   availableEarnings?: number; pendingEarnings?: number;
@@ -167,8 +173,9 @@ function LoadingScreen() {
 // ─── Wallet / cash-out modal ─────────────────────────────────────────────────
 const PAYOUT_METHODS = ["PayPal", "Venmo", "Zelle"] as const;
 
-function WalletModal({ stats, token, onClose, onRequested }: {
-  stats: PortalStats; token: string; onClose: () => void; onRequested: (amount: number) => void;
+function WalletModal({ stats, token, payouts, onClose, onRequested, onReported }: {
+  stats: PortalStats; token: string; payouts: Payout[];
+  onClose: () => void; onRequested: (amount: number) => void; onReported: (id: string) => void;
 }) {
   const available = stats.availableEarnings ?? stats.totalPayout ?? 0;
   const pending = stats.pendingEarnings ?? 0;
@@ -182,6 +189,29 @@ function WalletModal({ stats, token, onClose, onRequested }: {
   const [busy, setBusy] = useState(false);
   const [done, setDone] = useState(false);
   const [error, setError] = useState("");
+  // Which sent payout the creator is reporting, if any. Null closes the form.
+  const [reporting, setReporting] = useState<string | null>(null);
+  const [reportNote, setReportNote] = useState("");
+  const [reportBusy, setReportBusy] = useState(false);
+  const [reportError, setReportError] = useState("");
+
+  // Only cash-outs already marked sent. One still in the queue has not been
+  // paid, so "I did not get it" is not yet something a creator can mean.
+  const sent = payouts.filter(p => p.status === "paid");
+
+  const reportMissing = async (id: string) => {
+    setReportBusy(true); setReportError("");
+    try {
+      const res = await api("/creator-portal/report-payout-issue", {
+        method: "POST",
+        body: JSON.stringify({ token, payoutId: id, note: reportNote.trim() }),
+      });
+      const d = await res.json().catch(() => null);
+      if (!res.ok || !d?.success) { setReportError(d?.error || "Could not send that report."); setReportBusy(false); return; }
+      onReported(id);
+      setReporting(null); setReportNote(""); setReportBusy(false);
+    } catch { setReportError("Could not reach the server."); setReportBusy(false); }
+  };
 
   const submit = async () => {
     if (!method || !handle.trim()) return;
@@ -228,6 +258,69 @@ function WalletModal({ stats, token, onClose, onRequested }: {
             </div>
           )}
         </div>
+
+        {/* Sent cash-outs, and the only way a creator has to say one never
+            arrived. "Mark as Sent" is a human pressing a button after moving
+            money by hand, so nothing here verifies the transfer landed -- a
+            typo'd handle or a rejected transfer looks identical to success. */}
+        {sent.length > 0 && (
+          <div className="space-y-1.5">
+            <p className="text-xs font-medium text-neutral-300">Sent to you</p>
+            <div className="bg-white/5 border border-white/10 rounded-xl divide-y divide-white/10">
+              {sent.map(p => (
+                <div key={p.id} className="px-3.5 py-2.5 space-y-2">
+                  <div className="flex items-center justify-between gap-3">
+                    <div className="min-w-0">
+                      <p className="text-sm text-neutral-200">
+                        {money(p.amount)}
+                        <span className="text-xs text-neutral-500"> · {p.method || "payout"}</span>
+                      </p>
+                      {p.paidAt && (
+                        <p className="text-[11px] text-neutral-500">
+                          {new Date(p.paidAt).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}
+                        </p>
+                      )}
+                    </div>
+                    {p.notReceivedAt && !p.issueResolvedAt ? (
+                      <span className="shrink-0 text-[11px] text-amber-300 bg-amber-500/10 border border-amber-500/25 px-2 py-0.5 rounded-full">
+                        Looking into it
+                      </span>
+                    ) : reporting === p.id ? null : (
+                      <button onClick={() => { setReporting(p.id); setReportNote(""); setReportError(""); }}
+                        className="shrink-0 text-[11px] text-neutral-400 hover:text-white underline underline-offset-2 transition-colors">
+                        Didn't get it?
+                      </button>
+                    )}
+                  </div>
+
+                  {reporting === p.id && (
+                    <div className="space-y-2">
+                      <textarea
+                        value={reportNote}
+                        onChange={e => setReportNote(e.target.value)}
+                        rows={2}
+                        maxLength={500}
+                        placeholder={`Anything that helps us trace it — is ${p.handle || "your handle"} still right?`}
+                        className="w-full px-3 py-2 bg-white/10 border border-white/20 rounded-xl text-white text-[13px] placeholder:text-neutral-500 focus:outline-none focus:ring-2 focus:ring-white/25"
+                      />
+                      {reportError && <p className="text-[11px] text-red-400">{reportError}</p>}
+                      <div className="flex gap-2">
+                        <button onClick={() => reportMissing(p.id)} disabled={reportBusy}
+                          className="flex-1 py-2 text-xs font-semibold bg-white text-neutral-900 rounded-xl disabled:opacity-50">
+                          {reportBusy ? "Sending…" : "Report it"}
+                        </button>
+                        <button onClick={() => { setReporting(null); setReportError(""); }}
+                          className="px-3 py-2 text-xs text-neutral-400 hover:text-white transition-colors">
+                          Cancel
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
 
         {done ? (
           <div className="bg-green-500/10 border border-green-500/25 rounded-xl p-4 space-y-1 text-center">
@@ -1029,6 +1122,7 @@ export function CreatorPortal({ token, impersonating }: { token: string; imperso
   // to be selected on arrival, which buried the explainer under a feature list.
   const [portalTab, setPortalTab] = useState<"home" | "features" | "completed" | "activity" | "ambassador">("home");
   const [placesKey, setPlacesKey] = useState("");
+  const [payouts, setPayouts] = useState<Payout[]>([]);
   const ambassador = useAmbassador(token);
   // Cards only exist for opted-in creators, so the fetch is gated on that
   // rather than firing for every creator on every portal load.
@@ -1076,6 +1170,7 @@ export function CreatorPortal({ token, impersonating }: { token: string; imperso
       setCreator(json.creator);
       setServerImpersonated(!!json.impersonated);
       setPlacesKey(json.placesKey || "");
+      setPayouts(json.payouts || []);
       // adminNotes now comes back from /creator-portal directly.
       setFeatures(json.features || []);
 
@@ -1570,6 +1665,11 @@ export function CreatorPortal({ token, impersonating }: { token: string; imperso
           <WalletModal
             stats={stats}
             token={token}
+            payouts={payouts}
+            // Flipped locally so the row says "Looking into it" straight away.
+            // The next poll brings the same thing back from the server.
+            onReported={(id) => setPayouts(ps => ps.map(p =>
+              p.id === id ? { ...p, notReceivedAt: new Date().toISOString(), issueResolvedAt: null } : p))}
             onClose={() => setWalletOpen(false)}
             onRequested={(amount) => {
               setEarnedGlow(false);

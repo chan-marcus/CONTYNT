@@ -4717,6 +4717,12 @@ app.get("/make-server-f5961d0c/creator-portal", async (c) => {
     // Balance comes from the earnings ledger. The old creator_payouts read that
     // stood here was never written to, so this stat was always zero.
     const balance = await creatorBalance(token);
+    // Sent cash-outs, so the wallet can name the one a creator is reporting
+    // rather than asking them to describe it. Capped: this is a recent history
+    // for identifying a payment, not an accounting record.
+    const { data: payoutRows } = await db().from("creator_payout_requests_f5961d0c")
+      .select("id, amount, method, handle, status, requested_at, paid_at, not_received_at, issue_resolved_at")
+      .eq("creator_token", token).order("requested_at", { ascending: false }).limit(12);
     const { data: ambRow } = await db().from("creator_signups_f5961d0c")
       .select("ambassador_opted_in, ambassador_code").eq("id", creatorData.creatorId).maybeSingle();
     const ambCode = ambRow?.ambassador_opted_in ? (ambRow.ambassador_code ?? null) : null;
@@ -4730,6 +4736,12 @@ app.get("/make-server-f5961d0c/creator-portal", async (c) => {
         ...balance,
       },
       resetAt,
+      payouts: (payoutRows ?? []).map((r: any) => ({
+        id: r.id, amount: parseAmount(r.amount), method: r.method || "", handle: r.handle || "",
+        status: r.status, requestedAt: r.requested_at, paidAt: r.paid_at || null,
+        notReceivedAt: r.not_received_at || null,
+        issueResolvedAt: r.issue_resolved_at || null,
+      })),
       // The one ambassador code, so in-progress Features can offer Print and QR
       // without minting anything of their own. Null until they opt in.
       ambassadorCode: ambCode,
@@ -5619,6 +5631,64 @@ app.post("/make-server-f5961d0c/admin/mark-paid", async (c) => {
 });
 
 // ─── Admin: outstanding cash-out requests ────────────────────────────────────
+// A creator saying the money never arrived.
+//
+// Scoped to their own payouts by the token, and only to ones already marked
+// sent: a request still sitting in the queue has not been paid yet, so
+// "didn't receive it" is not yet a meaningful thing to say about it.
+app.post("/make-server-f5961d0c/creator-portal/report-payout-issue", async (c) => {
+  try {
+    const { token: rawToken, payoutId, note } = await c.req.json();
+    const creatorData = await creatorFromToken(rawToken);
+    if (!creatorData) return c.json({ error: "Invalid or expired link" }, 401);
+    if (creatorData.impersonated) return c.json({ error: "Read-only session" }, 403);
+    const token = creatorData.realToken ?? rawToken;
+    if (!payoutId) return c.json({ error: "payoutId required" }, 400);
+
+    // Matched on the token as well as the id, so a payout id belonging to
+    // somebody else cannot be reported -- and cannot be probed for existence.
+    const { data: row } = await db().from("creator_payout_requests_f5961d0c")
+      .select("id, status, amount, not_received_at")
+      .eq("id", payoutId).eq("creator_token", token).maybeSingle();
+    if (!row) return c.json({ error: "That payout is not on your account." }, 404);
+    if (row.status !== "paid") return c.json({ error: "That cash out has not been sent yet." }, 409);
+    // Reporting twice is not an error. A creator who hears nothing back will
+    // press it again, and answering with a failure would be both wrong and a
+    // reason to give up on the channel.
+    if (row.not_received_at) {
+      return c.json({ success: true, alreadyReported: true, reportedAt: row.not_received_at });
+    }
+
+    const now = new Date().toISOString();
+    await must("payout issue: report", db().from("creator_payout_requests_f5961d0c").update({
+      not_received_at: now,
+      not_received_note: String(note ?? "").trim().slice(0, 500) || null,
+      // Cleared, so re-reporting a payout an admin previously closed reopens it
+      // rather than arriving already resolved.
+      issue_resolved_at: null,
+      issue_resolution: null,
+    }).eq("id", payoutId));
+    await logCreatorEvent(creatorData.creatorId, "payout_not_received", {
+      payoutId, amount: parseAmount(row.amount),
+    });
+    return c.json({ success: true, reportedAt: now });
+  } catch (e: any) { return c.json({ error: "Could not send that report", details: e.message }, 500); }
+});
+
+// Closing a report. Deliberately does not touch the payout's own status: the
+// money either went out or it did not, and that is what mark-paid records.
+app.post("/make-server-f5961d0c/admin/payouts/resolve-issue", async (c) => {
+  try {
+    const { payoutId, resolution } = await c.req.json();
+    if (!payoutId) return c.json({ error: "payoutId required" }, 400);
+    await must("payout issue: resolve", db().from("creator_payout_requests_f5961d0c").update({
+      issue_resolved_at: new Date().toISOString(),
+      issue_resolution: String(resolution ?? "").trim().slice(0, 500) || null,
+    }).eq("id", payoutId));
+    return c.json({ success: true });
+  } catch (e: any) { return c.json({ error: e.message }, 500); }
+});
+
 app.get("/make-server-f5961d0c/admin/payout-requests", async (c) => {
   try {
     const { data, error } = await db().from("creator_payout_requests_f5961d0c")
@@ -5630,6 +5700,10 @@ app.get("/make-server-f5961d0c/admin/payout-requests", async (c) => {
         creatorInstagram: r.creator_instagram || "", amount: parseAmount(r.amount),
         method: r.method, handle: r.handle, status: r.status,
         requestedAt: r.requested_at, paidAt: r.paid_at,
+        notReceivedAt: r.not_received_at || null,
+        notReceivedNote: r.not_received_note || "",
+        issueResolvedAt: r.issue_resolved_at || null,
+        issueResolution: r.issue_resolution || "",
       })),
     });
   } catch (e: any) { return c.json({ error: e.message }, 500); }

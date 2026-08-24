@@ -1202,6 +1202,22 @@ export function Analytics({ adminToken }: { adminToken?: string } = {}) {
   useEffect(() => { if (isAuthenticated && tab === "readiness" && !emailHealth) loadEmailHealth(); }, [isAuthenticated, tab, emailHealth, loadEmailHealth]);
 
 
+  // Closing a "never arrived" report. Deliberately leaves the payout's own
+  // status alone: whether the money went out is what mark-paid records, and
+  // this only says somebody looked into it.
+  const resolvePayoutIssue = async (req: any) => {
+    const resolution = window.prompt(
+      `Close @${(req.creatorInstagram || "creator").replace(/^@+/, "")}'s report of $${req.amount} not arriving?\n\nWhat happened? (optional, kept on the payout)`, "");
+    if (resolution === null) return;
+    setSettling(req.id);
+    const res = await apiFetch("/admin/payouts/resolve-issue", {
+      method: "POST", body: JSON.stringify({ payoutId: req.id, resolution }),
+    }).catch(() => null);
+    setSettling(null);
+    if (!res || !res.ok) { window.alert("Could not close that report."); return; }
+    await fetchAll();
+  };
+
   const settlePayoutRequest = async (req: any) => {
     if (!window.confirm(`Mark $${req.amount} to ${req.method} (${req.handle}) as sent?`)) return;
     setSettling(req.id);
@@ -1455,6 +1471,45 @@ export function Analytics({ adminToken }: { adminToken?: string } = {}) {
         {!loading && tab === "creators" && (
           <div>
             <h2 className="text-lg font-semibold text-white mb-4">Creators</h2>
+
+            {/* Above the queue of new requests on purpose. A cash-out waiting to
+                be sent is routine; money the app already claims it sent, that
+                never arrived, is the one that has already gone wrong. */}
+            {payoutRequests.filter(r => r.notReceivedAt && !r.issueResolvedAt).length > 0 && (
+              <div className="mb-6 space-y-2">
+                <p className="text-xs font-semibold text-red-400 uppercase tracking-wider">
+                  Not received · {payoutRequests.filter(r => r.notReceivedAt && !r.issueResolvedAt).length}
+                </p>
+                {payoutRequests.filter(r => r.notReceivedAt && !r.issueResolvedAt).map(r => (
+                  <div key={r.id} className="bg-red-500/5 border border-red-500/30 rounded-xl px-4 py-3 space-y-2">
+                    <div className="flex flex-col sm:flex-row sm:items-center gap-3">
+                      <div className="flex-1 min-w-0">
+                        <p className="font-semibold text-white">
+                          @{(r.creatorInstagram || "creator").replace(/^@+/, "")}
+                          <span className="ml-2 text-red-300">${r.amount}</span>
+                        </p>
+                        <p className="text-xs text-neutral-400 mt-0.5">
+                          Sent {r.method} to <span className="font-mono text-neutral-300">{r.handle}</span>
+                          {r.paidAt && <span className="text-neutral-600"> · marked sent {new Date(r.paidAt).toLocaleDateString()}</span>}
+                        </p>
+                        <p className="text-xs text-red-300/80 mt-0.5">
+                          Reported {new Date(r.notReceivedAt).toLocaleDateString()}
+                        </p>
+                      </div>
+                      <button onClick={() => resolvePayoutIssue(r)} disabled={settling === r.id}
+                        className="shrink-0 px-3 py-1.5 text-xs bg-white/10 text-neutral-200 rounded-lg hover:bg-white/20 transition-all disabled:opacity-50 whitespace-nowrap">
+                        {settling === r.id ? "Closing…" : "Close report"}
+                      </button>
+                    </div>
+                    {r.notReceivedNote && (
+                      <p className="text-xs text-neutral-300 bg-black/30 border border-white/10 rounded-lg px-3 py-2 whitespace-pre-wrap break-words">
+                        {r.notReceivedNote}
+                      </p>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
 
             {payoutRequests.filter(r => r.status === "requested").length > 0 && (
               <div className="mb-6 space-y-2">
