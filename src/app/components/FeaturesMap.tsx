@@ -267,12 +267,21 @@ export function FeaturesMap({ apiKey, features }: { apiKey?: string; features: M
         // panned to.
         if (!fittedRef.current) {
           fittedRef.current = true;
-          map.fitBounds(bounds, 48);
+          // Asymmetric, and tight everywhere it can be. A flat 48 was costing
+          // 96px of a 220px-tall map to margin, which is why the city sat so
+          // small inside it -- fitBounds spends whatever it is given, so the
+          // padding is most of what sets the zoom here.
+          //
+          // Top is the one side that has to stay generous: a marker is anchored
+          // at its tip, so its body is drawn upward from the point and the
+          // northernmost pin would otherwise be cropped in half. The rest only
+          // has to clear the Google attribution strip along the bottom.
+          map.fitBounds(bounds, { top: 38, right: 18, bottom: 20, left: 18 });
           // fitBounds on a single pin zooms to the building. One listener,
           // removed as it fires, so a creator who zooms in afterwards is not
           // yanked back out.
           g.maps.event.addListenerOnce(map, "idle", () => {
-            if (map.getZoom() > 15) map.setZoom(15);
+            if (map.getZoom() > 16) map.setZoom(16);
           });
         }
 
