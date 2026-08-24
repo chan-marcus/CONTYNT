@@ -188,6 +188,11 @@ function WalletModal({ stats, token, payouts, onClose, onRequested, onReported }
   const [handle, setHandle] = useState("");
   const [busy, setBusy] = useState(false);
   const [done, setDone] = useState(false);
+  // What was actually requested, kept because `available` does not survive the
+  // request. onRequested moves the money from available to pending straight
+  // away, so by the time the confirmation renders the number it was reading had
+  // already gone to zero -- and it told the creator we would send them $0.
+  const [requestedAmount, setRequestedAmount] = useState(0);
   const [error, setError] = useState("");
   // Which sent payout the creator is reporting, if any. Null closes the form.
   const [reporting, setReporting] = useState<string | null>(null);
@@ -223,6 +228,8 @@ function WalletModal({ stats, token, payouts, onClose, onRequested, onReported }
       });
       const d = await res.json().catch(() => null);
       if (!res.ok) { setError(d?.error || "Could not submit request."); setBusy(false); return; }
+      // Captured before onRequested, which is what zeroes `available`.
+      setRequestedAmount(available);
       setDone(true); setBusy(false); onRequested(available);
     } catch { setError("Could not reach the server."); setBusy(false); }
   };
@@ -325,7 +332,7 @@ function WalletModal({ stats, token, payouts, onClose, onRequested, onReported }
         {done ? (
           <div className="bg-green-500/10 border border-green-500/25 rounded-xl p-4 space-y-1 text-center">
             <p className="text-sm font-semibold text-green-300">Payout requested</p>
-            <p className="text-xs text-neutral-400">We'll send {money(available)} to your {method} ({handle}). You'll get a confirmation once it's sent.</p>
+            <p className="text-xs text-neutral-400">We'll send {money(requestedAmount)} to your {method} ({handle}). You'll get a confirmation once it's sent.</p>
           </div>
         ) : available <= 0 ? (
           <p className="text-sm text-neutral-400 text-balance text-center">
