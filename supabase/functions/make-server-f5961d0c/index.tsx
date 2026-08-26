@@ -5689,6 +5689,54 @@ app.post("/make-server-f5961d0c/admin/payouts/resolve-issue", async (c) => {
   } catch (e: any) { return c.json({ error: e.message }, 500); }
 });
 
+// The confirm-your-profile link for one creator, to be pasted into a DM.
+//
+// Reuses the live token rather than minting one. Issuing a new token retires
+// whatever is already in that creator's inbox, so an admin fetching a link to
+// DM would silently break the emailed one -- and the creator who eventually got
+// round to the email would land on "this link is not valid". A fresh token is
+// minted only when there is none, or the one on file has expired.
+//
+// No email is sent. This hands back the URL and nothing else; whether it
+// reaches the creator by DM is the admin's business.
+app.post("/make-server-f5961d0c/admin/creator-verify-link", async (c) => {
+  try {
+    const { creatorId } = await c.req.json();
+    if (!creatorId) return c.json({ error: "creatorId required" }, 400);
+
+    const { data: row } = await db().from("creator_signups_f5961d0c")
+      .select("id, instagram, instagram_handle, verify_token, verify_token_expires_at, verification_status")
+      .eq("id", creatorId).maybeSingle();
+    if (!row) return c.json({ error: "No creator with that id." }, 404);
+
+    const live = row.verify_token
+      && (!row.verify_token_expires_at || new Date(row.verify_token_expires_at) > new Date());
+
+    let token = String(row.verify_token ?? "");
+    let expiresAt = row.verify_token_expires_at ?? null;
+    if (!live) {
+      token = secureToken(32);
+      expiresAt = new Date(Date.now() + VERIFY_DAYS * 864e5).toISOString();
+      await must("verify link: issue token", db().from("creator_signups_f5961d0c")
+        .update({ verify_token: token, verify_token_expires_at: expiresAt }).eq("id", row.id));
+    }
+
+    // Logged either way. A link handed out by hand is still a link handed out,
+    // and without this the funnel would show a creator confirming from an email
+    // nobody sent.
+    await logCreatorEvent(row.id, "verify_link_copied", { reused: !!live });
+
+    return c.json({
+      success: true,
+      link: verifyLinkFor(token),
+      reused: !!live,
+      expiresAt,
+      handle: row.instagram_handle || String(row.instagram ?? "").replace(/^@+/, ""),
+      confirmed: row.verification_status === "confirmed",
+    });
+  } catch (e: any) { return c.json({ error: "Could not build that link", details: e.message }, 500); }
+});
+
 app.get("/make-server-f5961d0c/admin/payout-requests", async (c) => {
   try {
     const { data, error } = await db().from("creator_payout_requests_f5961d0c")

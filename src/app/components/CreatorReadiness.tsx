@@ -1,5 +1,5 @@
 import { Fragment, useMemo, useState } from "react";
-import { Download, Send, Loader2, Check, X, AlertTriangle, CheckCircle2, MailCheck, Megaphone, Clock } from "lucide-react";
+import { Download, Send, Loader2, Check, X, AlertTriangle, CheckCircle2, MailCheck, Megaphone, Clock, Link2 } from "lucide-react";
 
 export interface ReadinessCreator {
   id: string; handle: string; email: string; city: string;
@@ -144,6 +144,37 @@ function EmailHealthPanel({ health, onTest, testing, testResult }: {
 //
 // Same shape the server's normalizeHandle accepts, so what is linkable here and
 // what is a valid handle there cannot drift apart.
+// Copies one creator's confirm-your-profile link, for pasting into a DM.
+//
+// Per row rather than a bulk action: these get sent one at a time, by hand, to
+// somebody whose Instagram is open in the next tab. A checkbox and a toolbar
+// button would be more machinery for a job that is one click.
+function CopyLinkButton({ id, onCopy }: { id: string; onCopy: (id: string) => Promise<string | null> }) {
+  const [state, setState] = useState<"idle" | "busy" | "done">("idle");
+
+  return (
+    <button
+      type="button"
+      title="Copy this creator's confirm-your-profile link"
+      aria-label="Copy confirm link"
+      disabled={state === "busy"}
+      onClick={async () => {
+        setState("busy");
+        const link = await onCopy(id);
+        // Only claims success when there is something on the clipboard. A failed
+        // fetch leaves the button as it was rather than saying "Copied".
+        if (!link) { setState("idle"); return; }
+        setState("done");
+        setTimeout(() => setState("idle"), 1600);
+      }}
+      className="shrink-0 inline-flex items-center gap-1 rounded-md border border-white/15 px-1.5 py-0.5 text-[10px] text-neutral-400 hover:text-white hover:border-white/40 transition-colors disabled:opacity-40"
+    >
+      {state === "busy" ? <Loader2 className="w-3 h-3 animate-spin" /> : <Link2 className="w-3 h-3" />}
+      {state === "done" ? "Copied" : "Link"}
+    </button>
+  );
+}
+
 function instagramUrl(raw: string): string | null {
   const h = String(raw ?? "").trim()
     .replace(/^https?:\/\//i, "").replace(/^www\./i, "").replace(/^instagram\.com\//i, "")
@@ -232,12 +263,13 @@ function ReachChips({ email, dm }: { email: boolean; dm: boolean }) {
   );
 }
 
-export function CreatorReadiness({ data, onSend, onSendFeatureDrop, onTestFeatureDrop, onRemindExpiring, busy, health, onTest, testing, testResult }: {
+export function CreatorReadiness({ data, onSend, onSendFeatureDrop, onTestFeatureDrop, onRemindExpiring, onCopyLink, busy, health, onTest, testing, testResult }: {
   data: ReadinessData;
   onSend: (creatorIds: string[], reminderOnly: boolean, dryRun: boolean) => void;
   onSendFeatureDrop: (creatorIds: string[], dryRun: boolean, featureCount: number) => void;
   onTestFeatureDrop: (to: string, featureCount: number) => void;
   onRemindExpiring: (dryRun: boolean) => void;
+  onCopyLink: (creatorId: string) => Promise<string | null>;
   busy: boolean;
   health: EmailHealth | null;
   onTest: (to: string) => void;
@@ -467,6 +499,7 @@ export function CreatorReadiness({ data, onSend, onSendFeatureDrop, onTestFeatur
                     );
                   })()}
                   {r.bounced && <span className="ml-1.5 text-[10px] text-red-400">bounced</span>}
+                  <span className="ml-2 align-middle inline-flex"><CopyLinkButton id={r.id} onCopy={onCopyLink} /></span>
                 </td>
                 <td className="px-3 py-2.5 text-neutral-400 max-w-[220px] truncate" title={r.email}>
                   {r.email || "—"}

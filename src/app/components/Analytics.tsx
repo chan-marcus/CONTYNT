@@ -1025,6 +1025,23 @@ export function Analytics({ adminToken }: { adminToken?: string } = {}) {
     finally { setSendBusy(false); }
   }, []);
 
+  // Hands back the creator's confirm-your-profile link so it can be pasted into
+  // a DM. Returns it as well as copying it: the clipboard is unavailable in a
+  // surprising number of contexts, and the caller falls back to showing the URL
+  // rather than silently doing nothing.
+  const copyVerifyLink = useCallback(async (creatorId: string): Promise<string | null> => {
+    try {
+      const res = await apiFetch("/admin/creator-verify-link", {
+        method: "POST", body: JSON.stringify({ creatorId }),
+      });
+      const d = await res.json().catch(() => null);
+      if (!res.ok || !d?.link) { window.alert(d?.error || "Could not build that link."); return null; }
+      try { await navigator.clipboard.writeText(d.link); }
+      catch { window.prompt("Copy this confirm link", d.link); }
+      return d.link;
+    } catch { window.alert("Could not reach the server."); return null; }
+  }, []);
+
   const ambAction = async (id: string, path: string, body: object) => {
     setAmbBusy(id);
     await apiFetch(path, { method: "POST", body: JSON.stringify(body) }).catch(() => {});
@@ -1792,7 +1809,7 @@ export function Analytics({ adminToken }: { adminToken?: string } = {}) {
                       className="text-xs text-neutral-500 hover:text-neutral-300">Dismiss</button>
                   </div>
                 )}
-                <CreatorReadiness data={readyData} onSend={sendVerification} onSendFeatureDrop={sendFeatureDrop} onTestFeatureDrop={testFeatureDrop} onRemindExpiring={remindExpiring} busy={sendBusy}
+                <CreatorReadiness data={readyData} onSend={sendVerification} onSendFeatureDrop={sendFeatureDrop} onTestFeatureDrop={testFeatureDrop} onRemindExpiring={remindExpiring} onCopyLink={copyVerifyLink} busy={sendBusy}
                   health={emailHealth} onTest={sendTestEmail} testing={testingEmail} testResult={testEmailResult} />
               </div>
             : <p className="text-neutral-400 text-sm">Loading readiness…</p>
