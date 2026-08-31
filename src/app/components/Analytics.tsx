@@ -349,51 +349,73 @@ function BusinessCard({ signup, approved, onApprove, onImpersonate, impersonatin
 
   return (
     <div className={`bg-neutral-900 border rounded-xl p-4 space-y-3 ${approved ? "border-green-500/20 bg-green-500/10" : "border-white/10"}`}>
+      {/* Name and what they pay, on one line. The tier used to be legible only
+          by reading the dropdown further down, so telling a paying business
+          from a free one meant looking twice at every card. */}
       <div className="flex items-start justify-between gap-2">
-        <div>
+        <div className="min-w-0">
           {/* Signups no longer carry a business name, so the handle stands in.
               Rows from before that still show whatever name they were given. */}
-          <p className="font-semibold text-white">{signup.businessName || igHandle(signup.instagram)}</p>
-          <p className="text-xs text-neutral-500">{new Date(signup.createdAt).toLocaleDateString()}</p>
+          <p className="font-semibold text-white truncate">{signup.businessName || igHandle(signup.instagram)}</p>
+          <p className="text-xs text-neutral-500 truncate">
+            <a href={`https://instagram.com/${signup.instagram.replace(/^@/, "")}`} target="_blank" rel="noopener noreferrer"
+              className="text-blue-400 hover:text-blue-300 transition-colors">{igHandle(signup.instagram)}</a>
+            {signup.city && <span> · {signup.city}</span>}
+          </p>
         </div>
-        {approved && <span className="text-xs bg-green-500/10 text-green-400 border border-green-500/20 px-2 py-0.5 rounded-full shrink-0">Approved</span>}
+        <div className="flex flex-col items-end gap-1 shrink-0">
+          {tier
+            ? <span className="text-xs px-2 py-0.5 rounded-full bg-indigo-500/15 text-indigo-200 border border-indigo-400/30">{tier}</span>
+            : <span className="text-xs px-2 py-0.5 rounded-full bg-white/5 text-neutral-500 border border-white/10">No plan</span>}
+          {approved && <span className="text-[10px] bg-green-500/10 text-green-400 border border-green-500/20 px-2 py-0.5 rounded-full">Approved</span>}
+        </div>
       </div>
-      <div className="text-sm text-neutral-300 space-y-0.5">
-        <p>{signup.address || "—"}</p>
-        <p>{signup.city}</p>
-        <p>{signup.email}</p>
-        <a href={`https://instagram.com/${signup.instagram.replace(/^@/, "")}`} target="_blank" rel="noopener noreferrer"
-          className="text-blue-400 hover:text-blue-300 transition-colors">{igHandle(signup.instagram)}</a>
-        {/* Who brought them in. Only shown when there is an attribution, so a
-            business that walked in on its own does not carry an empty row --
-            and a referral whose creator record has gone still says so rather
-            than silently reading as unreferred. */}
+
+      {/* Contact. Two lines, muted, because it is reference rather than
+          something to scan -- the address is one line and truncated, since the
+          full postal string was the longest thing on the card and said little
+          the city above does not. */}
+      <div className="text-xs text-neutral-400 space-y-0.5">
+        <p className="truncate" title={signup.email}>{signup.email}</p>
+        <p className="truncate text-neutral-500" title={signup.address || ""}>{signup.address || "—"}</p>
+      </div>
+
+      {/* Everything else as chips. These were seven sentences down the card, one
+          per line and all the same weight, which is what made it a wall. Each
+          is one fact, so each is one chip, and the row wraps and only shows
+          what applies. */}
+      <div className="flex flex-wrap items-center gap-1.5">
+        <span className="text-[10px] px-1.5 py-0.5 rounded bg-white/5 text-neutral-500 border border-white/10">
+          Joined {new Date(signup.createdAt).toLocaleDateString("en-US", { month: "short", day: "numeric" })}
+        </span>
+        {signup.preferredContact && (
+          <span className="text-[10px] px-1.5 py-0.5 rounded bg-white/5 text-neutral-400 border border-white/10">
+            Prefers {signup.preferredContact}
+          </span>
+        )}
+        {planClicks > 0 && (
+          <span className="text-[10px] px-1.5 py-0.5 rounded bg-blue-500/10 text-blue-300 border border-blue-500/20">
+            Viewed pricing {planClicks}×
+          </span>
+        )}
         {/* A cancelled plan still runs to the end of the period it paid for, so
             the tier alone does not say a business is leaving. */}
         {signup.subscriptionEndsAt && (
-          <p className="text-xs text-yellow-300">
-            Cancels {endsOn(signup.subscriptionEndsAt)} — plan runs until then
-          </p>
+          <span className="text-[10px] px-1.5 py-0.5 rounded bg-yellow-500/10 text-yellow-300 border border-yellow-500/25">
+            Cancels {endsOn(signup.subscriptionEndsAt)}
+          </span>
         )}
+        {/* Who brought them in. Only shown when there is an attribution, so a
+            business that walked in on its own does not carry an empty chip --
+            and a referral whose creator record has gone still says so rather
+            than silently reading as unreferred. */}
         {(signup.referralSource || signup.referredByHandle) && (
-          <p className="text-xs text-purple-300 flex items-center gap-1.5">
-            <Award className="w-3 h-3 shrink-0" />
+          <span className="text-[10px] px-1.5 py-0.5 rounded bg-purple-500/10 text-purple-300 border border-purple-500/25 inline-flex items-center gap-1">
+            <Award className="w-2.5 h-2.5 shrink-0" />
             {signup.referredByHandle
-              ? <>Referred by {igHandle(signup.referredByHandle)}</>
-              : <>Referred by an Ambassador{signup.referralCode ? ` \u00b7 ${signup.referralCode}` : ""}</>}
-          </p>
-        )}
-        {signup.preferredContact && (
-          <p className="text-xs">
-            <span className="text-neutral-500">Preferred contact: </span>
-            <span className="font-medium text-neutral-300">{signup.preferredContact}</span>
-          </p>
-        )}
-        {planClicks > 0 && (
-          <p className="text-xs flex items-center gap-1.5">
-            <span className="text-neutral-500">Viewed pricing:</span>
-            <span className="font-semibold text-blue-300 bg-blue-500/10 border border-blue-500/20 px-1.5 py-0.5 rounded-full">{planClicks}×</span>
-          </p>
+              ? igHandle(signup.referredByHandle)
+              : `Ambassador${signup.referralCode ? ` \u00b7 ${signup.referralCode}` : ""}`}
+          </span>
         )}
       </div>
 
@@ -508,21 +530,28 @@ function BusinessCard({ signup, approved, onApprove, onImpersonate, impersonatin
 
 
       {/* Bottom actions */}
+      {/* Side by side and quieter. Two full-width colour bars plus a white one
+          were the loudest thing on a card whose job is to be read, and they are
+          occasional actions -- most visits here are to look, not to grant. */}
       <div className="pt-2 border-t border-white/10 space-y-2">
-        <button onClick={() => offerFeature("trial")} disabled={!!offering}
-          className="w-full py-2 text-sm bg-blue-600/20 text-blue-300 border border-blue-500/20 rounded-lg hover:bg-blue-600/30 transition-all disabled:opacity-50 flex items-center justify-center gap-2">
-          {offering === "trial" ? "Sending…" : "🎁 Send Free Feature"}
-        </button>
-        {/* Same call as above with is_trial false, so it counts against the
-            business's monthly quota rather than being a giveaway. Purple to
-            match how paid/completed features read elsewhere in this panel. */}
-        <button onClick={() => offerFeature("oneoff")} disabled={!!offering}
-          className="w-full py-2 text-sm bg-purple-600/20 text-purple-300 border border-purple-500/20 rounded-lg hover:bg-purple-600/30 transition-all disabled:opacity-50 flex items-center justify-center gap-2">
-          {offering === "oneoff" ? "Sending…" : "🎟️ Add One-Time Feature"}
-        </button>
+        <div className="grid grid-cols-2 gap-2">
+          <button onClick={() => offerFeature("trial")} disabled={!!offering}
+            title="Give this business a free Feature, outside their quota"
+            className="py-1.5 text-xs bg-white/5 text-blue-300 border border-blue-500/25 rounded-lg hover:bg-blue-500/15 transition-all disabled:opacity-50">
+            {offering === "trial" ? "Sending…" : "Free Feature"}
+          </button>
+          {/* Same call as above with is_trial false, so it counts against the
+              business's monthly quota rather than being a giveaway. Purple to
+              match how paid/completed features read elsewhere in this panel. */}
+          <button onClick={() => offerFeature("oneoff")} disabled={!!offering}
+            title="Add a Feature that counts against their monthly quota"
+            className="py-1.5 text-xs bg-white/5 text-purple-300 border border-purple-500/25 rounded-lg hover:bg-purple-500/15 transition-all disabled:opacity-50">
+            {offering === "oneoff" ? "Sending…" : "One-Time"}
+          </button>
+        </div>
         <button onClick={onImpersonate} disabled={impersonating}
-          className="w-full py-2 bg-white text-neutral-900 text-sm rounded-lg hover:bg-neutral-100 transition-all disabled:opacity-50 flex items-center justify-center gap-2">
-          <Eye className="w-4 h-4" />{impersonating ? "Opening…" : "View as business"}
+          className="w-full py-1.5 text-xs text-neutral-300 bg-white/5 border border-white/15 rounded-lg hover:bg-white/10 transition-all disabled:opacity-50 flex items-center justify-center gap-1.5">
+          <Eye className="w-3.5 h-3.5" />{impersonating ? "Opening…" : "View as business"}
         </button>
       </div>
     </div>
@@ -1594,7 +1623,17 @@ export function Analytics({ adminToken }: { adminToken?: string } = {}) {
             <h2 className="text-lg font-semibold text-white mb-4">Businesses</h2>
             {businessSignups.length === 0 ? <p className="text-neutral-400 text-sm">No business sign-ups yet.</p> : (
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                {businessSignups.map((b) => (
+                {/* Paying first, then the ones showing intent by opening the
+                    pricing, then everyone else alphabetically. Insertion order
+                    put a business that has never done anything above one paying
+                    every month, which is the wrong way round for a list you
+                    scan to decide who to deal with. */}
+                {[...businessSignups].sort((a, b) => {
+                  const paid = (x: BusinessSignupExtended) => (x.subscriptionTier ? 1 : 0);
+                  return paid(b) - paid(a)
+                    || ((planClicksMap[b.id] || 0) - (planClicksMap[a.id] || 0))
+                    || (a.businessName || "").localeCompare(b.businessName || "");
+                }).map((b) => (
                   <BusinessCard key={b.id} signup={b}
                     approved={approvedBusinesses.has(b.id)}
                     payoutRange={payoutRanges[b.id] || ""}
