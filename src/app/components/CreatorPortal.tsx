@@ -73,9 +73,6 @@ const PINNED_ACTIVITY = [
 
 const ACTIVITY_POOL = [
   { businessName: "Golden Gate Grind",      category: "Coffee Shop", payout: "$15\u2013$25", by: "sarahv" },
-  { businessName: "Mission Slice Pizzeria", category: "Pizza",       payout: "$20\u2013$30", by: "dmoreno" },
-  { businessName: "Hayes Valley Bakehouse", category: "Bakery",      payout: "$15\u2013$25", by: "elliek" },
-  { businessName: "Sunset Ramen House",     category: "Ramen",       payout: "$20\u2013$35", by: "jtnguyen" },
   { businessName: "Noe Valley Creamery",    category: "Ice Cream",   payout: "$10\u2013$20", by: "priyaeats" },
   { businessName: "Presidio Poke Co.",      category: "Poke",        payout: "$15\u2013$25", by: "marcusleeee" },
   { businessName: "Marina Green Juice",     category: "Juice Bar",   payout: "$10\u2013$18", by: "sofiafit" },
@@ -109,19 +106,44 @@ function seededRandom(seed: number) {
 }
 
 const DAY_MS = 86400000;
-// Morning, midday, evening. Three windows rather than three fixed times, and
-// nothing overnight: claims landing at 04:12 every day is the tell.
-const ACTIVITY_WINDOWS: [number, number][] = [[9, 12], [13, 16], [18, 22]];
 
-// Builds the feed between `startTs` and `now`. Two to four a day, drawn from
-// the windows above, because exactly three every single day is its own kind of
-// obviously-generated.
-//
-// startTs is the rollout switch and the pace control at once. Nothing before it
-// is generated, so the day it is set the tab holds two or three entries and
-// fills out over the following week -- rather than twenty backdated claims
-// appearing at once in a tab that was empty a second earlier, which is the
-// version nobody believes. Zero means off, and off is the default.
+// Everything below is generated in Pacific time, wherever the viewer happens to
+// be. The window is a property of the city these Features are in, not of who is
+// looking -- and since the cards no longer print a time, this only decides when
+// new entries appear during the day, never anything a creator reads.
+function pacificParts(ms: number) {
+  const f = new Intl.DateTimeFormat("en-US", {
+    timeZone: "America/Los_Angeles", hour12: false,
+    year: "numeric", month: "2-digit", day: "2-digit",
+    hour: "2-digit", minute: "2-digit",
+  }).formatToParts(new Date(ms));
+  const g = (t: string) => Number(f.find(p => p.type === t)?.value ?? 0);
+  return { y: g("year"), m: g("month"), d: g("day"), h: g("hour") % 24, mi: g("minute") };
+}
+
+// The instant at which it is `hour:minute` in Pacific on that date. Guess in
+// UTC, see what wall clock the guess actually landed on, correct by the
+// difference -- which is how you get the offset right across both DST changes
+// without shipping a timezone table.
+function pacificInstant(y: number, m: number, d: number, hour: number, minute: number) {
+  const guess = Date.UTC(y, m - 1, d, hour, minute);
+  const p = pacificParts(guess);
+  const landed = Date.UTC(p.y, p.m - 1, p.d, p.h, p.mi);
+  return guess + (guess - landed);
+}
+
+// Claims land between noon and 5pm Pacific.
+const CLAIM_FROM_HOUR = 12;
+const CLAIM_TO_HOUR = 17;
+// And on roughly every second or third day, not every day.
+const MIN_GAP_DAYS = 2;
+const MAX_GAP_DAYS = 3;
+// Per active day.
+const MIN_PER_DAY = 1;
+const MAX_PER_DAY = 4;
+// Only a stop against a rollout date set years ago; the feed itself is endless.
+const MAX_ACTIVE_DAYS = 2000;
+
 // The pinned five, stamped across today and newest first.
 //
 // Spread back from now rather than at fixed clock times, so they read as recent
@@ -145,42 +167,56 @@ function pinnedActivity(now: number) {
   }));
 }
 
-function buildActivityFeed(now: number, startTs: number, days = 14) {
+// Walks forward from the rollout date, landing on an active day every two or
+// three, and putting one to four claims on each between noon and 5pm Pacific.
+//
+// No cap. The feed grows for as long as the rollout date stays set, which at
+// roughly one a day averages out to a page every five days.
+//
+// The first active day is a gap past the start rather than the start itself, so
+// the day it is switched on the tab holds the pinned five and nothing else.
+// Zero means off, and off is the default.
+function buildActivityFeed(now: number, startTs: number) {
   if (!startTs) return [];
-  // Page one is the pinned five and only those. Generated entries are held to
-  // strictly older than the oldest pinned one rather than merged by timestamp:
-  // interleaved, a rotation entry from an hour ago landed second and pushed a
-  // pinned one onto page two. Cutting by time rather than by count also keeps
-  // the whole feed in order, so the timestamps still count down the page.
-  const pinned = pinnedActivity(now);
-  const pinnedFloor = pinned[pinned.length - 1].claimedAt;
+
   const out: { id: string; businessName: string; address: string; city: string;
                category: string; payoutRange: string; status: "completed";
                claimedBy: string; claimedAt: number }[] = [];
 
-  for (let d = days; d >= 0; d--) {
-    // Local midnight, walked back a day at a time. Building these off UTC put
-    // every entry at 3am and 4am on screen for anyone west of Greenwich, which
-    // is the one thing the windows above exist to prevent. setDate rather than
-    // subtracting 86400000 so a clock change does not shift the whole feed.
-    const dayStart = new Date(now);
-    dayStart.setHours(0, 0, 0, 0);
-    dayStart.setDate(dayStart.getDate() - d);
-    const day = Math.floor(dayStart.getTime() / DAY_MS);
-    const rnd = seededRandom(day);
-    const perDay = 2 + Math.floor(rnd() * 3);          // 2, 3 or 4
-    const windows = ACTIVITY_WINDOWS.slice(0, perDay === 2 ? 2 : 3);
+  // Venues used lately, so the rotation does not put the same cafe up twice in
+  // a row. A window rather than a set: the feed is endless and the pool is not,
+  // so a venue has to come round again eventually -- the same spot featured a
+  // second time two months later is ordinary, twice in a week is not.
+  const recent: string[] = [];
 
-    for (let i = 0; i < perDay; i++) {
-      const [from, to] = windows[i % windows.length];
-      const hour = from + rnd() * (to - from);
-      const at = dayStart.getTime() + hour * 3600000;
-      if (at >= pinnedFloor) continue;
-      // Offset by the day so consecutive days do not walk the pool in lockstep
-      // and repeat the same venue at the same time each week.
-      const pick = ACTIVITY_POOL[(day * 7 + i * 3 + Math.floor(rnd() * 5)) % ACTIVITY_POOL.length];
+  let cursor = startTs;
+  for (let step = 0; step < MAX_ACTIVE_DAYS; step++) {
+    // Seeded on the day itself, so the whole history is stable: yesterday's
+    // entries are the same today as they were yesterday, and two people looking
+    // at once see the same feed.
+    const rnd = seededRandom(Math.floor(cursor / DAY_MS) + step * 101);
+    cursor += (MIN_GAP_DAYS + Math.floor(rnd() * (MAX_GAP_DAYS - MIN_GAP_DAYS + 1))) * DAY_MS;
+    if (cursor > now) break;
+
+    const p = pacificParts(cursor);
+    const count = MIN_PER_DAY + Math.floor(rnd() * (MAX_PER_DAY - MIN_PER_DAY + 1));
+    for (let i = 0; i < count; i++) {
+      const hour = CLAIM_FROM_HOUR + Math.floor(rnd() * (CLAIM_TO_HOUR - CLAIM_FROM_HOUR));
+      const at = pacificInstant(p.y, p.m, p.d, hour, Math.floor(rnd() * 60));
+      if (at > now) continue;
+      // Redrawn a few times rather than filtered afterwards. Dropping the
+      // collisions later thinned the feed instead: once the pool had been
+      // through once every new entry was a duplicate, growth stopped at about
+      // twenty, and whole active days vanished with it -- which is what
+      // stretched the gaps from under three days to nearly four.
+      let pick = ACTIVITY_POOL[Math.floor(rnd() * ACTIVITY_POOL.length)];
+      for (let tries = 0; tries < 6 && recent.includes(pick.businessName); tries++) {
+        pick = ACTIVITY_POOL[Math.floor(rnd() * ACTIVITY_POOL.length)];
+      }
+      recent.push(pick.businessName);
+      if (recent.length > 10) recent.shift();
       out.push({
-        id: `seed_${day}_${i}`,
+        id: `seed_${cursor}_${i}`,
         businessName: pick.businessName,
         address: "",
         city: "San Francisco, CA",
@@ -192,28 +228,13 @@ function buildActivityFeed(now: number, startTs: number, days = 14) {
       });
     }
   }
-  // Newest first, then one entry per venue. Paging made the repeats visible:
-  // the pool is 22 and the feed wanted 20, so the same venue turned up on page
-  // one and page four -- with the same handle both times, since the pool pairs
-  // them. One person claiming one cafe twice in a week is not a busy market, it
-  // reads as a bug. Keeping the newest of each is what a real feed would show.
-  const seen = new Set<string>();
-  // Pinned first, so when a pinned venue also comes up in the rotation the
-  // dedupe below keeps the pinned one.
-  const all = [...pinned, ...out]
-    .sort((a, b) => b.claimedAt - a.claimedAt)
-    .filter(e => !seen.has(e.businessName) && seen.add(e.businessName));
 
-  // The ramp: only what has happened since the start date, so the feed grows a
-  // few entries a day rather than arriving complete.
-  const sinceStart = all.filter(e => e.claimedAt >= startTs);
-
-  // With a floor of one full page. On the first day the ramp alone yields one
-  // or two cards, which reads worse than nothing -- a tab with two entries and
-  // a page counter under them looks broken rather than new. Below the page
-  // size, the most recent entries from before the start date top it up.
-  const MIN_VISIBLE = 5;
-  return (sinceStart.length >= MIN_VISIBLE ? sinceStart : all.slice(0, MIN_VISIBLE)).slice(0, 20);
+  // Pinned first as a block, then the rest newest first. Ordered by position
+  // rather than merged by timestamp: the cards no longer show a time, so there
+  // is nothing for a strict ordering to keep honest, and holding the generated
+  // ones below the pinned block by timestamp used to hide the current day's
+  // entries entirely -- they fell inside the pinned span and were dropped.
+  return [...pinnedActivity(now), ...out.sort((a, b) => b.claimedAt - a.claimedAt)];
 }
 
 function formatPayout(range: string): string {
