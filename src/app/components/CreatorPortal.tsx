@@ -98,9 +98,17 @@ const DAY_MS = 86400000;
 // nothing overnight: claims landing at 04:12 every day is the tell.
 const ACTIVITY_WINDOWS: [number, number][] = [[9, 12], [13, 16], [18, 22]];
 
-// Builds the feed up to `now`. Two to four a day, drawn from the windows above,
-// because exactly three every single day is its own kind of obviously-generated.
-function buildActivityFeed(now: number, days = 14) {
+// Builds the feed between `startTs` and `now`. Two to four a day, drawn from
+// the windows above, because exactly three every single day is its own kind of
+// obviously-generated.
+//
+// startTs is the rollout switch and the pace control at once. Nothing before it
+// is generated, so the day it is set the tab holds two or three entries and
+// fills out over the following week -- rather than twenty backdated claims
+// appearing at once in a tab that was empty a second earlier, which is the
+// version nobody believes. Zero means off, and off is the default.
+function buildActivityFeed(now: number, startTs: number, days = 14) {
+  if (!startTs) return [];
   const out: { id: string; businessName: string; address: string; city: string;
                category: string; payoutRange: string; status: "completed";
                claimedBy: string; claimedAt: number }[] = [];
@@ -145,10 +153,20 @@ function buildActivityFeed(now: number, days = 14) {
   // them. One person claiming one cafe twice in a week is not a busy market, it
   // reads as a bug. Keeping the newest of each is what a real feed would show.
   const seen = new Set<string>();
-  return out
+  const all = out
     .sort((a, b) => b.claimedAt - a.claimedAt)
-    .filter(e => !seen.has(e.businessName) && seen.add(e.businessName))
-    .slice(0, 20);
+    .filter(e => !seen.has(e.businessName) && seen.add(e.businessName));
+
+  // The ramp: only what has happened since the start date, so the feed grows a
+  // few entries a day rather than arriving complete.
+  const sinceStart = all.filter(e => e.claimedAt >= startTs);
+
+  // With a floor of one full page. On the first day the ramp alone yields one
+  // or two cards, which reads worse than nothing -- a tab with two entries and
+  // a page counter under them looks broken rather than new. Below the page
+  // size, the most recent entries from before the start date top it up.
+  const MIN_VISIBLE = 5;
+  return (sinceStart.length >= MIN_VISIBLE ? sinceStart : all.slice(0, MIN_VISIBLE)).slice(0, 20);
 }
 
 function timeAgo(ts: number, now: number): string {
@@ -1264,6 +1282,7 @@ export function CreatorPortal({ token, impersonating }: { token: string; imperso
   const [portalTab, setPortalTab] = useState<"home" | "features" | "completed" | "activity" | "ambassador">("home");
   const [placesKey, setPlacesKey] = useState("");
   const [activityPage, setActivityPage] = useState(0);
+  const [activitySeedStart, setActivitySeedStart] = useState("");
   const [payouts, setPayouts] = useState<Payout[]>([]);
   const ambassador = useAmbassador(token);
   // Cards only exist for opted-in creators, so the fetch is gated on that
@@ -1313,6 +1332,7 @@ export function CreatorPortal({ token, impersonating }: { token: string; imperso
       setServerImpersonated(!!json.impersonated);
       setPlacesKey(json.placesKey || "");
       setPayouts(json.payouts || []);
+      setActivitySeedStart(json.activitySeedStart || "");
       // adminNotes now comes back from /creator-portal directly.
       setFeatures(json.features || []);
 
@@ -1605,7 +1625,14 @@ export function CreatorPortal({ token, impersonating }: { token: string; imperso
   // would drift -- the tab badge counting one feed while the tab below showed
   // another, both moving as the clock crossed an entry's timestamp.
   const activityNow = Date.now();
-  const activityFeed = buildActivityFeed(activityNow);
+  // An unparseable date is treated as off rather than as 1970, which would
+  // backfill every entry the generator can produce.
+  const seedStartTs = (() => {
+    if (!activitySeedStart) return 0;
+    const t = new Date(activitySeedStart).getTime();
+    return Number.isFinite(t) ? t : 0;
+  })();
+  const activityFeed = buildActivityFeed(activityNow, seedStartTs);
 
   const allFeatures = [...features.map(f => ({ ...f, claimedBy: (f as any).winnerInstagram || undefined })), ...activityFeed].sort((a, b) => {
     const aCompleted = a.status === "completed" || a.id.startsWith("seed_");
@@ -2017,6 +2044,15 @@ export function CreatorPortal({ token, impersonating }: { token: string; imperso
               // the end would render an empty tab with no way back.
               const page = Math.min(activityPage, pages - 1);
               const shown = all.slice(page * PER_PAGE, page * PER_PAGE + PER_PAGE);
+
+              if (all.length === 0) {
+                return (
+                  <div className="bg-white/5 border border-white/10 rounded-2xl px-6 py-8 text-center">
+                    <TrendingUp className="w-8 h-8 text-neutral-600 mx-auto mb-3" />
+                    <p className="text-neutral-400 text-sm">Nothing claimed yet. Features go first come, first served.</p>
+                  </div>
+                );
+              }
 
               return (
                 <>
