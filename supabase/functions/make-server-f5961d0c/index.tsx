@@ -4457,6 +4457,12 @@ app.get("/make-server-f5961d0c/admin/claims", async (c) => {
       featureId: r.feature_id, creatorToken: r.creator_token, creatorInstagram: r.creator_instagram || "",
       status: r.status, claimedAt: r.claimed_at || "", reelUrl: r.reel_url || "",
       approvedAt: r.approved_at || null, expiresAt: r.expires_at || null, acceptanceExpiresAt: r.acceptance_expires_at || null, lastViewed: r.last_viewed || null,
+      // Stamped when the "you have been selected, accept within 24 hours" mail
+      // goes out. Approving is what starts that clock, so whether the creator
+      // was actually told is part of the claim's state, not a detail of the
+      // request that approved it -- an admin coming back an hour later has to
+      // be able to see that a creator is on a deadline nobody sent them.
+      selectedNotifiedAt: r.selected_notified_at || null,
     }));
     return c.json({ claims });
   } catch (e: any) { return c.json({ error: "Failed to fetch claims", details: e.message }, 500); }
