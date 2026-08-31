@@ -253,10 +253,29 @@ export function FeaturesMap({ apiKey, features }: { apiKey?: string; features: M
             icon: PIN_FOR[st], zIndex: PIN_Z[st],
           });
           marker.addListener("click", () => {
+            // The name goes in the InfoWindow's own header row rather than in
+            // the content below it. That row is drawn whether or not anything
+            // is put in it -- it is where the close button lives -- so leaving
+            // it empty was costing the bubble a band of white above the name
+            // roughly as tall as the name itself, on a bubble that carries
+            // three short lines in total.
+            //
+            // setHeaderContent is the newer InfoWindow API. If the loaded
+            // version does not have it the name goes back in the content, which
+            // is the old bubble: worth a little white space, not worth a pin
+            // that opens onto a category with nothing to say which business it
+            // belongs to.
+            const named = typeof (info as any).setHeaderContent === "function";
+            if (named) {
+              const h = document.createElement("span");
+              h.textContent = f.businessName;
+              h.style.cssText = "font-family:Inter,system-ui,sans-serif;font-weight:600;font-size:13px;color:#0a0a0a";
+              (info as any).setHeaderContent(h);
+            }
             info.setContent(
-              `<div style="font-family:Inter,system-ui,sans-serif;padding:2px 4px;min-width:140px">
-                 <div style="font-weight:600;font-size:13px;color:#0a0a0a">${escapeHtml(f.businessName)}</div>
-                 ${f.category ? `<div style="font-size:12px;color:#525252;margin-top:2px">${escapeHtml(f.category)}</div>` : ""}
+              `<div style="font-family:Inter,system-ui,sans-serif;min-width:120px">
+                 ${named ? "" : `<div style="font-weight:600;font-size:13px;color:#0a0a0a">${escapeHtml(f.businessName)}</div>`}
+                 ${f.category ? `<div style="font-size:12px;color:#525252">${escapeHtml(f.category)}</div>` : ""}
                  ${f.payoutRange ? `<div style="font-size:12px;color:#2563eb;font-weight:600;margin-top:4px">${escapeHtml(f.payoutRange)}</div>` : ""}
                  ${st === "available" ? "" : `<div style="font-size:11px;color:#525252;margin-top:4px">${st === "requested" ? "Requested" : "In progress"}</div>`}
                </div>`);
