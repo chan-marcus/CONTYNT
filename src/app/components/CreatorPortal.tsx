@@ -216,15 +216,6 @@ function buildActivityFeed(now: number, startTs: number, days = 14) {
   return (sinceStart.length >= MIN_VISIBLE ? sinceStart : all.slice(0, MIN_VISIBLE)).slice(0, 20);
 }
 
-function timeAgo(ts: number, now: number): string {
-  const mins = Math.max(1, Math.round((now - ts) / 60000));
-  if (mins < 60) return `${mins}m ago`;
-  const hrs = Math.round(mins / 60);
-  if (hrs < 24) return `${hrs}h ago`;
-  const days = Math.round(hrs / 24);
-  return days === 1 ? "Yesterday" : `${days}d ago`;
-}
-
 function formatPayout(range: string): string {
   if (!range) return "";
   const match = range.match(/\$?(\d+)\s*[–\-]\s*\$?(\d+)/);
@@ -744,11 +735,11 @@ function ViewerCount({ featureId }: { featureId: string }) {
 }
 
 // ─── Feature card ─────────────────────────────────────────────────────────────
-function FeatureCard({ feature, claim, token, onClaim, onUnclaim, onAccept, onSubmit, onPayout, fake, claimedBy, claimedAgo, myInstagram, needsAttention, onSeen, showAmbassadorUpsell, onLearnAmbassador, isAmbassador, onCardPrinted }: {
+function FeatureCard({ feature, claim, token, onClaim, onUnclaim, onAccept, onSubmit, onPayout, fake, claimedBy, myInstagram, needsAttention, onSeen, showAmbassadorUpsell, onLearnAmbassador, isAmbassador, onCardPrinted }: {
   feature: Feature; claim?: Claim; token: string; myInstagram?: string;
   onClaim: () => void; onUnclaim: () => void; onAccept: () => void;
   onSubmit: (url: string, handedOff: boolean | null, handoffReason: string) => void;
-  onPayout: (amount?: string) => void; fake?: boolean; claimedBy?: string; claimedAgo?: string;
+  onPayout: (amount?: string) => void; fake?: boolean; claimedBy?: string;
   needsAttention?: boolean; onSeen?: () => void;
   showAmbassadorUpsell?: boolean; onLearnAmbassador?: () => void; isAmbassador?: boolean;
   onCardPrinted?: () => void;
@@ -859,10 +850,7 @@ function FeatureCard({ feature, claim, token, onClaim, onUnclaim, onAccept, onSu
               <MapPin className="w-3 h-3" />{feature.city}
             </div>
           </div>
-          <div className="flex flex-col items-end gap-1 shrink-0">
-            <span className="text-xs px-2 py-0.5 rounded-full bg-neutral-800 text-neutral-500 border border-neutral-700">CLAIMED</span>
-            {claimedAgo && <span className="text-[10px] text-neutral-600">{claimedAgo}</span>}
-          </div>
+          <span className="text-xs px-2 py-0.5 rounded-full bg-neutral-800 text-neutral-500 border border-neutral-700 shrink-0">CLAIMED</span>
         </div>
         <div className="flex items-center justify-between">
           <span className="text-xs text-neutral-600 bg-white/5 px-2.5 py-1 rounded-full">{feature.category}</span>
@@ -2108,7 +2096,6 @@ export function CreatorPortal({ token, impersonating }: { token: string; imperso
                       <FeatureCard feature={feature} claim={undefined} token={token}
                         onClaim={() => {}} onUnclaim={() => {}} onAccept={() => {}} onSubmit={() => {}} onPayout={() => {}}
                         fake={true} claimedBy={(feature as any).claimedBy || (feature as any).winnerInstagram || ""}
-                        claimedAgo={(feature as any).claimedAt ? timeAgo((feature as any).claimedAt, activityNow) : ""}
                         myInstagram={creator?.instagram || ""} />
                     </motion.div>
                   ))}
