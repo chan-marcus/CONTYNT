@@ -36,7 +36,7 @@ const apiFetch = async (path: string, opts?: RequestInit) => {
 
 type Tab = "creators" | "businesses" | "reels" | "pageviews" | "ambassadors" | "readiness" | "billing";
 
-interface Signup { id: string; instagram: string; email: string; city: string; createdAt: string; totalEarned?: number; pendingEarnings?: number; availableEarnings?: number; }
+interface Signup { id: string; instagram: string; email: string; city: string; createdAt: string; totalEarned?: number; pendingEarnings?: number; availableEarnings?: number; isAmbassador?: boolean; ambassadorCode?: string | null; }
 interface BusinessSignup { id: string; businessName: string; instagram: string; email: string; city: string; address: string; preferredContact: string; createdAt: string; referralSource?: string | null; referralCode?: string | null; referredByHandle?: string | null; }
 interface Submission { id: string; featureId: string; creatorInstagram: string; reelUrl: string; status: string; submittedAt: string; reportNote?: string; metrics?: any; businessFeedback?: { reaction: "approve" | "report"; note?: string; submittedAt: string; businessName?: string }; }
 interface PageView { visitorId: string; referrer: string; timestamp: string; country?: string; city?: string; }
@@ -54,6 +54,26 @@ const endsOn = (iso: string) =>
 // ─── Card wrappers for mobile-friendly layout ─────────────────────────────────
 function igHandle(raw: string) {
   return raw ? `@${raw.replace(/^@+/, "")}` : "—";
+}
+
+// Handles are compared, not displayed: creator_signups stores them with and
+// without a leading @ depending on how the row was created, and casing follows
+// whatever the creator typed.
+const igKey = (raw: string) => String(raw ?? "").replace(/^@+/, "").trim().toLowerCase();
+
+// Purple and an Award, matching the chip a business carries naming the
+// Ambassador who brought it in -- the same fact seen from the other end, so it
+// should not be a second look. The code rides in the tooltip rather than the
+// label: an admin holding a printed card needs it, but only then, and it is six
+// characters of noise on every other row.
+function AmbassadorBadge({ code }: { code?: string | null }) {
+  return (
+    <span title={code ? `Ambassador · code ${code}` : "Ambassador"}
+      className="shrink-0 inline-flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded bg-purple-500/10 text-purple-300 border border-purple-500/25">
+      <Award className="w-2.5 h-2.5 shrink-0" />
+      Ambassador
+    </span>
+  );
 }
 
 function CreatorRow({ signup, token, onImpersonate, impersonating, claims, features, onMarkPaid, markingPaid }: {
@@ -85,6 +105,7 @@ function CreatorRow({ signup, token, onImpersonate, impersonating, claims, featu
             className="flex items-center gap-2 shrink-0 text-left group">
             <a href={`https://instagram.com/${signup.instagram.replace(/^@+/,"")}`} target="_blank" rel="noopener noreferrer"
               className="font-semibold text-white group-hover:text-blue-300 transition-colors">{igHandle(signup.instagram)}</a>
+            {signup.isAmbassador && <AmbassadorBadge code={signup.ambassadorCode} />}
             {hasActive && (
               <span className="flex items-center gap-1 text-xs text-blue-400 bg-blue-500/15 border border-blue-500/25 px-2 py-0.5 rounded-full">
                 <span className="relative flex w-1.5 h-1.5">
@@ -180,7 +201,7 @@ function CreatorRow({ signup, token, onImpersonate, impersonating, claims, featu
 
 const ts = (d?: string) => d ? new Date(d).toLocaleString("en-US", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }) : "";
 
-function FeatureClaimRow({ claim, featureId, onApprove, onReset }: any) {
+function FeatureClaimRow({ claim, featureId, onApprove, onReset, isAmbassador, ambassadorCode }: any) {
   const [approving, setApproving] = useState(false);
   // Why the acceptance email did not go, when it did not. Only the reply to
   // this row's own click knows it -- nothing is stored for a send that never
@@ -223,6 +244,7 @@ function FeatureClaimRow({ claim, featureId, onApprove, onReset }: any) {
               </span>
             )}
             <span className={isExpiredDisplay ? "text-red-400" : cfg.color}>{igHandle(claim.creatorInstagram)}</span>
+            {isAmbassador && <AmbassadorBadge code={ambassadorCode} />}
             <span className={`text-[10px] px-1.5 py-0.5 rounded-full border ${isExpiredDisplay ? "bg-red-500/15 text-red-400 border-red-500/25" : "bg-white/10 border-white/10 text-neutral-400"}`}>
               {isExpiredDisplay ? "Expired" : cfg.label}
             </span>
@@ -333,7 +355,7 @@ function InlineFeatureEdit({ featureId, category, payoutRange, onSaved }: { feat
 // down. The row shows only what you scan for (who, what they pay, how much of
 // their quota is gone, what is waiting on you) in fixed columns that line up
 // between rows; everything else is one click away.
-function BusinessRow({ signup, approved, onApprove, onImpersonate, impersonating, payoutRange, setPayoutRange, category, setCategory, approving, bizFeatures, allClaims, onApproveCreatorClaim, onResetCreatorClaim, onFeatureOffered, onRemoveFeature, planClicks = 0 }: any) {
+function BusinessRow({ signup, approved, onApprove, onImpersonate, impersonating, payoutRange, setPayoutRange, category, setCategory, approving, bizFeatures, allClaims, onApproveCreatorClaim, onResetCreatorClaim, onFeatureOffered, onRemoveFeature, planClicks = 0, ambassadorBy }: any) {
   const [expanded, setExpanded] = useState(false);
   const [showAddAnother, setShowAddAnother] = useState(false);
   const [addCategory, setAddCategory] = useState("");
@@ -606,10 +628,17 @@ function BusinessRow({ signup, approved, onApprove, onImpersonate, impersonating
                       </div>
                     )}
                     {/* All claim rows — persist after each action */}
-                    {[...interested, ...adminApproved, ...inProgress, ...submitted, ...unclaimed].map((c: any) => (
-                      <FeatureClaimRow key={c.creatorToken} claim={c} featureId={f.id}
-                        onApprove={onApproveCreatorClaim} onReset={onResetCreatorClaim} />
-                    ))}
+                    {[...interested, ...adminApproved, ...inProgress, ...submitted, ...unclaimed].map((c: any) => {
+                      // Claims carry a handle, not a creator id, so the lookup
+                      // is by handle. Normalised at both ends because the two
+                      // tables disagree about the leading @.
+                      const amb = ambassadorBy?.[igKey(c.creatorInstagram)];
+                      return (
+                        <FeatureClaimRow key={c.creatorToken} claim={c} featureId={f.id}
+                          isAmbassador={!!amb} ambassadorCode={amb?.code}
+                          onApprove={onApproveCreatorClaim} onReset={onResetCreatorClaim} />
+                      );
+                    })}
                   </div>
                 );
               })}
@@ -1501,6 +1530,12 @@ export function Analytics({ adminToken }: { adminToken?: string } = {}) {
 
   // Sorted so a cancellation is the first thing read: those are the rows with a
   // deadline, and the only ones where being a day late costs anything.
+  // The claim rows under Businesses name creators by handle and know nothing
+  // else about them. /signups already carries who is an Ambassador, so the
+  // lookup is built from what is loaded rather than asking the server twice.
+  const ambassadorBy: Record<string, { code?: string | null }> = {};
+  for (const s of signups) if (s.isAmbassador) ambassadorBy[igKey(s.instagram)] = { code: s.ambassadorCode };
+
   const subscribedBusinesses = businessSignups
     .filter(b => b.subscriptionTier)
     .sort((a, b) => (a.subscriptionEndsAt ? 0 : 1) - (b.subscriptionEndsAt ? 0 : 1)
@@ -1729,6 +1764,7 @@ export function Analytics({ adminToken }: { adminToken?: string } = {}) {
                     impersonating={impersonatingBizId === b.id}
                     approving={approvingBiz === b.id}
                     planClicks={planClicksMap[b.id] || 0}
+                    ambassadorBy={ambassadorBy}
                     bizFeatures={features.filter(f => f.businessId === b.id)}
                     allClaims={claims}
                     onApproveCreatorClaim={approveCreatorClaim}
