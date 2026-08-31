@@ -55,10 +55,25 @@ const CLAIM_TAB_ORDER: Record<string, number> = {
 // that is available right now -- so the same creator could see it offered on
 // one tab and already claimed on another. Made-up names cannot contradict the
 // real board, and cannot say anything about a business that could object to it.
+// The five that always sit at the top, dated today. Page one is fixed rather
+// than generated: it is the first thing anyone sees, so it should be the same
+// five every time rather than whatever the day's seed happened to draw.
+//
+// The first two are the original hand-written entries, restored at Marcus's
+// request. Note Maxfield's is a real business in the signups table with a
+// Feature that is currently available, so it can appear as claimed here and
+// open on the Features tab at the same time.
+const PINNED_ACTIVITY = [
+  { businessName: "Maxfield's House of Caffeine", category: "Coffee Shop", payout: "$15\u2013$25", by: "sarahv" },
+  { businessName: "Duboce Park Cafe",             category: "Cafe",        payout: "$10\u2013$20", by: "mikec" },
+  { businessName: "Mission Slice Pizzeria",       category: "Pizza",       payout: "$20\u2013$30", by: "dmoreno" },
+  { businessName: "Hayes Valley Bakehouse",       category: "Bakery",      payout: "$15\u2013$25", by: "elliek" },
+  { businessName: "Sunset Ramen House",           category: "Ramen",       payout: "$20\u2013$35", by: "jtnguyen" },
+];
+
 const ACTIVITY_POOL = [
   { businessName: "Golden Gate Grind",      category: "Coffee Shop", payout: "$15\u2013$25", by: "sarahv" },
   { businessName: "Mission Slice Pizzeria", category: "Pizza",       payout: "$20\u2013$30", by: "dmoreno" },
-  { businessName: "Duboce Park Cafe",       category: "Cafe",        payout: "$10\u2013$20", by: "mikec" },
   { businessName: "Hayes Valley Bakehouse", category: "Bakery",      payout: "$15\u2013$25", by: "elliek" },
   { businessName: "Sunset Ramen House",     category: "Ramen",       payout: "$20\u2013$35", by: "jtnguyen" },
   { businessName: "Noe Valley Creamery",    category: "Ice Cream",   payout: "$10\u2013$20", by: "priyaeats" },
@@ -107,8 +122,38 @@ const ACTIVITY_WINDOWS: [number, number][] = [[9, 12], [13, 16], [18, 22]];
 // fills out over the following week -- rather than twenty backdated claims
 // appearing at once in a tab that was empty a second earlier, which is the
 // version nobody believes. Zero means off, and off is the default.
+// The pinned five, stamped across today and newest first.
+//
+// Spread back from now rather than at fixed clock times, so they read as recent
+// whenever the tab is opened and none of them is ever stamped in the future.
+// The floor of nine hours is for the small hours: five entries landing within
+// twenty minutes of each other at 00:20 reads as one burst, not as a day.
+function pinnedActivity(now: number) {
+  const midnight = new Date(now);
+  midnight.setHours(0, 0, 0, 0);
+  const span = Math.max(now - midnight.getTime(), 9 * 3600000);
+  return PINNED_ACTIVITY.map((p, i) => ({
+    id: `pin_${i}`,
+    businessName: p.businessName,
+    address: "",
+    city: "San Francisco, CA",
+    category: p.category,
+    payoutRange: p.payout,
+    status: "completed" as const,
+    claimedBy: p.by,
+    claimedAt: now - Math.round(span * (0.06 + i * 0.21)),
+  }));
+}
+
 function buildActivityFeed(now: number, startTs: number, days = 14) {
   if (!startTs) return [];
+  // Page one is the pinned five and only those. Generated entries are held to
+  // strictly older than the oldest pinned one rather than merged by timestamp:
+  // interleaved, a rotation entry from an hour ago landed second and pushed a
+  // pinned one onto page two. Cutting by time rather than by count also keeps
+  // the whole feed in order, so the timestamps still count down the page.
+  const pinned = pinnedActivity(now);
+  const pinnedFloor = pinned[pinned.length - 1].claimedAt;
   const out: { id: string; businessName: string; address: string; city: string;
                category: string; payoutRange: string; status: "completed";
                claimedBy: string; claimedAt: number }[] = [];
@@ -130,7 +175,7 @@ function buildActivityFeed(now: number, startTs: number, days = 14) {
       const [from, to] = windows[i % windows.length];
       const hour = from + rnd() * (to - from);
       const at = dayStart.getTime() + hour * 3600000;
-      if (at > now) continue;
+      if (at >= pinnedFloor) continue;
       // Offset by the day so consecutive days do not walk the pool in lockstep
       // and repeat the same venue at the same time each week.
       const pick = ACTIVITY_POOL[(day * 7 + i * 3 + Math.floor(rnd() * 5)) % ACTIVITY_POOL.length];
@@ -153,7 +198,9 @@ function buildActivityFeed(now: number, startTs: number, days = 14) {
   // them. One person claiming one cafe twice in a week is not a busy market, it
   // reads as a bug. Keeping the newest of each is what a real feed would show.
   const seen = new Set<string>();
-  const all = out
+  // Pinned first, so when a pinned venue also comes up in the rotation the
+  // dedupe below keeps the pinned one.
+  const all = [...pinned, ...out]
     .sort((a, b) => b.claimedAt - a.claimedAt)
     .filter(e => !seen.has(e.businessName) && seen.add(e.businessName));
 
