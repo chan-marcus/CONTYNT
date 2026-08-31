@@ -3005,15 +3005,41 @@ ${emailButton(link, what.cta)}
 // Resolves the creator behind a claim and sends, or says why it did not. Shared
 // so selection and both reminders cannot drift on who is skipped: a suppressed
 // address, or a creator who turned email off, is skipped in all three.
+// Who a claim's token belongs to, as opposed to who is currently signed in on
+// it. Those are different questions and this file already says so: ctokenref_
+// is the record of identity and ctoken_ the record of a live session, and only
+// the second is disposable.
+//
+// Everything that mails a claimant was asking the second question. A creator
+// who signed out had their ctoken_ deleted -- the claim rows keyed to the same
+// string survive, which is the whole point of the split -- so resolving them
+// returned null and they were silently not mailed. Not an edge case: it hit
+// selection and both expiry reminders, and it singled out exactly the people
+// who most need an email, since a creator sitting in the portal can see the
+// Feature turn up without one and a signed-out creator cannot.
+//
+// The session is still tried first because it is one indexed read. The
+// fallback is a scan of ctokenref_, which is keyed by creator id and so cannot
+// be looked up by token -- creators number in the hundreds and this runs once
+// per message, not once per request.
+async function creatorIdForClaimToken(token: string): Promise<string> {
+  if (!token) return "";
+  const session = await creatorFromToken(token);
+  if (session?.creatorId) return String(session.creatorId);
+  const refs = await kv.getByPrefix("ctokenref_").catch(() => []);
+  const owner = (refs ?? []).find((r: any) => r?.token === token);
+  return owner?.creatorId ? String(owner.creatorId) : "";
+}
+
 async function mailClaimCreator(opts: {
   creatorToken: string; featureId: string;
   build: (creator: any, feature: any, link: string) => { subject: string; html: string; text: string };
 }): Promise<{ ok: true; messageId: string | null } | { ok: false; reason: string }> {
-  const session = await creatorFromToken(opts.creatorToken);
-  if (!session?.creatorId) return { ok: false, reason: "no creator for that token" };
+  const creatorId = await creatorIdForClaimToken(opts.creatorToken);
+  if (!creatorId) return { ok: false, reason: "no creator owns that claim token" };
 
   const [{ data: creator }, { data: feature }] = await Promise.all([
-    db().from("creator_signups_f5961d0c").select("*").eq("id", session.creatorId).maybeSingle(),
+    db().from("creator_signups_f5961d0c").select("*").eq("id", creatorId).maybeSingle(),
     db().from("features_f5961d0c").select("id, business_name, city").eq("id", opts.featureId).maybeSingle(),
   ]);
   if (!creator) return { ok: false, reason: "creator not found" };
