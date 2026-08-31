@@ -42,7 +42,7 @@ interface Submission { id: string; featureId: string; creatorInstagram: string; 
 interface PageView { visitorId: string; referrer: string; timestamp: string; country?: string; city?: string; }
 interface Feature { id: string; businessId: string; businessName: string; category: string; payoutRange: string; status: string; total_payout?: string; claimed_by?: string; winner_instagram?: string; claimed_at?: string; isTrial?: boolean; isOneOff?: boolean; requestNotes?: string; submittedByBusiness?: boolean; offeredAt?: string | null; approvedAt?: string | null; }
 interface BusinessSignupExtended extends BusinessSignup { subscriptionTier?: string; subscriptionEndsAt?: string | null; }
-interface Claim { featureId: string; creatorToken: string; creatorInstagram: string; status: string; claimedAt: string; reelUrl?: string; approvedAt?: string; expiresAt?: string; acceptanceExpiresAt?: string; lastViewed?: string; }
+interface Claim { featureId: string; creatorToken: string; creatorInstagram: string; status: string; claimedAt: string; reelUrl?: string; approvedAt?: string; expiresAt?: string; acceptanceExpiresAt?: string; lastViewed?: string; selectedNotifiedAt?: string | null; }
 
 // Renders a subscription period end. Deliberately UTC: these timestamps sit on
 // UTC midnight, and toLocaleDateString in any timezone behind Greenwich moves
@@ -182,6 +182,10 @@ const ts = (d?: string) => d ? new Date(d).toLocaleString("en-US", { month: "sho
 
 function FeatureClaimRow({ claim, featureId, onApprove, onReset }: any) {
   const [approving, setApproving] = useState(false);
+  // Why the acceptance email did not go, when it did not. Only the reply to
+  // this row's own click knows it -- nothing is stored for a send that never
+  // happened -- so it lives here rather than on the claim.
+  const [mailProblem, setMailProblem] = useState("");
   const [resetting, setResetting] = useState(false);
   const isExpired = (claim.expiresAt && new Date(claim.expiresAt).getTime() < Date.now()) ||
     (claim.acceptanceExpiresAt && new Date(claim.acceptanceExpiresAt).getTime() < Date.now() && claim.status === "approved");
@@ -228,7 +232,12 @@ function FeatureClaimRow({ claim, featureId, onApprove, onReset }: any) {
           </div>
           <div className="flex gap-1.5 shrink-0">
             {status === "interested" && (
-              <button onClick={async () => { setApproving(true); await onApprove(featureId, claim.creatorToken); setApproving(false); }} disabled={approving}
+              <button onClick={async () => {
+                  setApproving(true);
+                  const notified = await onApprove(featureId, claim.creatorToken);
+                  setApproving(false);
+                  setMailProblem(typeof notified === "string" && notified && notified !== "sent" && notified !== "already notified" ? notified : "");
+                }} disabled={approving}
                 className="px-2 py-0.5 bg-green-600 text-white rounded hover:bg-green-500 transition-all disabled:opacity-50 text-[10px] font-medium">
                 {approving ? "…" : "Approve"}
               </button>
@@ -241,12 +250,21 @@ function FeatureClaimRow({ claim, featureId, onApprove, onReset }: any) {
             )}
           </div>
         </div>
-        {/* Timestamps */}
-        {events.length > 0 && (
+        {/* Timestamps, and whether the creator was actually told. Approving is
+            the moment a 24 hour clock starts running on somebody, so "we sent
+            it" belongs next to "we approved them" -- a claim approved without
+            the mail is a creator who will lose the Feature to a deadline they
+            were never given. */}
+        {(events.length > 0 || status === "approved") && (
           <div className="mt-1 flex flex-wrap gap-x-3 gap-y-0.5">
             {events.map((e, i) => (
               <span key={i} className="text-[10px] text-neutral-600">{e.label}: {ts(e.time)}</span>
             ))}
+            {status === "approved" && (claim.selectedNotifiedAt
+              ? <span className="text-[10px] text-neutral-600">Emailed: {ts(claim.selectedNotifiedAt)}</span>
+              : <span className="text-[10px] text-yellow-500">
+                  Not emailed{mailProblem ? ` — ${mailProblem}` : ""}
+                </span>)}
           </div>
         )}
       </div>
@@ -1405,9 +1423,19 @@ export function Analytics({ adminToken }: { adminToken?: string } = {}) {
   };
   // These three already had server endpoints doing the same writes; the direct
   // SQL calls alongside them were redundant.
+  // Approving starts a 24 hour clock on the creator, and the route mails them
+  // to say so. That send can be skipped for reasons only the server knows --
+  // the creator turned email off, the address bounced, Postmark is not
+  // configured -- and it was being dropped on the floor here, so an admin had
+  // no way to tell a creator who had been told from one now on a deadline
+  // nobody sent them. Handed back to the row that asked.
   const approveCreatorClaim = async (featureId: string, creatorToken: string) => {
-    await apiFetch("/admin/approve-creator-claim", { method: "POST", body: JSON.stringify({ featureId, creatorToken }) }).catch(() => {});
+    const res = await apiFetch("/admin/approve-creator-claim", { method: "POST", body: JSON.stringify({ featureId, creatorToken }) }).catch(() => null);
+    const json = await res?.json().catch(() => null);
     await fetchAll();
+    if (!res) return "could not reach the server";
+    if (!res.ok) return json?.error || `the server refused it (${res.status})`;
+    return String(json?.notified || "");
   };
   const removeFeature = async (featureId: string) => {
     if (!window.confirm("Remove this feature?")) return;
