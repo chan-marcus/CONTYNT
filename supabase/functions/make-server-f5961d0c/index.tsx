@@ -4754,6 +4754,16 @@ app.get("/make-server-f5961d0c/creator-portal", async (c) => {
       // that matters is the HTTP referrer restriction on the key itself, not
       // whether this endpoint returns it.
       placesKey: Deno.env.get("GOOGLE_PLACES_KEY") || "",
+      // When the Activity tab's seed entries start. Empty or unset means none
+      // at all, which is the default: the tab then shows real completed
+      // Features and nothing else.
+      //
+      // A date rather than a boolean, because it also sets the pace. The feed
+      // is generated forward from this day, so switching it on does not drop
+      // twenty backdated claims into an empty tab -- day one has two or three,
+      // and it fills out over the following week. Set it as an env var, so
+      // turning it on or moving it needs no deploy.
+      activitySeedStart: Deno.env.get("ACTIVITY_SEED_START") || "",
     });
   } catch (e: any) { return c.json({ error: "Failed to load portal", details: e.message }, 500); }
 });
