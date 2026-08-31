@@ -1,6 +1,6 @@
 import { useEffect, useState, useRef, useLayoutEffect } from "react";
 import { motion, AnimatePresence } from "motion/react";
-import { MapPin, DollarSign, CheckCircle, X, ExternalLink, AlertCircle, Users, Zap, TrendingUp, Award, ChevronDown } from "lucide-react";
+import { MapPin, DollarSign, CheckCircle, X, ExternalLink, AlertCircle, Users, Zap, TrendingUp, Award, ChevronDown, ChevronLeft, ChevronRight } from "lucide-react";
 import { projectId, publicAnonKey } from "/utils/supabase/info";
 import { CreatorLogin, CREATOR_TOKEN_KEY } from "./CreatorLogin";
 import { FeaturesMap } from "./FeaturesMap";
@@ -139,9 +139,16 @@ function buildActivityFeed(now: number, days = 14) {
       });
     }
   }
-  // Newest first, and capped: an endless scroll of claims nobody can click is
-  // not more convincing, just longer.
-  return out.sort((a, b) => b.claimedAt - a.claimedAt).slice(0, 9);
+  // Newest first, then one entry per venue. Paging made the repeats visible:
+  // the pool is 22 and the feed wanted 20, so the same venue turned up on page
+  // one and page four -- with the same handle both times, since the pool pairs
+  // them. One person claiming one cafe twice in a week is not a busy market, it
+  // reads as a bug. Keeping the newest of each is what a real feed would show.
+  const seen = new Set<string>();
+  return out
+    .sort((a, b) => b.claimedAt - a.claimedAt)
+    .filter(e => !seen.has(e.businessName) && seen.add(e.businessName))
+    .slice(0, 20);
 }
 
 function timeAgo(ts: number, now: number): string {
@@ -1256,6 +1263,7 @@ export function CreatorPortal({ token, impersonating }: { token: string; imperso
   // to be selected on arrival, which buried the explainer under a feature list.
   const [portalTab, setPortalTab] = useState<"home" | "features" | "completed" | "activity" | "ambassador">("home");
   const [placesKey, setPlacesKey] = useState("");
+  const [activityPage, setActivityPage] = useState(0);
   const [payouts, setPayouts] = useState<Payout[]>([]);
   const ambassador = useAmbassador(token);
   // Cards only exist for opted-in creators, so the fetch is gated on that
@@ -1994,21 +2002,63 @@ export function CreatorPortal({ token, impersonating }: { token: string; imperso
         {portalTab === "activity" && (
           <div className="w-full flex flex-col gap-4">
             <p className="text-xs text-neutral-500">Features recently claimed.</p>
-            {[
-              // The creator's own completed Features belong here too. They stay
-              // unmasked and read "Claimed by You" -- there is nothing to hide
-              // from someone about their own work.
-              ...features.filter(f => f.status === "completed").slice().reverse(),
-              ...activityFeed,
-            ].map((feature, i) => (
-              <motion.div key={feature.id} className="w-full min-w-0" initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }}>
-                <FeatureCard feature={feature} claim={undefined} token={token}
-                  onClaim={() => {}} onUnclaim={() => {}} onAccept={() => {}} onSubmit={() => {}} onPayout={() => {}}
-                  fake={true} claimedBy={(feature as any).claimedBy || (feature as any).winnerInstagram || ""}
-                  claimedAgo={(feature as any).claimedAt ? timeAgo((feature as any).claimedAt, activityNow) : ""}
-                  myInstagram={creator?.instagram || ""} />
-              </motion.div>
-            ))}
+            {(() => {
+              const all = [
+                // The creator's own completed Features belong here too. They stay
+                // unmasked and read "Claimed by You" -- there is nothing to hide
+                // from someone about their own work.
+                ...features.filter(f => f.status === "completed").slice().reverse(),
+                ...activityFeed,
+              ];
+              const PER_PAGE = 5;
+              const pages = Math.max(1, Math.ceil(all.length / PER_PAGE));
+              // Clamped rather than trusted. The list shrinks when a Feature of
+              // the creator's own leaves it, and a page index left pointing past
+              // the end would render an empty tab with no way back.
+              const page = Math.min(activityPage, pages - 1);
+              const shown = all.slice(page * PER_PAGE, page * PER_PAGE + PER_PAGE);
+
+              return (
+                <>
+                  {shown.map((feature) => (
+                    <motion.div key={feature.id} className="w-full min-w-0" initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }}>
+                      <FeatureCard feature={feature} claim={undefined} token={token}
+                        onClaim={() => {}} onUnclaim={() => {}} onAccept={() => {}} onSubmit={() => {}} onPayout={() => {}}
+                        fake={true} claimedBy={(feature as any).claimedBy || (feature as any).winnerInstagram || ""}
+                        claimedAgo={(feature as any).claimedAt ? timeAgo((feature as any).claimedAt, activityNow) : ""}
+                        myInstagram={creator?.instagram || ""} />
+                    </motion.div>
+                  ))}
+
+                  {pages > 1 && (
+                    <div className="flex items-center justify-between gap-3 pt-1">
+                      {/* Newer sits on the left and only once there is a page to
+                          go back to, so the first thing on screen is the one
+                          control that does something. */}
+                      {page > 0 ? (
+                        <button
+                          onClick={() => setActivityPage(p => Math.max(0, p - 1))}
+                          className="inline-flex items-center gap-1 text-xs text-neutral-400 hover:text-white transition-colors"
+                        >
+                          <ChevronLeft className="w-4 h-4" />Newer
+                        </button>
+                      ) : <span />}
+
+                      <span className="text-[11px] text-neutral-600">{page + 1} / {pages}</span>
+
+                      {page < pages - 1 ? (
+                        <button
+                          onClick={() => setActivityPage(p => Math.min(pages - 1, p + 1))}
+                          className="inline-flex items-center gap-1 text-xs text-neutral-400 hover:text-white transition-colors"
+                        >
+                          Older<ChevronRight className="w-4 h-4" />
+                        </button>
+                      ) : <span />}
+                    </div>
+                  )}
+                </>
+              );
+            })()}
           </div>
         )}
 
