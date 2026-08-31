@@ -4062,7 +4062,12 @@ app.get("/make-server-f5961d0c/analytics/stats", async (c) => {
 // ─── Get creator signups ──────────────────────────────────────────────────────
 app.get("/make-server-f5961d0c/signups", async (c) => {
   try {
-    const { data, error } = await db().from("creator_signups_f5961d0c").select("id, instagram, email, city, created_at").order("created_at", { ascending: false });
+    // ambassador_opted_in rather than a join on ambassadors_f5961d0c: the two
+    // are written together by setAmbassadorOptIn and can only disagree if that
+    // writer is bypassed, so the column already on this row is the same answer
+    // for none of the cost. The code comes with it because an admin holding a
+    // printed card wants to match it to a creator without opening a second tab.
+    const { data, error } = await db().from("creator_signups_f5961d0c").select("id, instagram, email, city, created_at, ambassador_opted_in, ambassador_code").order("created_at", { ascending: false });
     if (error) throw error;
     // Balances live against the portal token, so map creator id -> token first.
     const [balances, refs] = await Promise.all([allCreatorBalances(), kv.getByPrefix("ctokenref_")]);
@@ -4072,6 +4077,7 @@ app.get("/make-server-f5961d0c/signups", async (c) => {
     return c.json({
       signups: (data ?? []).map((r: any) => ({
         id: r.id, instagram: r.instagram, email: r.email, city: r.city, createdAt: r.created_at,
+        isAmbassador: !!r.ambassador_opted_in, ambassadorCode: r.ambassador_code || null,
         ...(balances[tokenFor[r.id]] ?? zero),
       })),
       total: data?.length ?? 0,
