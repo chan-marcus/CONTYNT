@@ -309,7 +309,14 @@ function InlineFeatureEdit({ featureId, category, payoutRange, onSaved }: { feat
   );
 }
 
-function BusinessCard({ signup, approved, onApprove, onImpersonate, impersonating, payoutRange, setPayoutRange, category, setCategory, approving, bizFeatures, allClaims, onApproveCreatorClaim, onResetCreatorClaim, onFeatureOffered, onRemoveFeature, planClicks = 0 }: any) {
+// One business per row rather than per card. The grid of cards put every
+// detail of every business on screen at once, so scanning the list meant
+// reading it -- and the two columns meant the eye had no single line to run
+// down. The row shows only what you scan for (who, what they pay, how much of
+// their quota is gone, what is waiting on you) in fixed columns that line up
+// between rows; everything else is one click away.
+function BusinessRow({ signup, approved, onApprove, onImpersonate, impersonating, payoutRange, setPayoutRange, category, setCategory, approving, bizFeatures, allClaims, onApproveCreatorClaim, onResetCreatorClaim, onFeatureOffered, onRemoveFeature, planClicks = 0 }: any) {
+  const [expanded, setExpanded] = useState(false);
   const [showAddAnother, setShowAddAnother] = useState(false);
   const [addCategory, setAddCategory] = useState("");
   const [addPayout, setAddPayout] = useState("");
@@ -321,10 +328,20 @@ function BusinessCard({ signup, approved, onApprove, onImpersonate, impersonatin
   const [offering, setOffering] = useState<null | "trial" | "oneoff">(null);
 
   const tierLimit = TIER_LIMITS[tier] || 0;
-  // Both scoped to the current month by lib/featureQuota, so this card and the
+  // Both scoped to the current month by lib/featureQuota, so this row and the
   // business's own portal report the same allowance.
   const totalReels = quotaLimit(tierLimit, bizFeatures || []);
   const reelsUsed = countQuotaUsed(bizFeatures || []);
+
+  const feats = bizFeatures || [];
+  const pendingFeats = feats.filter((f: any) => f.status === "pending" && f.submittedByBusiness);
+  const liveFeats = feats.filter((f: any) => ["offered", "available", "completed"].includes(f.status));
+  // Claims sitting at "interested" are the ones this panel can act on -- an
+  // admin has to approve them before the creator can start.
+  const interestedCount = (allClaims || []).filter((c: any) =>
+    c.status === "interested" && feats.some((f: any) => f.id === c.featureId)).length;
+  // What earns the amber edge: something here is waiting on the operator.
+  const needsAction = pendingFeats.length + interestedCount;
 
   const offerFeature = async (kind: "trial" | "oneoff") => {
     setOffering(kind);
@@ -348,212 +365,240 @@ function BusinessCard({ signup, approved, onApprove, onImpersonate, impersonatin
   };
 
   return (
-    <div className={`bg-neutral-900 border rounded-xl p-4 space-y-3 ${approved ? "border-green-500/20 bg-green-500/10" : "border-white/10"}`}>
-      {/* Name and what they pay, on one line. The tier used to be legible only
-          by reading the dropdown further down, so telling a paying business
-          from a free one meant looking twice at every card. */}
-      <div className="flex items-start justify-between gap-2">
-        <div className="min-w-0">
-          {/* Signups no longer carry a business name, so the handle stands in.
-              Rows from before that still show whatever name they were given. */}
-          <p className="font-semibold text-white truncate">{signup.businessName || igHandle(signup.instagram)}</p>
-          <p className="text-xs text-neutral-500 truncate">
-            <a href={`https://instagram.com/${signup.instagram.replace(/^@/, "")}`} target="_blank" rel="noopener noreferrer"
-              className="text-blue-400 hover:text-blue-300 transition-colors">{igHandle(signup.instagram)}</a>
-            {signup.city && <span> · {signup.city}</span>}
-          </p>
-        </div>
-        <div className="flex flex-col items-end gap-1 shrink-0">
+    <div className={`border rounded-xl overflow-hidden transition-all ${
+      needsAction ? "bg-yellow-500/[0.04] border-yellow-500/25"
+        : approved ? "bg-green-500/[0.04] border-green-500/20"
+        : "bg-white/[0.03] border-white/10"
+    }`}>
+      {/* ── The row itself. Column widths match the header above the list, so
+             the same fact sits at the same x on every row. ── */}
+      <div className="flex flex-col md:flex-row md:items-center gap-2 md:gap-3 px-3 py-2.5">
+        {/* Who. The whole block toggles, so the click target is the name and
+            not a chevron the size of a full stop. */}
+        <button onClick={() => setExpanded(v => !v)}
+          className="flex items-center gap-2 min-w-0 md:flex-1 text-left group">
+          <ChevronDown className={`w-3.5 h-3.5 text-neutral-600 shrink-0 transition-transform ${expanded ? "rotate-180" : ""}`} />
+          <span className="min-w-0">
+            {/* Signups no longer carry a business name, so the handle stands in.
+                Rows from before that still show whatever name they were given. */}
+            <span className="block font-semibold text-white truncate group-hover:text-blue-300 transition-colors">
+              {signup.businessName || igHandle(signup.instagram)}
+            </span>
+            <span className="block text-xs text-neutral-500 truncate">
+              {igHandle(signup.instagram)}{signup.city && <> · {signup.city}</>}
+            </span>
+          </span>
+        </button>
+
+        {/* Plan */}
+        <div className="md:w-24 shrink-0">
           {tier
             ? <span className="text-xs px-2 py-0.5 rounded-full bg-indigo-500/15 text-indigo-200 border border-indigo-400/30">{tier}</span>
-            : <span className="text-xs px-2 py-0.5 rounded-full bg-white/5 text-neutral-500 border border-white/10">No plan</span>}
-          {approved && <span className="text-[10px] bg-green-500/10 text-green-400 border border-green-500/20 px-2 py-0.5 rounded-full">Approved</span>}
+            : <span className="text-xs px-2 py-0.5 rounded-full bg-white/5 text-neutral-600 border border-white/10">No plan</span>}
+        </div>
+
+        {/* Quota. Blank rather than "0 of 0" when there is no plan to spend. */}
+        <div className="md:w-20 shrink-0">
+          {tier
+            ? <span className={`text-xs ${reelsUsed >= totalReels ? "text-red-400" : "text-neutral-400"}`}>
+                {reelsUsed} of {totalReels}
+              </span>
+            : <span className="text-xs text-neutral-700">—</span>}
+        </div>
+
+        {/* What is happening. Only the counts that are non-zero, so a quiet
+            business leaves the column empty instead of carrying three zeroes. */}
+        <div className="md:w-52 shrink-0 flex flex-wrap items-center gap-1.5">
+          {pendingFeats.length > 0 && (
+            <span className="text-[10px] px-1.5 py-0.5 rounded bg-yellow-500/15 text-yellow-300 border border-yellow-500/25">
+              {pendingFeats.length} to approve
+            </span>
+          )}
+          {interestedCount > 0 && (
+            <span className="text-[10px] px-1.5 py-0.5 rounded bg-blue-500/15 text-blue-300 border border-blue-500/25">
+              {interestedCount} interested
+            </span>
+          )}
+          {liveFeats.length > 0 && (
+            <span className="text-[10px] px-1.5 py-0.5 rounded bg-white/5 text-neutral-400 border border-white/10">
+              {liveFeats.length} Feature{liveFeats.length === 1 ? "" : "s"}
+            </span>
+          )}
+          {planClicks > 0 && liveFeats.length === 0 && (
+            <span className="text-[10px] px-1.5 py-0.5 rounded bg-blue-500/10 text-blue-300/80 border border-blue-500/20">
+              Viewed pricing {planClicks}×
+            </span>
+          )}
+          {signup.subscriptionEndsAt && (
+            <span className="text-[10px] px-1.5 py-0.5 rounded bg-yellow-500/10 text-yellow-300 border border-yellow-500/25">
+              Cancels {endsOn(signup.subscriptionEndsAt)}
+            </span>
+          )}
+        </div>
+
+        {/* Joined + the one action worth reaching without expanding. */}
+        <div className="md:w-40 shrink-0 flex items-center justify-end gap-2">
+          <span className="text-[10px] text-neutral-600 whitespace-nowrap">
+            {new Date(signup.createdAt).toLocaleDateString("en-US", { month: "short", day: "numeric" })}
+          </span>
+          <button onClick={onImpersonate} disabled={impersonating}
+            className="flex items-center gap-1.5 px-2.5 py-1.5 bg-white/5 border border-white/15 text-neutral-300 text-xs rounded-lg hover:bg-white/10 hover:border-white/30 transition-all disabled:opacity-50 whitespace-nowrap">
+            <Eye className="w-3 h-3" />{impersonating ? "Opening…" : "View as"}
+          </button>
         </div>
       </div>
 
-      {/* Contact. Two lines, muted, because it is reference rather than
-          something to scan -- the address is one line and truncated, since the
-          full postal string was the longest thing on the card and said little
-          the city above does not. */}
-      <div className="text-xs text-neutral-400 space-y-0.5">
-        <p className="truncate" title={signup.email}>{signup.email}</p>
-        <p className="truncate text-neutral-500" title={signup.address || ""}>{signup.address || "—"}</p>
-      </div>
+      {/* ── Everything else, on demand ── */}
+      {expanded && (
+        <div className="border-t border-white/10 px-3 py-3 space-y-3">
+          {/* Contact and the facts that are reference rather than something to
+              scan -- muted, and the address truncated, since the full postal
+              string was the longest thing here and said little the city does not. */}
+          <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-neutral-400">
+            <a href={`https://instagram.com/${signup.instagram.replace(/^@/, "")}`} target="_blank" rel="noopener noreferrer"
+              className="text-blue-400 hover:text-blue-300 transition-colors">{igHandle(signup.instagram)}</a>
+            <span className="truncate max-w-[18rem]" title={signup.email}>{signup.email}</span>
+            <span className="truncate max-w-[20rem] text-neutral-500" title={signup.address || ""}>{signup.address || "—"}</span>
+            {signup.preferredContact && <span className="text-neutral-500">Prefers {signup.preferredContact}</span>}
+            {planClicks > 0 && <span className="text-blue-300/80">Viewed pricing {planClicks}×</span>}
+            {approved && <span className="text-green-400">Approved</span>}
+            {/* Who brought them in. Only shown when there is an attribution, so a
+                business that walked in on its own does not carry an empty chip --
+                and a referral whose creator record has gone still says so rather
+                than silently reading as unreferred. */}
+            {(signup.referralSource || signup.referredByHandle) && (
+              <span className="text-purple-300 inline-flex items-center gap-1">
+                <Award className="w-2.5 h-2.5 shrink-0" />
+                {signup.referredByHandle
+                  ? igHandle(signup.referredByHandle)
+                  : `Ambassador${signup.referralCode ? ` · ${signup.referralCode}` : ""}`}
+              </span>
+            )}
+          </div>
 
-      {/* Everything else as chips. These were seven sentences down the card, one
-          per line and all the same weight, which is what made it a wall. Each
-          is one fact, so each is one chip, and the row wraps and only shows
-          what applies. */}
-      <div className="flex flex-wrap items-center gap-1.5">
-        <span className="text-[10px] px-1.5 py-0.5 rounded bg-white/5 text-neutral-500 border border-white/10">
-          Joined {new Date(signup.createdAt).toLocaleDateString("en-US", { month: "short", day: "numeric" })}
-        </span>
-        {signup.preferredContact && (
-          <span className="text-[10px] px-1.5 py-0.5 rounded bg-white/5 text-neutral-400 border border-white/10">
-            Prefers {signup.preferredContact}
-          </span>
-        )}
-        {planClicks > 0 && (
-          <span className="text-[10px] px-1.5 py-0.5 rounded bg-blue-500/10 text-blue-300 border border-blue-500/20">
-            Viewed pricing {planClicks}×
-          </span>
-        )}
-        {/* A cancelled plan still runs to the end of the period it paid for, so
-            the tier alone does not say a business is leaving. */}
-        {signup.subscriptionEndsAt && (
-          <span className="text-[10px] px-1.5 py-0.5 rounded bg-yellow-500/10 text-yellow-300 border border-yellow-500/25">
-            Cancels {endsOn(signup.subscriptionEndsAt)}
-          </span>
-        )}
-        {/* Who brought them in. Only shown when there is an attribution, so a
-            business that walked in on its own does not carry an empty chip --
-            and a referral whose creator record has gone still says so rather
-            than silently reading as unreferred. */}
-        {(signup.referralSource || signup.referredByHandle) && (
-          <span className="text-[10px] px-1.5 py-0.5 rounded bg-purple-500/10 text-purple-300 border border-purple-500/25 inline-flex items-center gap-1">
-            <Award className="w-2.5 h-2.5 shrink-0" />
-            {signup.referredByHandle
-              ? igHandle(signup.referredByHandle)
-              : `Ambassador${signup.referralCode ? ` \u00b7 ${signup.referralCode}` : ""}`}
-          </span>
-        )}
-      </div>
-
-      {/* Tier + reels counter */}
-      <div className="flex items-center gap-2 pt-1 border-t border-white/10">
-        <select value={tier} onChange={e => saveTier(e.target.value)}
-          className="flex-1 px-2 py-1.5 text-xs bg-neutral-800 border border-white/15 rounded-lg text-white focus:outline-none">
-          <option value="">No tier</option>
-          {TIERS.map(t => <option key={t} value={t}>{t} ({TIER_LIMITS[t]} Reel{TIER_LIMITS[t] !== 1 ? "s" : ""}/mo)</option>)}
-        </select>
-        {tier && (
-          <span className={`text-xs px-2 py-1 rounded-lg border shrink-0 ${reelsUsed >= totalReels ? "bg-red-500/10 text-red-400 border-red-500/20" : "bg-white/5 text-neutral-400 border-white/10"}`}>
-            {reelsUsed} of {totalReels} used
-          </span>
-        )}
-      </div>
-
-
-      {/* Pending features (submitted by business — awaiting admin to set category/payout) */}
-      {(bizFeatures || []).filter((f: any) => f.status === "pending" && f.submittedByBusiness).length > 0 && (
-        <div className="border-t border-white/10 pt-2 space-y-2">
-          <p className="text-[10px] font-semibold uppercase tracking-widest text-yellow-500">Pending — Business Submitted</p>
-          {(bizFeatures || []).filter((f: any) => f.status === "pending" && f.submittedByBusiness).map((f: any) => (
-            <div key={f.id} className="bg-yellow-500/10 border border-yellow-500/20 rounded-lg p-3 space-y-2">
-              {f.isTrial && <span className="text-[10px] bg-green-500/15 text-green-400 border border-green-500/25 px-1.5 py-0.5 rounded font-medium">🎁 Free</span>}
-              {f.requestNotes && <p className="text-xs text-neutral-300 italic">"{f.requestNotes}"</p>}
-              <AdminNoteInput value={pendingNotes[f.id] ?? ((f as any).admin_notes || "")} onChange={v => setPendingNotes(p => ({ ...p, [f.id]: v }))} />
-              <div className="flex gap-2">
-                <input value={pendingCats[f.id] || ""} onChange={e => setPendingCats(p => ({ ...p, [f.id]: e.target.value }))}
-                  placeholder="Category (e.g. Coffee & Café)"
-                  className="flex-1 px-2 py-1.5 text-xs bg-neutral-800 border border-white/15 rounded-lg text-white placeholder:text-neutral-600 focus:outline-none" />
-                <input value={pendingPayouts[f.id] || ""} onChange={e => setPendingPayouts(p => ({ ...p, [f.id]: e.target.value }))}
-                  placeholder="Payout (e.g. $15–$30)"
-                  className="flex-1 px-2 py-1.5 text-xs bg-neutral-800 border border-white/15 rounded-lg text-white placeholder:text-neutral-600 focus:outline-none" />
-              </div>
-              <div className="flex gap-2">
-                <button onClick={() => onApprove(pendingCats[f.id] || "", pendingPayouts[f.id] || "", f.id, pendingNotes[f.id] ?? ((f as any).admin_notes || ""))} disabled={approving}
-                  className="flex-1 py-1.5 text-xs bg-green-600 text-white rounded-lg hover:bg-green-500 transition-all disabled:opacity-50 flex items-center justify-center gap-1">
-                  <CheckCircle className="w-3 h-3" />{approving ? "Publishing…" : "Approve & Publish"}
-                </button>
-                <button onClick={() => onRemoveFeature?.(f.id)}
-                  className="px-2.5 py-1.5 text-xs bg-red-500/15 text-red-400 border border-red-500/20 rounded-lg hover:bg-red-500/25 transition-all">
-                  Remove
-                </button>
-              </div>
+          {/* Tier + reels counter */}
+          <div className="flex items-center gap-2">
+            <select value={tier} onChange={e => saveTier(e.target.value)}
+              className="flex-1 max-w-xs px-2 py-1.5 text-xs bg-neutral-800 border border-white/15 rounded-lg text-white focus:outline-none">
+              <option value="">No tier</option>
+              {TIERS.map(t => <option key={t} value={t}>{t} ({TIER_LIMITS[t]} Reel{TIER_LIMITS[t] !== 1 ? "s" : ""}/mo)</option>)}
+            </select>
+            {tier && (
+              <span className={`text-xs px-2 py-1 rounded-lg border shrink-0 ${reelsUsed >= totalReels ? "bg-red-500/10 text-red-400 border-red-500/20" : "bg-white/5 text-neutral-400 border-white/10"}`}>
+                {reelsUsed} of {totalReels} used
+              </span>
+            )}
+            <div className="ml-auto flex items-center gap-2 shrink-0">
+              <button onClick={() => offerFeature("trial")} disabled={!!offering}
+                title="Give this business a free Feature, outside their quota"
+                className="px-2.5 py-1.5 text-xs bg-white/5 text-blue-300 border border-blue-500/25 rounded-lg hover:bg-blue-500/15 transition-all disabled:opacity-50">
+                {offering === "trial" ? "Sending…" : "Free Feature"}
+              </button>
+              {/* Same call as above with is_trial false, so it counts against the
+                  business's monthly quota rather than being a giveaway. Purple to
+                  match how paid/completed features read elsewhere in this panel. */}
+              <button onClick={() => offerFeature("oneoff")} disabled={!!offering}
+                title="Add a Feature that counts against their monthly quota"
+                className="px-2.5 py-1.5 text-xs bg-white/5 text-purple-300 border border-purple-500/25 rounded-lg hover:bg-purple-500/15 transition-all disabled:opacity-50">
+                {offering === "oneoff" ? "Sending…" : "One-Time"}
+              </button>
             </div>
-          ))}
-        </div>
-      )}
+          </div>
 
-      {/* Existing features */}
-      {(bizFeatures || []).filter((f: any) => ["offered", "available", "completed"].includes(f.status)).length > 0 && (
-        <div className="pt-2 border-t border-white/10 space-y-1.5">
-          <p className="text-xs font-medium text-neutral-500">Features</p>
-          {(bizFeatures || []).filter((f: any) => ["offered", "available", "completed"].includes(f.status)).map((f: any) => {
-            const featureClaims = (allClaims || []).filter((c: any) => c.featureId === f.id);
-            // markReelLive sets the claim to approved when the Reel is signed
-            // off. The Feature is not finished until the creator is credited,
-            // so it reads as Pending in between rather than Accepted.
-            const awaitingCredit = f.status !== "completed" && featureClaims.some((c: any) => c.status === "approved");
-            const allFeatureClaims = featureClaims.filter((c: any) => c.status !== "viewing");
-            const interested = featureClaims.filter((c: any) => c.status === "interested");
-            const adminApproved = featureClaims.filter((c: any) => c.status === "approved");
-            const inProgress = featureClaims.filter((c: any) => c.status === "claimed");
-            const submitted = featureClaims.filter((c: any) => c.status === "submitted");
-            const unclaimed = featureClaims.filter((c: any) => c.status === "unclaimed");
-            return (
-              <div key={f.id} className={`rounded-lg px-3 py-2 border space-y-2 ${f.status === "completed" ? "bg-purple-500/10 border-purple-500/20" : f.status === "offered" ? "bg-white/5 border-white/10" : "bg-green-500/10 border-green-500/20"}`}>
-                <div className="flex items-center justify-between gap-2">
-                  <div className="flex items-center gap-2 min-w-0 flex-1">
-                    {f.isTrial && <span className="text-[10px] bg-green-500/15 text-green-400 border border-green-500/25 px-1.5 py-0.5 rounded font-medium shrink-0">🎁 Free</span>}
-                    <span className="text-xs text-neutral-300 truncate">{f.category || <span className="text-neutral-600 italic">No category</span>}</span>
-                    {f.payoutRange && <span className="text-xs font-medium text-green-400">{f.payoutRange}</span>}
+          {/* Pending features (submitted by business — awaiting admin to set category/payout) */}
+          {pendingFeats.length > 0 && (
+            <div className="border-t border-white/10 pt-2 space-y-2">
+              <p className="text-[10px] font-semibold uppercase tracking-widest text-yellow-500">Pending — Business Submitted</p>
+              {pendingFeats.map((f: any) => (
+                <div key={f.id} className="bg-yellow-500/10 border border-yellow-500/20 rounded-lg p-3 space-y-2">
+                  {f.isTrial && <span className="text-[10px] bg-green-500/15 text-green-400 border border-green-500/25 px-1.5 py-0.5 rounded font-medium">🎁 Free</span>}
+                  {f.requestNotes && <p className="text-xs text-neutral-300 italic">"{f.requestNotes}"</p>}
+                  <AdminNoteInput value={pendingNotes[f.id] ?? ((f as any).admin_notes || "")} onChange={v => setPendingNotes(p => ({ ...p, [f.id]: v }))} />
+                  <div className="flex gap-2">
+                    <input value={pendingCats[f.id] || ""} onChange={e => setPendingCats(p => ({ ...p, [f.id]: e.target.value }))}
+                      placeholder="Category (e.g. Coffee & Café)"
+                      className="flex-1 px-2 py-1.5 text-xs bg-neutral-800 border border-white/15 rounded-lg text-white placeholder:text-neutral-600 focus:outline-none" />
+                    <input value={pendingPayouts[f.id] || ""} onChange={e => setPendingPayouts(p => ({ ...p, [f.id]: e.target.value }))}
+                      placeholder="Payout (e.g. $15–$30)"
+                      className="flex-1 px-2 py-1.5 text-xs bg-neutral-800 border border-white/15 rounded-lg text-white placeholder:text-neutral-600 focus:outline-none" />
                   </div>
-                  <div className="flex items-center gap-1.5 shrink-0">
-                    <span className={`text-xs px-1.5 py-0.5 rounded-full ${
-                      f.status === "completed" ? "bg-purple-500/15 text-purple-400" :
-                      awaitingCredit ? "bg-yellow-500/15 text-yellow-400" :
-                      f.status === "offered" ? "bg-neutral-500/15 text-neutral-400" :
-                      "bg-green-100/10 text-green-400"
-                    }`}>
-                      {f.status === "completed" ? "Completed" : awaitingCredit ? "Pending" : f.status === "offered" ? "Not Accepted Yet" : "Accepted"}
-                    </span>
+                  <div className="flex gap-2">
+                    <button onClick={() => onApprove(pendingCats[f.id] || "", pendingPayouts[f.id] || "", f.id, pendingNotes[f.id] ?? ((f as any).admin_notes || ""))} disabled={approving}
+                      className="flex-1 py-1.5 text-xs bg-green-600 text-white rounded-lg hover:bg-green-500 transition-all disabled:opacity-50 flex items-center justify-center gap-1">
+                      <CheckCircle className="w-3 h-3" />{approving ? "Publishing…" : "Approve & Publish"}
+                    </button>
                     <button onClick={() => onRemoveFeature?.(f.id)}
-                      className="text-[10px] px-1.5 py-0.5 text-red-400/70 hover:text-red-400 hover:bg-red-500/10 rounded transition-all">
-                      ✕
+                      className="px-2.5 py-1.5 text-xs bg-red-500/15 text-red-400 border border-red-500/20 rounded-lg hover:bg-red-500/25 transition-all">
+                      Remove
                     </button>
                   </div>
                 </div>
-                {f.status === "completed" && (f.claimed_by || f.winner_instagram) && (
-                  <div className="text-xs text-neutral-500">
-                    Claimed by <span className="text-purple-300">{igHandle(f.claimed_by || f.winner_instagram)}</span>
-                    {f.claimed_at && <span> · {new Date(f.claimed_at).toLocaleString("en-US", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })}</span>}
+              ))}
+            </div>
+          )}
+
+          {/* Existing features */}
+          {liveFeats.length > 0 && (
+            <div className="pt-2 border-t border-white/10 space-y-1.5">
+              <p className="text-[10px] font-semibold uppercase tracking-widest text-neutral-600">Features</p>
+              {liveFeats.map((f: any) => {
+                const featureClaims = (allClaims || []).filter((c: any) => c.featureId === f.id);
+                // markReelLive sets the claim to approved when the Reel is signed
+                // off. The Feature is not finished until the creator is credited,
+                // so it reads as Pending in between rather than Accepted.
+                const awaitingCredit = f.status !== "completed" && featureClaims.some((c: any) => c.status === "approved");
+                const interested = featureClaims.filter((c: any) => c.status === "interested");
+                const adminApproved = featureClaims.filter((c: any) => c.status === "approved");
+                const inProgress = featureClaims.filter((c: any) => c.status === "claimed");
+                const submitted = featureClaims.filter((c: any) => c.status === "submitted");
+                const unclaimed = featureClaims.filter((c: any) => c.status === "unclaimed");
+                return (
+                  <div key={f.id} className={`rounded-lg px-3 py-2 border space-y-2 ${f.status === "completed" ? "bg-purple-500/10 border-purple-500/20" : f.status === "offered" ? "bg-white/5 border-white/10" : "bg-green-500/10 border-green-500/20"}`}>
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="flex items-center gap-2 min-w-0 flex-1">
+                        {f.isTrial && <span className="text-[10px] bg-green-500/15 text-green-400 border border-green-500/25 px-1.5 py-0.5 rounded font-medium shrink-0">🎁 Free</span>}
+                        <span className="text-xs text-neutral-300 truncate">{f.category || <span className="text-neutral-600 italic">No category</span>}</span>
+                        {f.payoutRange && <span className="text-xs font-medium text-green-400">{f.payoutRange}</span>}
+                      </div>
+                      <div className="flex items-center gap-1.5 shrink-0">
+                        <span className={`text-xs px-1.5 py-0.5 rounded-full ${
+                          f.status === "completed" ? "bg-purple-500/15 text-purple-400" :
+                          awaitingCredit ? "bg-yellow-500/15 text-yellow-400" :
+                          f.status === "offered" ? "bg-neutral-500/15 text-neutral-400" :
+                          "bg-green-100/10 text-green-400"
+                        }`}>
+                          {f.status === "completed" ? "Completed" : awaitingCredit ? "Pending" : f.status === "offered" ? "Not Accepted Yet" : "Accepted"}
+                        </span>
+                        <button onClick={() => onRemoveFeature?.(f.id)}
+                          className="text-[10px] px-1.5 py-0.5 text-red-400/70 hover:text-red-400 hover:bg-red-500/10 rounded transition-all">
+                          ✕
+                        </button>
+                      </div>
+                    </div>
+                    {f.status === "completed" && (f.claimed_by || f.winner_instagram) && (
+                      <div className="text-xs text-neutral-500">
+                        Claimed by <span className="text-purple-300">{igHandle(f.claimed_by || f.winner_instagram)}</span>
+                        {f.claimed_at && <span> · {new Date(f.claimed_at).toLocaleString("en-US", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })}</span>}
+                      </div>
+                    )}
+                    {/* Business notes */}
+                    {(f as any).business_notes && (
+                      <div className="bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-xs text-neutral-400 italic">
+                        <span className="text-neutral-500 not-italic font-medium">Business notes: </span>"{(f as any).business_notes}"
+                      </div>
+                    )}
+                    {/* All claim rows — persist after each action */}
+                    {[...interested, ...adminApproved, ...inProgress, ...submitted, ...unclaimed].map((c: any) => (
+                      <FeatureClaimRow key={c.creatorToken} claim={c} featureId={f.id}
+                        onApprove={onApproveCreatorClaim} onReset={onResetCreatorClaim} />
+                    ))}
                   </div>
-                )}
-                {/* Business notes */}
-                {(f as any).business_notes && (
-                  <div className="bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-xs text-neutral-400 italic">
-                    <span className="text-neutral-500 not-italic font-medium">Business notes: </span>"{(f as any).business_notes}"
-                  </div>
-                )}
-                {/* All claim rows — persist after each action */}
-                {[...interested, ...adminApproved, ...inProgress, ...submitted, ...unclaimed].map((c: any) => (
-                  <FeatureClaimRow key={c.creatorToken} claim={c} featureId={f.id}
-                    onApprove={onApproveCreatorClaim} onReset={onResetCreatorClaim} />
-                ))}
-              </div>
-            );
-          })}
+                );
+              })}
+            </div>
+          )}
         </div>
       )}
-
-
-      {/* Bottom actions */}
-      {/* Side by side and quieter. Two full-width colour bars plus a white one
-          were the loudest thing on a card whose job is to be read, and they are
-          occasional actions -- most visits here are to look, not to grant. */}
-      <div className="pt-2 border-t border-white/10 space-y-2">
-        <div className="grid grid-cols-2 gap-2">
-          <button onClick={() => offerFeature("trial")} disabled={!!offering}
-            title="Give this business a free Feature, outside their quota"
-            className="py-1.5 text-xs bg-white/5 text-blue-300 border border-blue-500/25 rounded-lg hover:bg-blue-500/15 transition-all disabled:opacity-50">
-            {offering === "trial" ? "Sending…" : "Free Feature"}
-          </button>
-          {/* Same call as above with is_trial false, so it counts against the
-              business's monthly quota rather than being a giveaway. Purple to
-              match how paid/completed features read elsewhere in this panel. */}
-          <button onClick={() => offerFeature("oneoff")} disabled={!!offering}
-            title="Add a Feature that counts against their monthly quota"
-            className="py-1.5 text-xs bg-white/5 text-purple-300 border border-purple-500/25 rounded-lg hover:bg-purple-500/15 transition-all disabled:opacity-50">
-            {offering === "oneoff" ? "Sending…" : "One-Time"}
-          </button>
-        </div>
-        <button onClick={onImpersonate} disabled={impersonating}
-          className="w-full py-1.5 text-xs text-neutral-300 bg-white/5 border border-white/15 rounded-lg hover:bg-white/10 transition-all disabled:opacity-50 flex items-center justify-center gap-1.5">
-          <Eye className="w-3.5 h-3.5" />{impersonating ? "Opening…" : "View as business"}
-        </button>
-      </div>
     </div>
   );
 }
@@ -777,7 +822,7 @@ export function Analytics({ adminToken }: { adminToken?: string } = {}) {
   const [tab, setTab] = useState<Tab>("creators");
   const [signups, setSignups] = useState<Signup[]>([]);
   // Extended rather than BusinessSignup: /admin/businesses has always returned
-  // the subscription fields and BusinessCard has always read them through an
+  // the subscription fields and BusinessRow has always read them through an
   // `any` prop, so this widens the type to match what the endpoint actually
   // sends. It also gives BusinessSignupExtended its first real use -- it was
   // declared and then never referenced.
@@ -1622,7 +1667,18 @@ export function Analytics({ adminToken }: { adminToken?: string } = {}) {
           <div>
             <h2 className="text-lg font-semibold text-white mb-4">Businesses</h2>
             {businessSignups.length === 0 ? <p className="text-neutral-400 text-sm">No business sign-ups yet.</p> : (
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <div className="space-y-2">
+                {/* Column labels. The rows below use the same widths, so the
+                    list reads down a column instead of row by row. Hidden on
+                    narrow screens, where the row stacks and the labels would
+                    line up with nothing. */}
+                <div className="hidden md:flex items-center gap-3 px-3 pb-1 text-[10px] font-semibold uppercase tracking-widest text-neutral-600">
+                  <span className="flex-1 pl-[1.375rem]">Business</span>
+                  <span className="w-24">Plan</span>
+                  <span className="w-20">Reels</span>
+                  <span className="w-52">Activity</span>
+                  <span className="w-40 text-right">Joined</span>
+                </div>
                 {/* Paying first, then the ones showing intent by opening the
                     pricing, then everyone else alphabetically. Insertion order
                     put a business that has never done anything above one paying
@@ -1634,7 +1690,7 @@ export function Analytics({ adminToken }: { adminToken?: string } = {}) {
                     || ((planClicksMap[b.id] || 0) - (planClicksMap[a.id] || 0))
                     || (a.businessName || "").localeCompare(b.businessName || "");
                 }).map((b) => (
-                  <BusinessCard key={b.id} signup={b}
+                  <BusinessRow key={b.id} signup={b}
                     approved={approvedBusinesses.has(b.id)}
                     payoutRange={payoutRanges[b.id] || ""}
                     setPayoutRange={(v: string) => setPayoutRanges((p) => ({ ...p, [b.id]: v }))}
