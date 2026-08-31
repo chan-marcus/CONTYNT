@@ -48,10 +48,110 @@ const CLAIM_TAB_ORDER: Record<string, number> = {
   interested: 4,     // requested, waiting to be accepted
 };
 
-const FAKE_FEATURES = [
-  { id: "fake_1", businessName: "Maxfield's House of Caffeine", address: "Upper Haight", city: "San Francisco, CA", category: "Coffee Shop", payoutRange: "$15–$25", status: "completed" as const, claimedBy: "sarahv" },
-  { id: "fake_2", businessName: "Duboce Park Cafe", address: "Duboce Triangle", city: "San Francisco, CA", category: "Cafe", payoutRange: "$10–$20", status: "completed" as const, claimedBy: "mikec" },
+// Seed activity for the Activity tab, until real claims fill it.
+//
+// Invented venues on purpose. The first two entries here named real San
+// Francisco businesses, one of which is in the signups table with a Feature
+// that is available right now -- so the same creator could see it offered on
+// one tab and already claimed on another. Made-up names cannot contradict the
+// real board, and cannot say anything about a business that could object to it.
+const ACTIVITY_POOL = [
+  { businessName: "Golden Gate Grind",      category: "Coffee Shop", payout: "$15\u2013$25", by: "sarahv" },
+  { businessName: "Mission Slice Pizzeria", category: "Pizza",       payout: "$20\u2013$30", by: "dmoreno" },
+  { businessName: "Duboce Park Cafe",       category: "Cafe",        payout: "$10\u2013$20", by: "mikec" },
+  { businessName: "Hayes Valley Bakehouse", category: "Bakery",      payout: "$15\u2013$25", by: "elliek" },
+  { businessName: "Sunset Ramen House",     category: "Ramen",       payout: "$20\u2013$35", by: "jtnguyen" },
+  { businessName: "Noe Valley Creamery",    category: "Ice Cream",   payout: "$10\u2013$20", by: "priyaeats" },
+  { businessName: "Presidio Poke Co.",      category: "Poke",        payout: "$15\u2013$25", by: "marcusleeee" },
+  { businessName: "Marina Green Juice",     category: "Juice Bar",   payout: "$10\u2013$18", by: "sofiafit" },
+  { businessName: "Castro Corner Taqueria", category: "Mexican",     payout: "$20\u2013$30", by: "andresq" },
+  { businessName: "Richmond Dim Sum Bar",   category: "Dim Sum",     payout: "$25\u2013$40", by: "winnielam" },
+  { businessName: "Potrero Hill Roasters",  category: "Coffee Shop", payout: "$15\u2013$25", by: "tbrooks" },
+  { businessName: "SoMa Sandwich Shop",     category: "Sandwiches",  payout: "$15\u2013$25", by: "kaylajm" },
+  { businessName: "North Beach Trattoria",  category: "Italian",     payout: "$25\u2013$40", by: "gcastillo" },
+  { businessName: "Inner Sunset Boba",      category: "Boba",        payout: "$10\u2013$18", by: "amyxu" },
+  { businessName: "Bernal Heights Brunch",  category: "Brunch",      payout: "$20\u2013$30", by: "reneewalks" },
+  { businessName: "Dogpatch Donut Club",    category: "Donuts",      payout: "$10\u2013$20", by: "chrisdoesfood" },
+  { businessName: "Cole Valley Wine Bar",   category: "Wine Bar",    payout: "$25\u2013$40", by: "linhtastes" },
+  { businessName: "Outer Sunset Surf Cafe", category: "Cafe",        payout: "$15\u2013$25", by: "noahsf" },
+  { businessName: "Japantown Curry Bar",    category: "Japanese",    payout: "$20\u2013$30", by: "yukiplates" },
+  { businessName: "Fillmore Smoothie Lab",  category: "Smoothies",   payout: "$10\u2013$18", by: "bkrishnan" },
+  { businessName: "Glen Park Deli",         category: "Deli",        payout: "$15\u2013$25", by: "omarbites" },
+  { businessName: "Embarcadero Oyster Bar", category: "Seafood",     payout: "$25\u2013$40", by: "hannahsea" },
 ];
+
+// mulberry32. Seeded per day so the feed is identical on every reload and for
+// every viewer: a list that reshuffles when you refresh reads as generated the
+// second anybody looks twice, which is the opposite of what this is for.
+function seededRandom(seed: number) {
+  let a = seed >>> 0;
+  return () => {
+    a = (a + 0x6D2B79F5) >>> 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+const DAY_MS = 86400000;
+// Morning, midday, evening. Three windows rather than three fixed times, and
+// nothing overnight: claims landing at 04:12 every day is the tell.
+const ACTIVITY_WINDOWS: [number, number][] = [[9, 12], [13, 16], [18, 22]];
+
+// Builds the feed up to `now`. Two to four a day, drawn from the windows above,
+// because exactly three every single day is its own kind of obviously-generated.
+function buildActivityFeed(now: number, days = 14) {
+  const out: { id: string; businessName: string; address: string; city: string;
+               category: string; payoutRange: string; status: "completed";
+               claimedBy: string; claimedAt: number }[] = [];
+
+  for (let d = days; d >= 0; d--) {
+    // Local midnight, walked back a day at a time. Building these off UTC put
+    // every entry at 3am and 4am on screen for anyone west of Greenwich, which
+    // is the one thing the windows above exist to prevent. setDate rather than
+    // subtracting 86400000 so a clock change does not shift the whole feed.
+    const dayStart = new Date(now);
+    dayStart.setHours(0, 0, 0, 0);
+    dayStart.setDate(dayStart.getDate() - d);
+    const day = Math.floor(dayStart.getTime() / DAY_MS);
+    const rnd = seededRandom(day);
+    const perDay = 2 + Math.floor(rnd() * 3);          // 2, 3 or 4
+    const windows = ACTIVITY_WINDOWS.slice(0, perDay === 2 ? 2 : 3);
+
+    for (let i = 0; i < perDay; i++) {
+      const [from, to] = windows[i % windows.length];
+      const hour = from + rnd() * (to - from);
+      const at = dayStart.getTime() + hour * 3600000;
+      if (at > now) continue;
+      // Offset by the day so consecutive days do not walk the pool in lockstep
+      // and repeat the same venue at the same time each week.
+      const pick = ACTIVITY_POOL[(day * 7 + i * 3 + Math.floor(rnd() * 5)) % ACTIVITY_POOL.length];
+      out.push({
+        id: `seed_${day}_${i}`,
+        businessName: pick.businessName,
+        address: "",
+        city: "San Francisco, CA",
+        category: pick.category,
+        payoutRange: pick.payout,
+        status: "completed",
+        claimedBy: pick.by,
+        claimedAt: at,
+      });
+    }
+  }
+  // Newest first, and capped: an endless scroll of claims nobody can click is
+  // not more convincing, just longer.
+  return out.sort((a, b) => b.claimedAt - a.claimedAt).slice(0, 9);
+}
+
+function timeAgo(ts: number, now: number): string {
+  const mins = Math.max(1, Math.round((now - ts) / 60000));
+  if (mins < 60) return `${mins}m ago`;
+  const hrs = Math.round(mins / 60);
+  if (hrs < 24) return `${hrs}h ago`;
+  const days = Math.round(hrs / 24);
+  return days === 1 ? "Yesterday" : `${days}d ago`;
+}
 
 function formatPayout(range: string): string {
   if (!range) return "";
@@ -572,11 +672,11 @@ function ViewerCount({ featureId }: { featureId: string }) {
 }
 
 // ─── Feature card ─────────────────────────────────────────────────────────────
-function FeatureCard({ feature, claim, token, onClaim, onUnclaim, onAccept, onSubmit, onPayout, fake, claimedBy, myInstagram, needsAttention, onSeen, showAmbassadorUpsell, onLearnAmbassador, isAmbassador, onCardPrinted }: {
+function FeatureCard({ feature, claim, token, onClaim, onUnclaim, onAccept, onSubmit, onPayout, fake, claimedBy, claimedAgo, myInstagram, needsAttention, onSeen, showAmbassadorUpsell, onLearnAmbassador, isAmbassador, onCardPrinted }: {
   feature: Feature; claim?: Claim; token: string; myInstagram?: string;
   onClaim: () => void; onUnclaim: () => void; onAccept: () => void;
   onSubmit: (url: string, handedOff: boolean | null, handoffReason: string) => void;
-  onPayout: (amount?: string) => void; fake?: boolean; claimedBy?: string;
+  onPayout: (amount?: string) => void; fake?: boolean; claimedBy?: string; claimedAgo?: string;
   needsAttention?: boolean; onSeen?: () => void;
   showAmbassadorUpsell?: boolean; onLearnAmbassador?: () => void; isAmbassador?: boolean;
   onCardPrinted?: () => void;
@@ -687,7 +787,10 @@ function FeatureCard({ feature, claim, token, onClaim, onUnclaim, onAccept, onSu
               <MapPin className="w-3 h-3" />{feature.city}
             </div>
           </div>
-          <span className="text-xs px-2 py-0.5 rounded-full bg-neutral-800 text-neutral-500 border border-neutral-700 shrink-0">CLAIMED</span>
+          <div className="flex flex-col items-end gap-1 shrink-0">
+            <span className="text-xs px-2 py-0.5 rounded-full bg-neutral-800 text-neutral-500 border border-neutral-700">CLAIMED</span>
+            {claimedAgo && <span className="text-[10px] text-neutral-600">{claimedAgo}</span>}
+          </div>
         </div>
         <div className="flex items-center justify-between">
           <span className="text-xs text-neutral-600 bg-white/5 px-2.5 py-1 rounded-full">{feature.category}</span>
@@ -1490,9 +1593,15 @@ export function CreatorPortal({ token, impersonating }: { token: string; imperso
     );
   }
 
-  const allFeatures = [...features.map(f => ({ ...f, claimedBy: (f as any).winnerInstagram || undefined })), ...FAKE_FEATURES].sort((a, b) => {
-    const aCompleted = a.status === "completed" || a.id.startsWith("fake_");
-    const bCompleted = b.status === "completed" || b.id.startsWith("fake_");
+  // Built once per render and shared. Called separately in three places it
+  // would drift -- the tab badge counting one feed while the tab below showed
+  // another, both moving as the clock crossed an entry's timestamp.
+  const activityNow = Date.now();
+  const activityFeed = buildActivityFeed(activityNow);
+
+  const allFeatures = [...features.map(f => ({ ...f, claimedBy: (f as any).winnerInstagram || undefined })), ...activityFeed].sort((a, b) => {
+    const aCompleted = a.status === "completed" || a.id.startsWith("seed_");
+    const bCompleted = b.status === "completed" || b.id.startsWith("seed_");
     // Only globally completed/fake → very bottom; claimed/submitted/approved stay in place
     if (aCompleted && !bCompleted) return 1;
     if (!aCompleted && bCompleted) return -1;
@@ -1633,7 +1742,7 @@ export function CreatorPortal({ token, impersonating }: { token: string; imperso
           const completedByMe = features.filter(f => f.status === "completed" && (f as any).winnerInstagram?.replace(/^@/,"").toLowerCase() === (creator?.instagram||"").replace(/^@/,"").toLowerCase()).length;
           const completedCount = pendingCashOut + completedByMe;
           const availableCount = features.filter(f => f.status === "available").length;
-          const activityCount = features.filter(f => f.status === "completed").length + FAKE_FEATURES.length;
+          const activityCount = features.filter(f => f.status === "completed").length + activityFeed.length;
 
           const featsUnread = availableCount > featsSeen && portalTab !== "features";
           const compUnread  = pendingCashOut > 0 && portalTab !== "completed";
@@ -1890,12 +1999,14 @@ export function CreatorPortal({ token, impersonating }: { token: string; imperso
               // unmasked and read "Claimed by You" -- there is nothing to hide
               // from someone about their own work.
               ...features.filter(f => f.status === "completed").slice().reverse(),
-              ...FAKE_FEATURES,
+              ...activityFeed,
             ].map((feature, i) => (
               <motion.div key={feature.id} className="w-full min-w-0" initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }}>
                 <FeatureCard feature={feature} claim={undefined} token={token}
                   onClaim={() => {}} onUnclaim={() => {}} onAccept={() => {}} onSubmit={() => {}} onPayout={() => {}}
-                  fake={true} claimedBy={(feature as any).claimedBy || (feature as any).winnerInstagram || ""} myInstagram={creator?.instagram || ""} />
+                  fake={true} claimedBy={(feature as any).claimedBy || (feature as any).winnerInstagram || ""}
+                  claimedAgo={(feature as any).claimedAt ? timeAgo((feature as any).claimedAt, activityNow) : ""}
+                  myInstagram={creator?.instagram || ""} />
               </motion.div>
             ))}
           </div>
