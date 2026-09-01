@@ -371,6 +371,32 @@ app.get("/make-server-f5961d0c/referral/:code", async (c) => {
     const code = c.req.param("code");
     const data = await ambassadorByAnyCode(code);
     if (!data || !data.enabled_status) return c.json({ valid: false });
+
+    // The open is recorded here because this is the only call the landing page
+    // has to make -- it cannot render without knowing whose code it is, so a
+    // view and this request are the same event.
+    //
+    // Never allowed to fail the page. A link that 500s because a counter could
+    // not be written costs a referral; a lost row costs a number.
+    try {
+      const selfToken = c.req.query("t") || "";
+      let isSelfView = false;
+      if (selfToken) {
+        const cd = await creatorFromToken(selfToken);
+        isSelfView = !!cd?.creatorId && String(cd.creatorId) === String(data.creator_id);
+      }
+      const ip = c.req.header("cf-connecting-ip") || c.req.header("x-forwarded-for")?.split(",")[0]?.trim() || "";
+      const ipHash = ip ? await hashIp(ip) : null;
+      if (isSelfView || !(await linkViewRateLimited(String(data.referral_code || code), ipHash))) {
+        await db().from("ambassador_link_views_f5961d0c").insert({
+          referral_code: String(data.referral_code || code),
+          ip_hash: ipHash,
+          user_agent: c.req.header("user-agent") || "",
+          is_self_view: isSelfView,
+        });
+      }
+    } catch (e: any) { console.error("[link-view] not recorded:", e?.message ?? e); }
+
     // Same key the scan page gets. Both are in-person signups; the address
     // behind a Places pick is the only place either flow learns a city.
     return c.json({
@@ -2172,6 +2198,26 @@ async function scanRateLimited(code: string, ipHash: string | null) {
     .select("id", { count: "exact", head: true })
     .eq("ip_hash", ipHash).gte("occurred_at", since);
   return (byIp.count ?? 0) >= SCAN_MAX_PER_IP;
+}
+
+// Same shape as scanRateLimited and for the same reason: the log is the only
+// store, so it has to defend itself. Looser per-code than the scan limit --
+// a link posted to a story can legitimately be opened in bursts, where forty
+// scans of one physical card in ten minutes cannot be real.
+const LINK_VIEW_WINDOW_MIN = 10;
+const LINK_VIEW_MAX_PER_CODE = 200;
+const LINK_VIEW_MAX_PER_IP = 12;
+async function linkViewRateLimited(code: string, ipHash: string | null) {
+  const since = new Date(Date.now() - LINK_VIEW_WINDOW_MIN * 60e3).toISOString();
+  const byCode = await db().from("ambassador_link_views_f5961d0c")
+    .select("id", { count: "exact", head: true })
+    .eq("referral_code", code).gte("occurred_at", since);
+  if ((byCode.count ?? 0) >= LINK_VIEW_MAX_PER_CODE) return true;
+  if (!ipHash) return false;
+  const byIp = await db().from("ambassador_link_views_f5961d0c")
+    .select("id", { count: "exact", head: true })
+    .eq("ip_hash", ipHash).gte("occurred_at", since);
+  return (byIp.count ?? 0) >= LINK_VIEW_MAX_PER_IP;
 }
 
 const esc = (s: any) => String(s ?? "").replace(/[&<>"']/g, m =>
@@ -5436,16 +5482,28 @@ app.post("/make-server-f5961d0c/admin/claims/expiry-reminders", async (c) => {
 // ─── Admin: ambassador management ────────────────────────────────────────────
 app.get("/make-server-f5961d0c/admin/ambassadors", async (c) => {
   try {
-    const [ambRes, refRes, creatorRes, bizRes] = await Promise.all([
+    const [ambRes, refRes, creatorRes, bizRes, viewRes] = await Promise.all([
       db().from("ambassadors_f5961d0c").select("*").order("created_at", { ascending: false }),
       db().from("ambassador_referrals_f5961d0c").select("*").order("created_at", { ascending: false }),
       db().from("creator_signups_f5961d0c").select("id, instagram, email, city"),
       db().from("business_signups_f5961d0c")
         .select("id, business_name, email, referred_by_creator, referral_code, referral_source, created_at")
         .not("referred_by_creator", "is", null),
+      // Counted here rather than per row: one read of a narrow table beats a
+      // count query per ambassador, and the table only grows with opens.
+      db().from("ambassador_link_views_f5961d0c").select("referral_code, is_self_view"),
     ]);
     const ambassadors = ambRes.data ?? [];
     const stored = refRes.data ?? [];
+
+    // An ambassador checking their own link is logged but never counted -- the
+    // number is meant to say how much other people opened it.
+    const linkViews: Record<string, number> = {};
+    for (const v of (viewRes.data ?? [])) {
+      if (v.is_self_view) continue;
+      const k = canonicalCode(String(v.referral_code || ""));
+      linkViews[k] = (linkViews[k] || 0) + 1;
+    }
 
     // Card scans wrote attribution onto the business and no referral row, so
     // every business signed up at the counter was missing from this screen. The
@@ -5494,6 +5552,11 @@ app.get("/make-server-f5961d0c/admin/ambassadors", async (c) => {
         referralCode: a.referral_code, referralUrl: a.referral_url,
         enabled: !!a.enabled_status, createdAt: a.created_at,
         businessesReferred: mine.length,
+        // How many times the link was opened, and how much of that turned into
+        // a business. A conversion rate over referrals says how good the
+        // referrals were; this says whether the link is being shared at all,
+        // which is the half that was invisible.
+        linkViews: linkViews[canonicalCode(String(a.referral_code || ""))] || 0,
         conversionRate: mine.length ? Math.round((converted / mine.length) * 100) : 0,
         rewardsEarned: mine.filter((r: any) => r.reward_status === "paid").reduce((s: number, r: any) => s + parseAmount(r.reward_amount), 0),
       };
@@ -5504,6 +5567,7 @@ app.get("/make-server-f5961d0c/admin/ambassadors", async (c) => {
         totalAmbassadors: ambassadors.length,
         activeAmbassadors: ambassadors.filter((a: any) => a.enabled_status).length,
         totalReferrals: referrals.length,
+        linkViews: Object.values(linkViews).reduce((a, b) => a + b, 0),
         businessesCreated: referrals.filter((r: any) => !!r.business_created_at).length,
         businessesActivated: referrals.filter((r: any) => !!r.subscription_active_at).length,
         totalRewardsPaid: referrals.filter((r: any) => r.reward_status === "paid").reduce((s: number, r: any) => s + parseAmount(r.reward_amount), 0),
