@@ -5,11 +5,13 @@ export interface AmbassadorAdminData {
   overview: {
     totalAmbassadors: number; activeAmbassadors: number; totalReferrals: number;
     businessesCreated: number; businessesActivated: number; totalRewardsPaid: number;
+    linkViews?: number;
   };
   ambassadors: {
     ambassadorId: string; creatorId: string; creatorInstagram: string; creatorEmail: string;
     referralCode: string; referralUrl: string; enabled: boolean; createdAt: string;
     businessesReferred: number; conversionRate: number; rewardsEarned: number;
+    linkViews?: number;
   }[];
   referrals: {
     id: string; ambassadorId: string; businessName: string; businessEmail: string;
@@ -74,6 +76,7 @@ export function AmbassadorAdmin({ data, onAdvance, onPayReward, onToggle, onBack
   const overviewCards = [
     { label: "Total Ambassadors", value: o.totalAmbassadors },
     { label: "Active", value: o.activeAmbassadors },
+    { label: "Link Views", value: o.linkViews ?? 0 },
     { label: "Total Referrals", value: o.totalReferrals },
     { label: "Businesses Created", value: o.businessesCreated },
     { label: "Businesses Activated", value: o.businessesActivated },
@@ -87,7 +90,7 @@ export function AmbassadorAdmin({ data, onAdvance, onPayReward, onToggle, onBack
         <h2 className="text-lg font-semibold text-white">Ambassador Management</h2>
       </div>
 
-      <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
+      <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-7 gap-3">
         {overviewCards.map(c => (
           <div key={c.label} className="bg-white/5 border border-white/10 rounded-xl p-3">
             <p className="text-[11px] text-neutral-500 leading-tight">{c.label}</p>
@@ -159,6 +162,9 @@ export function AmbassadorAdmin({ data, onAdvance, onPayReward, onToggle, onBack
               )}
             </div>
             <div className="flex items-center gap-4 text-xs shrink-0">
+              <span className="text-neutral-500" title="Times their referral link was opened by someone else">
+                Views <span className="text-white font-semibold">{a.linkViews ?? 0}</span>
+              </span>
               <span className="text-neutral-500">Referred <span className="text-white font-semibold">{a.businessesReferred}</span></span>
               <span className="text-neutral-500">Conv. <span className="text-white font-semibold">{a.conversionRate}%</span></span>
               <span className="text-neutral-500">Earned <span className="text-green-400 font-semibold">{money(a.rewardsEarned)}</span></span>

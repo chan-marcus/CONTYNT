@@ -559,6 +559,18 @@ function BusinessRow({ signup, approved, onApprove, onImpersonate, impersonating
             : <span className="text-xs px-2 py-0.5 rounded-full bg-white/5 text-neutral-600 border border-white/10">No plan</span>}
         </div>
 
+        {/* How many Features this business has out. Its own column rather than
+            the first pill in Activity: it is a standing fact, where everything
+            in Activity is a state that changes under it, and as a pill among
+            pills it moved every time one of them appeared. */}
+        <div className="md:w-24 shrink-0">
+          {liveFeats.length > 0
+            ? <span className="text-[10px] px-1.5 py-0.5 rounded bg-white/5 text-neutral-400 border border-white/10">
+                {liveFeats.length} Feature{liveFeats.length === 1 ? "" : "s"}
+              </span>
+            : <span className="text-xs text-neutral-700">—</span>}
+        </div>
+
         {/* Quota. Blank rather than "0 of 0" when there is no plan to spend. */}
         <div className="md:w-20 shrink-0">
           {tier
@@ -570,16 +582,7 @@ function BusinessRow({ signup, approved, onApprove, onImpersonate, impersonating
 
         {/* What is happening. Only the counts that are non-zero, so a quiet
             business leaves the column empty instead of carrying three zeroes. */}
-        <div className="md:w-72 shrink-0 flex flex-wrap items-center gap-1.5">
-          {/* How many Features this business has out, first. It is the standing
-              fact the rest of the row is about -- the counts after it are
-              states those Features are in -- and it is the one pill whose width
-              does not move, so the column starts on the same edge every row. */}
-          {liveFeats.length > 0 && (
-            <span className="text-[10px] px-1.5 py-0.5 rounded bg-white/5 text-neutral-400 border border-white/10">
-              {liveFeats.length} Feature{liveFeats.length === 1 ? "" : "s"}
-            </span>
-          )}
+        <div className="md:w-64 shrink-0 flex flex-wrap items-center gap-1.5">
           {pendingFeats.length > 0 && (
             <span className="text-[10px] px-1.5 py-0.5 rounded bg-yellow-500/15 text-yellow-300 border border-yellow-500/25">
               {pendingFeats.length} to approve
@@ -1908,8 +1911,9 @@ export function Analytics({ adminToken }: { adminToken?: string } = {}) {
                 <div className="hidden md:flex items-center gap-3 px-3 pb-1 text-[10px] font-semibold uppercase tracking-widest text-neutral-600">
                   <span className="flex-1 pl-[1.375rem]">Business</span>
                   <span className="w-24">Plan</span>
+                  <span className="w-24">Features</span>
                   <span className="w-20">Reels</span>
-                  <span className="w-72">Activity</span>
+                  <span className="w-64">Activity</span>
                   <span className="w-40 text-right">Joined</span>
                 </div>
                 {/* Paying first, then the ones showing intent by opening the
