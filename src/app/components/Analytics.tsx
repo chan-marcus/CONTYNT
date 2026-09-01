@@ -501,9 +501,16 @@ function BusinessRow({ signup, approved, onApprove, onImpersonate, impersonating
   // like a business where nothing was happening.
   const inProgressClaims = (allClaims || []).filter((c: any) => c.status === "claimed" && onThisBiz(c));
   const inProgressCount = inProgressClaims.length;
+  // Reel posted, waiting to be reviewed. The end of the run and the last place
+  // the row went quiet: in progress stops counting the moment a creator
+  // submits, and nothing picked it up, so a business with a Reel sitting
+  // unreviewed looked finished.
+  const submittedClaims = (allClaims || []).filter((c: any) => c.status === "submitted" && onThisBiz(c));
+  const submittedCount = submittedClaims.length;
   // What earns the amber edge: something here is waiting on the operator.
-  // Deliberately excludes approvedCount, which is waiting on a creator.
-  const needsAction = pendingFeats.length + interestedCount;
+  // Approved and in progress are deliberately out -- both are waiting on a
+  // creator. A submitted Reel is in, because nobody but an admin can move it.
+  const needsAction = pendingFeats.length + interestedCount + submittedCount;
 
   const offerFeature = async (kind: "trial" | "oneoff") => {
     setOffering(kind);
@@ -635,6 +642,24 @@ function BusinessRow({ signup, approved, onApprove, onImpersonate, impersonating
           {inProgressCount > 2 && (
             <span className="text-[10px] px-1.5 py-0.5 rounded bg-blue-500/5 text-blue-200/70 border border-blue-500/20">
               +{inProgressCount - 2}
+            </span>
+          )}
+          {/* Yellow, like "to approve" above it, because they mean the same
+              thing to whoever is reading the row: this one is on you. The
+              review itself happens in the Reels tab; this is the row saying it
+              is owed. */}
+          {submittedCount > 0 && (
+            <span className="text-[10px] px-1.5 py-0.5 rounded bg-yellow-500/15 text-yellow-300 border border-yellow-500/25">
+              {submittedCount} submitted
+            </span>
+          )}
+          {submittedClaims.slice(0, 2).map((c: any) => (
+            <IgLink key={c.creatorToken} handle={c.creatorInstagram}
+              className="text-[10px] px-1.5 py-0.5 rounded bg-yellow-500/5 text-yellow-300/90 border border-yellow-500/20" />
+          ))}
+          {submittedCount > 2 && (
+            <span className="text-[10px] px-1.5 py-0.5 rounded bg-yellow-500/5 text-yellow-300/70 border border-yellow-500/20">
+              +{submittedCount - 2}
             </span>
           )}
           {planClicks > 0 && liveFeats.length === 0 && (
