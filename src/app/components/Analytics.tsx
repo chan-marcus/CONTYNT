@@ -61,6 +61,29 @@ function igHandle(raw: string) {
 // whatever the creator typed.
 const igKey = (raw: string) => String(raw ?? "").replace(/^@+/, "").trim().toLowerCase();
 
+// A handle is the one identifier in this dashboard that leads somewhere, and
+// checking who someone is means opening their profile. The Creators tab and the
+// business rows already linked theirs; every other place printed the same
+// string as dead text, so whether a handle was clickable depended on which
+// panel you happened to be looking at.
+//
+// Inherits colour and weight from the caller rather than imposing link blue:
+// these sit inside rows that already colour a handle by state -- red when
+// expired, purple when credited -- and a blue that overrode that would trade
+// one piece of information for another. Hover is what says it is a link.
+//
+// Falls back to plain text when there is no handle, so an empty row renders an
+// em dash rather than a link to instagram.com/.
+function IgLink({ handle, className = "" }: { handle?: string | null; className?: string }) {
+  const clean = String(handle ?? "").replace(/^@+/, "").trim();
+  if (!clean) return <span className={className}>—</span>;
+  return (
+    <a href={`https://instagram.com/${clean}`} target="_blank" rel="noopener noreferrer"
+      title={`Open @${clean} on Instagram`}
+      className={`hover:underline underline-offset-2 transition-colors ${className}`}>@{clean}</a>
+  );
+}
+
 // Purple and an Award, matching the chip a business carries naming the
 // Ambassador who brought it in -- the same fact seen from the other end, so it
 // should not be a second look. The code rides in the tooltip rather than the
@@ -103,8 +126,7 @@ function CreatorRow({ signup, token, onImpersonate, impersonating, claims, featu
         <div className="flex-1 min-w-0 flex flex-col sm:flex-row sm:items-center gap-1 sm:gap-4">
           <button onClick={() => setExpanded(v => !v)}
             className="flex items-center gap-2 shrink-0 text-left group">
-            <a href={`https://instagram.com/${signup.instagram.replace(/^@+/,"")}`} target="_blank" rel="noopener noreferrer"
-              className="font-semibold text-white group-hover:text-blue-300 transition-colors">{igHandle(signup.instagram)}</a>
+            <IgLink handle={signup.instagram} className="font-semibold text-white group-hover:text-blue-300" />
             {signup.isAmbassador && <AmbassadorBadge code={signup.ambassadorCode} />}
             {hasActive && (
               <span className="flex items-center gap-1 text-xs text-blue-400 bg-blue-500/15 border border-blue-500/25 px-2 py-0.5 rounded-full">
@@ -243,7 +265,7 @@ function FeatureClaimRow({ claim, featureId, onApprove, onReset, isAmbassador, a
                 <span className={`relative inline-flex rounded-full w-2 h-2 ${isExpiredDisplay ? "bg-red-400" : cfg.dot}`} />
               </span>
             )}
-            <span className={isExpiredDisplay ? "text-red-400" : cfg.color}>{igHandle(claim.creatorInstagram)}</span>
+            <IgLink handle={claim.creatorInstagram} className={isExpiredDisplay ? "text-red-400" : cfg.color} />
             {isAmbassador && <AmbassadorBadge code={ambassadorCode} />}
             <span className={`text-[10px] px-1.5 py-0.5 rounded-full border ${isExpiredDisplay ? "bg-red-500/15 text-red-400 border-red-500/25" : "bg-white/10 border-white/10 text-neutral-400"}`}>
               {isExpiredDisplay ? "Expired" : cfg.label}
@@ -376,11 +398,18 @@ function BusinessRow({ signup, approved, onApprove, onImpersonate, impersonating
   const feats = bizFeatures || [];
   const pendingFeats = feats.filter((f: any) => f.status === "pending" && f.submittedByBusiness);
   const liveFeats = feats.filter((f: any) => ["offered", "available", "completed"].includes(f.status));
+  const onThisBiz = (c: any) => feats.some((f: any) => f.id === c.featureId);
   // Claims sitting at "interested" are the ones this panel can act on -- an
   // admin has to approve them before the creator can start.
-  const interestedCount = (allClaims || []).filter((c: any) =>
-    c.status === "interested" && feats.some((f: any) => f.id === c.featureId)).length;
+  const interestedCount = (allClaims || []).filter((c: any) => c.status === "interested" && onThisBiz(c)).length;
+  // Selected, and now on a 24 hour clock to accept. Counted separately from
+  // "interested" because they are the opposite kind of waiting: one is queued
+  // behind the operator, the other is out with the creator and will lapse on
+  // its own if nobody does anything.
+  const approvedClaims = (allClaims || []).filter((c: any) => c.status === "approved" && onThisBiz(c));
+  const approvedCount = approvedClaims.length;
   // What earns the amber edge: something here is waiting on the operator.
+  // Deliberately excludes approvedCount, which is waiting on a creator.
   const needsAction = pendingFeats.length + interestedCount;
 
   const offerFeature = async (kind: "trial" | "oneoff") => {
@@ -448,7 +477,16 @@ function BusinessRow({ signup, approved, onApprove, onImpersonate, impersonating
 
         {/* What is happening. Only the counts that are non-zero, so a quiet
             business leaves the column empty instead of carrying three zeroes. */}
-        <div className="md:w-52 shrink-0 flex flex-wrap items-center gap-1.5">
+        <div className="md:w-72 shrink-0 flex flex-wrap items-center gap-1.5">
+          {/* How many Features this business has out, first. It is the standing
+              fact the rest of the row is about -- the counts after it are
+              states those Features are in -- and it is the one pill whose width
+              does not move, so the column starts on the same edge every row. */}
+          {liveFeats.length > 0 && (
+            <span className="text-[10px] px-1.5 py-0.5 rounded bg-white/5 text-neutral-400 border border-white/10">
+              {liveFeats.length} Feature{liveFeats.length === 1 ? "" : "s"}
+            </span>
+          )}
           {pendingFeats.length > 0 && (
             <span className="text-[10px] px-1.5 py-0.5 rounded bg-yellow-500/15 text-yellow-300 border border-yellow-500/25">
               {pendingFeats.length} to approve
@@ -459,9 +497,26 @@ function BusinessRow({ signup, approved, onApprove, onImpersonate, impersonating
               {interestedCount} interested
             </span>
           )}
-          {liveFeats.length > 0 && (
-            <span className="text-[10px] px-1.5 py-0.5 rounded bg-white/5 text-neutral-400 border border-white/10">
-              {liveFeats.length} Feature{liveFeats.length === 1 ? "" : "s"}
+          {/* Green, matching how an approved claim reads in the rows below, so
+              the count and the thing it counts are the same colour.
+              The count leads and the handles follow it: the number is what the
+              column is scanned for, and the names are who to chase when one of
+              these has been sitting on its 24 hour clock too long. Capped at
+              two, because a business with five selected creators would push
+              every other column off the row to say something the count already
+              said -- expanding the row lists them all. */}
+          {approvedCount > 0 && (
+            <span className="text-[10px] px-1.5 py-0.5 rounded bg-green-500/15 text-green-300 border border-green-500/25">
+              {approvedCount} approved
+            </span>
+          )}
+          {approvedClaims.slice(0, 2).map((c: any) => (
+            <IgLink key={c.creatorToken} handle={c.creatorInstagram}
+              className="text-[10px] px-1.5 py-0.5 rounded bg-green-500/5 text-green-300/90 border border-green-500/20" />
+          ))}
+          {approvedCount > 2 && (
+            <span className="text-[10px] px-1.5 py-0.5 rounded bg-green-500/5 text-green-300/70 border border-green-500/20">
+              +{approvedCount - 2}
             </span>
           )}
           {planClicks > 0 && liveFeats.length === 0 && (
@@ -510,7 +565,7 @@ function BusinessRow({ signup, approved, onApprove, onImpersonate, impersonating
               <span className="text-purple-300 inline-flex items-center gap-1">
                 <Award className="w-2.5 h-2.5 shrink-0" />
                 {signup.referredByHandle
-                  ? igHandle(signup.referredByHandle)
+                  ? <IgLink handle={signup.referredByHandle} className="text-purple-300" />
                   : `Ambassador${signup.referralCode ? ` · ${signup.referralCode}` : ""}`}
               </span>
             )}
@@ -617,7 +672,7 @@ function BusinessRow({ signup, approved, onApprove, onImpersonate, impersonating
                     </div>
                     {f.status === "completed" && (f.claimed_by || f.winner_instagram) && (
                       <div className="text-xs text-neutral-500">
-                        Claimed by <span className="text-purple-300">{igHandle(f.claimed_by || f.winner_instagram)}</span>
+                        Claimed by <IgLink handle={f.claimed_by || f.winner_instagram} className="text-purple-300" />
                         {f.claimed_at && <span> · {new Date(f.claimed_at).toLocaleString("en-US", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })}</span>}
                       </div>
                     )}
@@ -726,7 +781,7 @@ function SubmissionCard({ sub, onApprove, approving, businessName, featurePayout
       <div className="p-4 space-y-3">
         <div className="flex items-start justify-between gap-2">
           <div>
-            <p className="font-semibold text-white">@{(thumbAuthor || sub.creatorInstagram || "—").replace(/^@+/, "")}</p>
+            <p><IgLink handle={thumbAuthor || sub.creatorInstagram} className="font-semibold text-white" /></p>
             {businessName && businessName !== "—" && <p className="text-xs text-neutral-300 font-medium">{businessName}</p>}
             <p className="text-xs text-neutral-500">
               <span className="font-medium">Submitted: </span>
@@ -1638,9 +1693,9 @@ export function Analytics({ adminToken }: { adminToken?: string } = {}) {
                   <div key={r.id} className="bg-red-500/5 border border-red-500/30 rounded-xl px-4 py-3 space-y-2">
                     <div className="flex flex-col sm:flex-row sm:items-center gap-3">
                       <div className="flex-1 min-w-0">
-                        <p className="font-semibold text-white">
-                          @{(r.creatorInstagram || "creator").replace(/^@+/, "")}
-                          <span className="ml-2 text-red-300">${r.amount}</span>
+                        <p>
+                          <IgLink handle={r.creatorInstagram} className="font-semibold text-white" />
+                          <span className="ml-2 font-semibold text-red-300">${r.amount}</span>
                         </p>
                         <p className="text-xs text-neutral-400 mt-0.5">
                           Sent {r.method} to <span className="font-mono text-neutral-300">{r.handle}</span>
@@ -1673,9 +1728,9 @@ export function Analytics({ adminToken }: { adminToken?: string } = {}) {
                 {payoutRequests.filter(r => r.status === "requested").map(r => (
                   <div key={r.id} className="bg-yellow-500/5 border border-yellow-500/25 rounded-xl px-4 py-3 flex flex-col sm:flex-row sm:items-center gap-3">
                     <div className="flex-1 min-w-0">
-                      <p className="font-semibold text-white">
-                        @{(r.creatorInstagram || "creator").replace(/^@+/, "")}
-                        <span className="ml-2 text-green-400">${r.amount}</span>
+                      <p>
+                        <IgLink handle={r.creatorInstagram} className="font-semibold text-white" />
+                        <span className="ml-2 font-semibold text-green-400">${r.amount}</span>
                       </p>
                       <p className="text-xs text-neutral-400 mt-0.5">
                         {r.method} · <span className="font-mono text-neutral-300">{r.handle}</span>
@@ -1739,7 +1794,7 @@ export function Analytics({ adminToken }: { adminToken?: string } = {}) {
                   <span className="flex-1 pl-[1.375rem]">Business</span>
                   <span className="w-24">Plan</span>
                   <span className="w-20">Reels</span>
-                  <span className="w-52">Activity</span>
+                  <span className="w-72">Activity</span>
                   <span className="w-40 text-right">Joined</span>
                 </div>
                 {/* Paying first, then the ones showing intent by opening the
