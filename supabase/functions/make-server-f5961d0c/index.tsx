@@ -4500,6 +4500,60 @@ app.get("/make-server-f5961d0c/admin/claims", async (c) => {
   } catch (e: any) { return c.json({ error: "Failed to fetch claims", details: e.message }, 500); }
 });
 
+// ─── Admin: one creator's portal activity ────────────────────────────────────
+// creator_events has been collecting since August and nothing ever read it:
+// seventeen call sites write to it, no route returns it. So the record of a
+// creator signing in, confirming their profile or opting in as an Ambassador
+// existed and was unreachable, and the dashboard could only report the state
+// those events left behind, never when any of it happened.
+//
+// Per creator and on demand rather than bundled into /signups. The dashboard
+// loads every creator at once and almost none of them are being looked at; this
+// is the detail behind one row, so it is fetched when that row is opened.
+app.get("/make-server-f5961d0c/admin/creator-events", async (c) => {
+  try {
+    const creatorId = String(c.req.query("creatorId") || "");
+    if (!creatorId) return c.json({ error: "creatorId required" }, 400);
+    const limit = Math.min(Math.max(Number(c.req.query("limit") || 60), 1), 200);
+
+    const { data: events, error } = await db().from("creator_events_f5961d0c")
+      .select("type, payload, created_at").eq("creator_id", creatorId)
+      .order("created_at", { ascending: false }).limit(limit);
+    if (error) throw error;
+
+    // Opening a Feature is the one thing a creator does in the portal that is
+    // not in the event log -- view-feature stamps last_viewed on the claim
+    // instead. It belongs in the same list, so it is folded in here rather
+    // than left as a separate thing the reader has to merge by eye.
+    //
+    // One timestamp per Feature, not a history: the column is overwritten on
+    // every view, so this says when they last opened it and cannot say how
+    // often. Claims hang off the portal token, hence the ctokenref_ hop.
+    const ref = await kv.get(`ctokenref_${creatorId}`).catch(() => null);
+    let views: any[] = [];
+    if (ref?.token) {
+      const { data: claims } = await db().from("creator_claims_f5961d0c")
+        .select("feature_id, last_viewed").eq("creator_token", ref.token).not("last_viewed", "is", null);
+      const ids = [...new Set((claims ?? []).map((r: any) => r.feature_id))];
+      const nameById: Record<string, string> = {};
+      if (ids.length) {
+        const { data: feats } = await db().from("features_f5961d0c").select("id, business_name").in("id", ids);
+        for (const f of (feats ?? [])) nameById[f.id] = f.business_name || "";
+      }
+      views = (claims ?? []).map((r: any) => ({
+        type: "feature_viewed", created_at: r.last_viewed,
+        payload: { business: nameById[r.feature_id] || "" },
+      }));
+    }
+
+    const all = [...(events ?? []), ...views]
+      .filter(e => e.created_at)
+      .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
+      .slice(0, limit);
+    return c.json({ events: all });
+  } catch (e: any) { return c.json({ error: "Failed to fetch creator events", details: e.message }, 500); }
+});
+
 // ─── Admin: get all submissions ───────────────────────────────────────────────
 app.get("/make-server-f5961d0c/admin/submissions", async (c) => {
   try {
