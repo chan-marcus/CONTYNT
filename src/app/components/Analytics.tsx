@@ -99,6 +99,91 @@ function AmbassadorBadge({ code }: { code?: string | null }) {
   );
 }
 
+// Event types as written by logCreatorEvent, in the words an operator would
+// use. Anything not listed falls back to its own slug de-slugged, so a new
+// event type shows up as readable text the day it starts being logged rather
+// than waiting for this table to catch up.
+const EVENT_LABELS: Record<string, string> = {
+  login_code_sent: "Login code sent",
+  login_succeeded: "Signed in",
+  signed_out: "Signed out",
+  profile_confirmed: "Confirmed their profile",
+  verify_email_sent: "Verification email sent",
+  verify_link_requested: "Asked for a verification link",
+  verify_link_opened: "Opened their verification link",
+  verify_link_copied: "Verification link copied by an admin",
+  verify_link_resend_failed: "Verification resend failed",
+  email_changed: "Changed their email",
+  email_unsubscribed: "Unsubscribed from email",
+  feature_drop_sent: "Feature drop email sent",
+  ambassador_opted_in: "Opted in as an Ambassador",
+  ambassador_card_generated: "Ambassador card generated",
+  ambassador_card_credited: "Ambassador card credited",
+  payout_not_received: "Reported a payout that never arrived",
+  claim_expired: "A claim of theirs expired",
+  admin_impersonated: "An admin viewed the portal as them",
+  feature_viewed: "Opened a Feature",
+};
+
+// Two kinds of line, coloured apart: what the creator did, and what was sent to
+// them. A trail that renders both at one weight reads as though the creator has
+// been busy when half of it is our own mail.
+const SENT_TO_THEM = new Set([
+  "login_code_sent", "verify_email_sent", "feature_drop_sent", "verify_link_resend_failed",
+]);
+const NEEDS_ATTENTION = new Set(["payout_not_received", "verify_link_resend_failed", "claim_expired"]);
+
+function eventLabel(e: any) {
+  const base = EVENT_LABELS[e.type] || String(e.type || "").replace(/_/g, " ").replace(/^./, (m: string) => m.toUpperCase());
+  // The only event carrying something worth naming inline.
+  if (e.type === "feature_viewed" && e.payload?.business) return `Opened ${e.payload.business}`;
+  return base;
+}
+
+// The record of what a creator has done in the portal, and when. Loaded when
+// the row is opened rather than with the list: the dashboard holds every
+// creator and almost none of them are being read.
+function PortalActivity({ creatorId }: { creatorId: string }) {
+  const [events, setEvents] = useState<any[] | null>(null);
+  const [failed, setFailed] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      const res = await apiFetch(`/admin/creator-events?creatorId=${encodeURIComponent(creatorId)}`).catch(() => null);
+      const json = await res?.json().catch(() => null);
+      if (cancelled) return;
+      if (!res?.ok) { setFailed(true); return; }
+      setEvents(json?.events || []);
+    })();
+    return () => { cancelled = true; };
+  }, [creatorId]);
+
+  return (
+    <div className="px-4 pb-3 border-t border-white/10">
+      <p className="text-[10px] font-semibold uppercase tracking-widest text-neutral-600 py-2">Portal Activity</p>
+      {failed ? <p className="text-xs text-neutral-600 pb-1">Could not load activity.</p>
+        : events === null ? <p className="text-xs text-neutral-600 pb-1">Loading…</p>
+        : events.length === 0 ? <p className="text-xs text-neutral-600 pb-1">Nothing recorded yet.</p>
+        : (
+          <div className="flex flex-col border-l border-white/10 pl-3 ml-1">
+            {events.map((e, i) => (
+              <div key={i} className="flex items-baseline gap-3 py-1">
+                <span className={`flex-1 text-xs ${
+                  NEEDS_ATTENTION.has(e.type) ? "text-red-300"
+                    : SENT_TO_THEM.has(e.type) ? "text-neutral-500"
+                    : "text-neutral-300"}`}>
+                  {eventLabel(e)}
+                </span>
+                <span className="text-[10px] text-neutral-600 shrink-0 tabular-nums">{ts(e.created_at)}</span>
+              </div>
+            ))}
+          </div>
+        )}
+    </div>
+  );
+}
+
 function CreatorRow({ signup, token, onImpersonate, impersonating, claims, features, onMarkPaid, markingPaid }: {
   signup: Signup; token?: string; onImpersonate: () => void; impersonating: boolean;
   claims: Claim[]; features: Feature[];
@@ -137,7 +222,7 @@ function CreatorRow({ signup, token, onImpersonate, impersonating, claims, featu
                 In Progress
               </span>
             )}
-            {showActivity && <ChevronDown className={`w-3 h-3 text-neutral-500 transition-transform ${expanded ? "rotate-180" : ""}`} />}
+            <ChevronDown className={`w-3 h-3 text-neutral-500 transition-transform ${expanded ? "rotate-180" : ""}`} />
           </button>
           <p className="text-sm text-neutral-500 truncate">{signup.email || "—"}</p>
           <p className="text-xs text-neutral-500 shrink-0">{new Date(signup.createdAt).toLocaleDateString()}</p>
@@ -173,6 +258,8 @@ function CreatorRow({ signup, token, onImpersonate, impersonating, claims, featu
           </button>
         )}
       </div>
+
+      {expanded && <PortalActivity creatorId={signup.id} />}
 
       {/* Feature Activity — active claims only */}
       {expanded && showActivity && (
