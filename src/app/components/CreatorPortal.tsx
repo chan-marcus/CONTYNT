@@ -1158,7 +1158,19 @@ function FeatureCard({ feature, claim, token, onClaim, onUnclaim, onAccept, onSu
                 extra that follows. */}
             <div className="bg-white/5 rounded-xl px-4 py-3 text-xs text-neutral-400 space-y-1.5">
               <p className="font-medium text-neutral-300 mb-2">Post Requirements</p>
-              <p>• Add <span className="text-white">@{((feature as any).businessInstagram || feature.businessName).replace(/^@/, "").toLowerCase().replace(/\s+/g, "")}</span> as a collaborator</p>
+              {/* Only ever the handle the business gave us. This used to fall
+                  back to the business name lowercased with the spaces taken
+                  out, which does not produce a handle -- it produces something
+                  handle-shaped and wrong. Qua O La, whose account is
+                  @quaolasf, was rendered as @quaola; Oven & Phin came out as
+                  @oven&phin. A creator following that either tags a stranger or
+                  tags nobody, and either way the business does not get the
+                  collaboration it paid for. With no handle on file the line is
+                  dropped, and the requirement below it still names the
+                  business by location. */}
+              {(feature as any).businessInstagram
+                ? <p>• Add <span className="text-white">@{String((feature as any).businessInstagram).replace(/^@+/, "").trim()}</span> as a collaborator</p>
+                : <p>• Add <span className="text-white">{feature.businessName}</span> as a collaborator on the post</p>}
               <p>• Tag the business location</p>
               <p>• Mention <span className="text-white">@contynt.hq</span> in the caption</p>
               <p>• Keep the post live for at least <span className="text-white">72 hours</span></p>

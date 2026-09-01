@@ -495,6 +495,12 @@ function BusinessRow({ signup, approved, onApprove, onImpersonate, impersonating
   // its own if nobody does anything.
   const approvedClaims = (allClaims || []).filter((c: any) => c.status === "approved" && onThisBiz(c));
   const approvedCount = approvedClaims.length;
+  // Accepted, and out filming. Approving moves a claim off the approved count
+  // and nothing used to pick it up, so the row went quiet at the exact moment
+  // the work actually started -- a business with a creator mid-shoot looked
+  // like a business where nothing was happening.
+  const inProgressClaims = (allClaims || []).filter((c: any) => c.status === "claimed" && onThisBiz(c));
+  const inProgressCount = inProgressClaims.length;
   // What earns the amber edge: something here is waiting on the operator.
   // Deliberately excludes approvedCount, which is waiting on a creator.
   const needsAction = pendingFeats.length + interestedCount;
@@ -604,6 +610,28 @@ function BusinessRow({ signup, approved, onApprove, onImpersonate, impersonating
           {approvedCount > 2 && (
             <span className="text-[10px] px-1.5 py-0.5 rounded bg-green-500/5 text-green-300/70 border border-green-500/20">
               +{approvedCount - 2}
+            </span>
+          )}
+          {/* Blue with a live dot, which is how In Progress reads everywhere
+              else in this dashboard. Interested is blue too, so the dot is what
+              separates them -- motion for the one that is actually running,
+              which is the same thing the creator rows do. */}
+          {inProgressCount > 0 && (
+            <span className="inline-flex items-center gap-1.5 text-[10px] px-1.5 py-0.5 rounded bg-blue-500/15 text-blue-200 border border-blue-500/30">
+              <span className="relative flex w-1.5 h-1.5 shrink-0">
+                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75" />
+                <span className="relative inline-flex rounded-full w-1.5 h-1.5 bg-blue-400" />
+              </span>
+              {inProgressCount} in progress
+            </span>
+          )}
+          {inProgressClaims.slice(0, 2).map((c: any) => (
+            <IgLink key={c.creatorToken} handle={c.creatorInstagram}
+              className="text-[10px] px-1.5 py-0.5 rounded bg-blue-500/5 text-blue-200/90 border border-blue-500/20" />
+          ))}
+          {inProgressCount > 2 && (
+            <span className="text-[10px] px-1.5 py-0.5 rounded bg-blue-500/5 text-blue-200/70 border border-blue-500/20">
+              +{inProgressCount - 2}
             </span>
           )}
           {planClicks > 0 && liveFeats.length === 0 && (

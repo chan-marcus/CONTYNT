@@ -1782,11 +1782,12 @@ app.post("/make-server-f5961d0c/webhooks/stripe", async (c) => {
         // cover, and is_one_off raises their allowance rather than spending it.
         if (tier === "one_off") {
           const { data: biz } = await db().from("business_signups_f5961d0c")
-            .select("business_name, address, city").eq("id", businessId).maybeSingle();
+            .select("business_name, address, city, instagram").eq("id", businessId).maybeSingle();
           const { error: featErr } = await db().from("features_f5961d0c").insert({
             id: uid("feat_"), business_id: businessId,
             business_name: (biz as any)?.business_name || "",
             address: (biz as any)?.address || "", city: (biz as any)?.city || "",
+            business_instagram: (biz as any)?.instagram || "",
             status: "offered", is_one_off: true,
             offered_at: new Date().toISOString(),
             category: "", payout_range: "",
@@ -4243,12 +4244,18 @@ app.post("/make-server-f5961d0c/admin/offer-feature", async (c) => {
   try {
     const { businessId, isTrial, isOneOff } = await c.req.json();
     if (!businessId) return c.json({ error: "businessId required" }, 400);
-    const { data: biz, error } = await db().from("business_signups_f5961d0c").select("id, business_name, address, city, subscription_tier").eq("id", businessId).single();
+    const { data: biz, error } = await db().from("business_signups_f5961d0c").select("id, business_name, address, city, instagram, subscription_tier").eq("id", businessId).single();
     if (error || !biz) return c.json({ error: "Business not found" }, 404);
     const featureId = uid("feat_");
     await db().from("features_f5961d0c").insert({
       id: featureId, business_id: businessId, business_name: biz.business_name,
       address: biz.address || "", city: biz.city || "",
+      // The handle the creator is told to tag as a collaborator. Three of the
+      // four routes that create a Feature used to leave it empty, and the
+      // portal filled the gap by squashing the business name into something
+      // handle-shaped -- so a Feature for Qua O La told creators to tag
+      // @quaola, which is not their account.
+      business_instagram: biz.instagram || "",
       status: "offered", is_trial: !!isTrial, is_one_off: !!isOneOff,
       offered_at: new Date().toISOString(),
       category: "", payout_range: "",
@@ -4355,6 +4362,7 @@ app.post("/make-server-f5961d0c/business-portal/submit-feature", async (c) => {
       await must("submit-feature: create request", db().from("features_f5961d0c").insert({
         id: newId, business_id: bizData.businessId, business_name: (bizRow as any)?.business_name || "",
         address: (bizRow as any)?.address || "", city: (bizRow as any)?.city || "",
+        business_instagram: (bizRow as any)?.instagram || "",
         status: "pending", request_notes: notes, submitted_by_business: true,
         submitted_at_biz: new Date().toISOString(), offered_at: new Date().toISOString(),
         category: "", payout_range: "",
