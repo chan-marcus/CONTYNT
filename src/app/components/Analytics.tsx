@@ -317,8 +317,7 @@ function FeatureClaimRow({ claim, featureId, onApprove, onReset, isAmbassador, a
   // happened -- so it lives here rather than on the claim.
   const [mailProblem, setMailProblem] = useState("");
   const [resetting, setResetting] = useState(false);
-  const isExpired = (claim.expiresAt && new Date(claim.expiresAt).getTime() < Date.now()) ||
-    (claim.acceptanceExpiresAt && new Date(claim.acceptanceExpiresAt).getTime() < Date.now() && claim.status === "approved");
+
   const isViewing = claim.lastViewed && Date.now() - new Date(claim.lastViewed).getTime() < 5 * 60 * 1000;
   const status = claim.status;
 
@@ -330,7 +329,23 @@ function FeatureClaimRow({ claim, featureId, onApprove, onReset, isAmbassador, a
     unclaimed:   { label: "Withdrew",    color: "text-neutral-500", bg: "bg-white/3",          border: "border-white/5" },
   };
   const cfg = statusConfig[status] || statusConfig.interested;
-  const isExpiredDisplay = isExpired && status === "claimed";
+  // A claim runs against two clocks and only one of them was ever shown.
+  // expires_at is the seven days to film after accepting; acceptance_expires_at
+  // is the 24 hours to accept after being selected. The old gate required
+  // status "claimed", which is the first clock only -- so a selection nobody
+  // accepted went on reading "Approved" for as long as it sat there, which is
+  // the opposite of what had happened.
+  //
+  // Checked per status rather than across both: a submitted claim can be past
+  // its filming deadline and is not expired, because the Reel is already in.
+  //
+  // The row is the only thing that says so until the sweep runs. That sweep
+  // sets the claim to "unclaimed" and frees the Feature, but it runs on a
+  // schedule, and between the deadline passing and the sweep firing this was
+  // the screen telling an admin the creator was still on the hook.
+  const isExpiredDisplay =
+    (status === "claimed" && !!claim.expiresAt && new Date(claim.expiresAt).getTime() < Date.now()) ||
+    (status === "approved" && !!claim.acceptanceExpiresAt && new Date(claim.acceptanceExpiresAt).getTime() < Date.now());
 
   // Timestamps for each action
   const events = [
@@ -493,8 +508,22 @@ function BusinessRow({ signup, approved, onApprove, onImpersonate, impersonating
   // "interested" because they are the opposite kind of waiting: one is queued
   // behind the operator, the other is out with the creator and will lapse on
   // its own if nobody does anything.
-  const approvedClaims = (allClaims || []).filter((c: any) => c.status === "approved" && onThisBiz(c));
+  //
+  // Split on the deadline rather than the status alone. A selection nobody
+  // accepted keeps status "approved" until the sweep runs, so counting the
+  // status counted dead selections as live ones -- the column said "1 approved"
+  // about a creator the row beneath it was calling Expired.
+  const acceptanceLapsed = (c: any) =>
+    !!c.acceptanceExpiresAt && new Date(c.acceptanceExpiresAt).getTime() < Date.now();
+  const approvedClaims = (allClaims || []).filter((c: any) =>
+    c.status === "approved" && onThisBiz(c) && !acceptanceLapsed(c));
   const approvedCount = approvedClaims.length;
+  // Selected and never accepted. Given its own count rather than dropped,
+  // because the Feature is stuck: it reads as taken, the creator is not coming,
+  // and it stays that way until somebody picks another one.
+  const lapsedClaims = (allClaims || []).filter((c: any) =>
+    c.status === "approved" && onThisBiz(c) && acceptanceLapsed(c));
+  const lapsedCount = lapsedClaims.length;
   // Accepted, and out filming. Approving moves a claim off the approved count
   // and nothing used to pick it up, so the row went quiet at the exact moment
   // the work actually started -- a business with a creator mid-shoot looked
@@ -510,7 +539,7 @@ function BusinessRow({ signup, approved, onApprove, onImpersonate, impersonating
   // What earns the amber edge: something here is waiting on the operator.
   // Approved and in progress are deliberately out -- both are waiting on a
   // creator. A submitted Reel is in, because nobody but an admin can move it.
-  const needsAction = pendingFeats.length + interestedCount + submittedCount;
+  const needsAction = pendingFeats.length + interestedCount + submittedCount + lapsedCount;
 
   const offerFeature = async (kind: "trial" | "oneoff") => {
     setOffering(kind);
@@ -620,6 +649,23 @@ function BusinessRow({ signup, approved, onApprove, onImpersonate, impersonating
           {approvedCount > 2 && (
             <span className="text-[10px] px-1.5 py-0.5 rounded bg-green-500/5 text-green-300/70 border border-green-500/20">
               +{approvedCount - 2}
+            </span>
+          )}
+          {/* Red, and the only pill that is about something that has already
+              gone wrong rather than something in flight. Sits where the
+              approved pill would have been, because that is what it was. */}
+          {lapsedCount > 0 && (
+            <span className="text-[10px] px-1.5 py-0.5 rounded bg-red-500/15 text-red-300 border border-red-500/30">
+              {lapsedCount} expired
+            </span>
+          )}
+          {lapsedClaims.slice(0, 2).map((c: any) => (
+            <IgLink key={c.creatorToken} handle={c.creatorInstagram}
+              className="text-[10px] px-1.5 py-0.5 rounded bg-red-500/5 text-red-300/90 border border-red-500/20" />
+          ))}
+          {lapsedCount > 2 && (
+            <span className="text-[10px] px-1.5 py-0.5 rounded bg-red-500/5 text-red-300/70 border border-red-500/20">
+              +{lapsedCount - 2}
             </span>
           )}
           {/* Blue with a live dot, which is how In Progress reads everywhere
