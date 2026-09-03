@@ -42,7 +42,7 @@ interface Submission { id: string; featureId: string; creatorInstagram: string; 
 interface PageView { visitorId: string; referrer: string; timestamp: string; country?: string; city?: string; }
 interface Feature { id: string; businessId: string; businessName: string; category: string; payoutRange: string; status: string; total_payout?: string; claimed_by?: string; winner_instagram?: string; claimed_at?: string; isTrial?: boolean; isOneOff?: boolean; requestNotes?: string; submittedByBusiness?: boolean; offeredAt?: string | null; approvedAt?: string | null; }
 interface BusinessSignupExtended extends BusinessSignup { subscriptionTier?: string; subscriptionEndsAt?: string | null; }
-interface Claim { featureId: string; creatorToken: string; creatorInstagram: string; status: string; claimedAt: string; reelUrl?: string; approvedAt?: string; expiresAt?: string; acceptanceExpiresAt?: string; lastViewed?: string; selectedNotifiedAt?: string | null; }
+interface Claim { featureId: string; creatorToken: string; creatorInstagram: string; status: string; claimedAt: string; reelUrl?: string; approvedAt?: string; expiresAt?: string; acceptanceExpiresAt?: string; lastViewed?: string; selectedNotifiedAt?: string | null; unclaimedAt?: string | null; }
 
 // Renders a subscription period end. Deliberately UTC: these timestamps sit on
 // UTC midnight, and toLocaleDateString in any timezone behind Greenwich moves
@@ -121,6 +121,7 @@ const EVENT_LABELS: Record<string, string> = {
   ambassador_card_credited: "Ambassador card credited",
   payout_not_received: "Reported a payout that never arrived",
   claim_expired: "A claim of theirs expired",
+  claim_unclaimed: "Withdrew from a Feature",
   admin_impersonated: "An admin viewed the portal as them",
   feature_viewed: "Opened a Feature",
 };
@@ -348,11 +349,20 @@ function FeatureClaimRow({ claim, featureId, onApprove, onReset, isAmbassador, a
     (status === "approved" && !!claim.acceptanceExpiresAt && new Date(claim.acceptanceExpiresAt).getTime() < Date.now());
 
   // Timestamps for each action
+  // Withdrew, then asked again: register-interest reuses the row, so the status
+  // says "Requested" and only the older unclaimed_at remembers they left. Shown
+  // because it changes who you would pick -- somebody who has already walked
+  // away from this Feature once is a different bet from a first-time request.
+  const returnedAfterWithdrawing = !!claim.unclaimedAt && status !== "unclaimed" &&
+    (!claim.claimedAt || new Date(claim.unclaimedAt).getTime() < new Date(claim.claimedAt).getTime());
+
   const events = [
     claim.claimedAt   && { label: "Requested",    time: claim.claimedAt },
     claim.approvedAt  && status !== "interested" && { label: "Approved",     time: claim.approvedAt },
     status === "submitted" && { label: "Submitted", time: claim.claimedAt },
-    status === "unclaimed" && { label: "Withdrew",  time: claim.claimedAt },
+    // The withdrawal's own timestamp, not claimed_at, which is when they asked.
+    status === "unclaimed" && claim.unclaimedAt && { label: "Withdrew", time: claim.unclaimedAt },
+    returnedAfterWithdrawing && { label: "Withdrew", time: claim.unclaimedAt! },
   ].filter(Boolean) as { label: string; time: string }[];
 
   return (
@@ -374,6 +384,12 @@ function FeatureClaimRow({ claim, featureId, onApprove, onReset, isAmbassador, a
             </span>
             {isViewing && status === "interested" && (
               <span className="text-[10px] text-yellow-500">· viewing now</span>
+            )}
+            {returnedAfterWithdrawing && (
+              <span title={`Withdrew ${ts(claim.unclaimedAt!)}, then asked again`}
+                className="text-[10px] px-1.5 py-0.5 rounded-full bg-orange-500/10 text-orange-300/90 border border-orange-500/25">
+                Withdrew once
+              </span>
             )}
           </div>
           <div className="flex gap-1.5 shrink-0">
