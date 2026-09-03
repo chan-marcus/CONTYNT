@@ -4543,6 +4543,10 @@ app.get("/make-server-f5961d0c/admin/claims", async (c) => {
       featureId: r.feature_id, creatorToken: r.creator_token, creatorInstagram: r.creator_instagram || "",
       status: r.status, claimedAt: r.claimed_at || "", reelUrl: r.reel_url || "",
       approvedAt: r.approved_at || null, expiresAt: r.expires_at || null, acceptanceExpiresAt: r.acceptance_expires_at || null, lastViewed: r.last_viewed || null,
+      // Kept even when the status has moved on: an unclaimed_at older than the
+      // row's own interested_at is a creator who withdrew and then asked again,
+      // which the status alone cannot say.
+      unclaimedAt: r.unclaimed_at || null,
       // Stamped when the "you have been selected, accept within 24 hours" mail
       // goes out. Approving is what starts that clock, so whether the creator
       // was actually told is part of the claim's state, not a detail of the
@@ -5057,6 +5061,20 @@ app.post("/make-server-f5961d0c/creator-portal/unclaim", async (c) => {
     // short lived admin token, which expires in an hour and is in no index.
     const token = creatorData.realToken ?? rawToken;
     await db().from("creator_claims_f5961d0c").update({ status: "unclaimed", unclaimed_at: new Date().toISOString() }).eq("creator_token", token).eq("feature_id", featureId);
+    // Withdrawing left no record that survived the creator changing their mind
+    // again. register-interest upserts on (feature, token), so re-requesting
+    // flips the same row back to "interested" and the withdrawal disappears --
+    // the status is gone and unclaimed_at is left stranded behind a newer
+    // interested_at. A creator could leave and come back all day and the row
+    // would read like a first request every time.
+    //
+    // The event log is append-only, so this is where that history belongs.
+    // It also separates the two things "unclaimed" means: a creator who chose
+    // to walk away, logged here, and a claim the sweep released when its
+    // deadline passed, which logs claim_expired instead.
+    if (creatorData.creatorId) {
+      await logCreatorEvent(String(creatorData.creatorId), "claim_unclaimed", { featureId });
+    }
     return c.json({ success: true });
   } catch (e: any) { return c.json({ error: "Failed to unclaim", details: e.message }, 500); }
 });
