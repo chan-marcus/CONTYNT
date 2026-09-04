@@ -185,6 +185,56 @@ function PortalActivity({ creatorId }: { creatorId: string }) {
   );
 }
 
+// One state, one chip. The count and the creators it counts used to be
+// separate chips sitting next to each other, so a row with two states wrapped
+// into a hedge of five or six boxes and the names drifted away from the number
+// they belonged to -- "1 approved", "@grace", "1 expired", "@klarisza" reads as
+// four facts, and it is two.
+//
+// Now the names live inside the chip, behind a hairline. Half as many borders,
+// no ambiguity about which count a handle belongs to, and a row of states reads
+// as a row of states.
+const PILL_TONES: Record<string, { box: string; text: string; soft: string; rule: string }> = {
+  amber: { box: "bg-yellow-500/10 border-yellow-500/25", text: "text-yellow-300", soft: "text-yellow-200/70", rule: "bg-yellow-400/30" },
+  blue:  { box: "bg-blue-500/10 border-blue-500/25",     text: "text-blue-300",   soft: "text-blue-200/70",   rule: "bg-blue-400/30" },
+  green: { box: "bg-green-500/10 border-green-500/25",   text: "text-green-300",  soft: "text-green-200/70",  rule: "bg-green-400/30" },
+  red:   { box: "bg-red-500/10 border-red-500/30",       text: "text-red-300",    soft: "text-red-200/70",    rule: "bg-red-400/30" },
+  grey:  { box: "bg-white/5 border-white/10",            text: "text-neutral-400", soft: "text-neutral-500",  rule: "bg-white/15" },
+};
+
+function StatePill({ tone, count, label, claims = [], live = false, title }: {
+  tone: keyof typeof PILL_TONES; count: number; label: string;
+  claims?: any[]; live?: boolean; title?: string;
+}) {
+  if (!count) return null;
+  const t = PILL_TONES[tone];
+  // Two names, then a tally. A business with five selected creators would push
+  // every other column off the row to say what the count already said.
+  const shown = claims.slice(0, 2);
+  const extra = count - shown.length;
+  return (
+    <span title={title}
+      className={`inline-flex items-center gap-1.5 text-[10px] leading-none px-2 py-1 rounded-md border ${t.box}`}>
+      {live && (
+        <span className="relative flex w-1.5 h-1.5 shrink-0">
+          <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75" />
+          <span className="relative inline-flex rounded-full w-1.5 h-1.5 bg-blue-400" />
+        </span>
+      )}
+      <span className={`font-medium whitespace-nowrap ${t.text}`}>{count} {label}</span>
+      {shown.length > 0 && (
+        <>
+          <span className={`w-px self-stretch shrink-0 ${t.rule}`} />
+          {shown.map((c: any) => (
+            <IgLink key={c.creatorToken} handle={c.creatorInstagram} className={t.soft} />
+          ))}
+          {extra > 0 && <span className={`${t.soft} whitespace-nowrap`}>+{extra}</span>}
+        </>
+      )}
+    </span>
+  );
+}
+
 function CreatorRow({ signup, token, onImpersonate, impersonating, claims, features, onMarkPaid, markingPaid }: {
   signup: Signup; token?: string; onImpersonate: () => void; impersonating: boolean;
   claims: Claim[]; features: Feature[];
@@ -632,105 +682,32 @@ function BusinessRow({ signup, approved, onApprove, onImpersonate, impersonating
             : <span className="text-xs text-neutral-700">—</span>}
         </div>
 
-        {/* What is happening. Only the counts that are non-zero, so a quiet
-            business leaves the column empty instead of carrying three zeroes. */}
-        <div className="md:w-64 shrink-0 flex flex-wrap items-center gap-1.5">
-          {pendingFeats.length > 0 && (
-            <span className="text-[10px] px-1.5 py-0.5 rounded bg-yellow-500/15 text-yellow-300 border border-yellow-500/25">
-              {pendingFeats.length} to approve
-            </span>
-          )}
-          {interestedCount > 0 && (
-            <span className="text-[10px] px-1.5 py-0.5 rounded bg-blue-500/15 text-blue-300 border border-blue-500/25">
-              {interestedCount} interested
-            </span>
-          )}
-          {/* Green, matching how an approved claim reads in the rows below, so
-              the count and the thing it counts are the same colour.
-              The count leads and the handles follow it: the number is what the
-              column is scanned for, and the names are who to chase when one of
-              these has been sitting on its 24 hour clock too long. Capped at
-              two, because a business with five selected creators would push
-              every other column off the row to say something the count already
-              said -- expanding the row lists them all. */}
-          {approvedCount > 0 && (
-            <span className="text-[10px] px-1.5 py-0.5 rounded bg-green-500/15 text-green-300 border border-green-500/25">
-              {approvedCount} approved
-            </span>
-          )}
-          {approvedClaims.slice(0, 2).map((c: any) => (
-            <IgLink key={c.creatorToken} handle={c.creatorInstagram}
-              className="text-[10px] px-1.5 py-0.5 rounded bg-green-500/5 text-green-300/90 border border-green-500/20" />
-          ))}
-          {approvedCount > 2 && (
-            <span className="text-[10px] px-1.5 py-0.5 rounded bg-green-500/5 text-green-300/70 border border-green-500/20">
-              +{approvedCount - 2}
-            </span>
-          )}
-          {/* Red, and the only pill that is about something that has already
-              gone wrong rather than something in flight. Sits where the
-              approved pill would have been, because that is what it was. */}
-          {lapsedCount > 0 && (
-            <span className="text-[10px] px-1.5 py-0.5 rounded bg-red-500/15 text-red-300 border border-red-500/30">
-              {lapsedCount} expired
-            </span>
-          )}
-          {lapsedClaims.slice(0, 2).map((c: any) => (
-            <IgLink key={c.creatorToken} handle={c.creatorInstagram}
-              className="text-[10px] px-1.5 py-0.5 rounded bg-red-500/5 text-red-300/90 border border-red-500/20" />
-          ))}
-          {lapsedCount > 2 && (
-            <span className="text-[10px] px-1.5 py-0.5 rounded bg-red-500/5 text-red-300/70 border border-red-500/20">
-              +{lapsedCount - 2}
-            </span>
-          )}
-          {/* Blue with a live dot, which is how In Progress reads everywhere
-              else in this dashboard. Interested is blue too, so the dot is what
-              separates them -- motion for the one that is actually running,
-              which is the same thing the creator rows do. */}
-          {inProgressCount > 0 && (
-            <span className="inline-flex items-center gap-1.5 text-[10px] px-1.5 py-0.5 rounded bg-blue-500/15 text-blue-200 border border-blue-500/30">
-              <span className="relative flex w-1.5 h-1.5 shrink-0">
-                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75" />
-                <span className="relative inline-flex rounded-full w-1.5 h-1.5 bg-blue-400" />
-              </span>
-              {inProgressCount} in progress
-            </span>
-          )}
-          {inProgressClaims.slice(0, 2).map((c: any) => (
-            <IgLink key={c.creatorToken} handle={c.creatorInstagram}
-              className="text-[10px] px-1.5 py-0.5 rounded bg-blue-500/5 text-blue-200/90 border border-blue-500/20" />
-          ))}
-          {inProgressCount > 2 && (
-            <span className="text-[10px] px-1.5 py-0.5 rounded bg-blue-500/5 text-blue-200/70 border border-blue-500/20">
-              +{inProgressCount - 2}
-            </span>
-          )}
-          {/* Yellow, like "to approve" above it, because they mean the same
-              thing to whoever is reading the row: this one is on you. The
-              review itself happens in the Reels tab; this is the row saying it
-              is owed. */}
-          {submittedCount > 0 && (
-            <span className="text-[10px] px-1.5 py-0.5 rounded bg-yellow-500/15 text-yellow-300 border border-yellow-500/25">
-              {submittedCount} submitted
-            </span>
-          )}
-          {submittedClaims.slice(0, 2).map((c: any) => (
-            <IgLink key={c.creatorToken} handle={c.creatorInstagram}
-              className="text-[10px] px-1.5 py-0.5 rounded bg-yellow-500/5 text-yellow-300/90 border border-yellow-500/20" />
-          ))}
-          {submittedCount > 2 && (
-            <span className="text-[10px] px-1.5 py-0.5 rounded bg-yellow-500/5 text-yellow-300/70 border border-yellow-500/20">
-              +{submittedCount - 2}
-            </span>
-          )}
+        {/* What is happening. Only the states that are non-zero, so a quiet
+            business leaves the column empty instead of carrying three zeroes.
+            Ordered the way the work moves -- asked, selected, filming, in for
+            review -- with the two that have already gone wrong beside the state
+            they came from. */}
+        <div className="md:w-80 shrink-0 flex flex-wrap items-center gap-1.5">
+          <StatePill tone="amber" count={pendingFeats.length} label="to approve"
+            title="Features this business asked for, waiting on a category and payout" />
+          <StatePill tone="blue" count={interestedCount} label="interested"
+            title="Creators who have asked for a Feature here" />
+          <StatePill tone="green" count={approvedCount} label="approved" claims={approvedClaims}
+            title="Selected, inside their 24 hours to accept" />
+          <StatePill tone="red" count={lapsedCount} label="expired" claims={lapsedClaims}
+            title="Selected and never accepted -- the Feature is stuck until someone else is picked" />
+          <StatePill tone="blue" count={inProgressCount} label="in progress" claims={inProgressClaims} live
+            title="Accepted and out filming" />
+          <StatePill tone="amber" count={submittedCount} label="submitted" claims={submittedClaims}
+            title="Reel posted, waiting to be reviewed" />
+          {/* Not states, so they read quieter than the ones above. */}
           {planClicks > 0 && liveFeats.length === 0 && (
-            <span className="text-[10px] px-1.5 py-0.5 rounded bg-blue-500/10 text-blue-300/80 border border-blue-500/20">
+            <span className="text-[10px] leading-none px-2 py-1 rounded-md bg-white/5 text-neutral-400 border border-white/10">
               Viewed pricing {planClicks}×
             </span>
           )}
           {signup.subscriptionEndsAt && (
-            <span className="text-[10px] px-1.5 py-0.5 rounded bg-yellow-500/10 text-yellow-300 border border-yellow-500/25">
+            <span className="text-[10px] leading-none px-2 py-1 rounded-md bg-yellow-500/10 text-yellow-300 border border-yellow-500/25">
               Cancels {endsOn(signup.subscriptionEndsAt)}
             </span>
           )}
@@ -2000,7 +1977,7 @@ export function Analytics({ adminToken }: { adminToken?: string } = {}) {
                   <span className="w-24">Plan</span>
                   <span className="w-24">Features</span>
                   <span className="w-20">Reels</span>
-                  <span className="w-64">Activity</span>
+                  <span className="w-80">Activity</span>
                   <span className="w-40 text-right">Joined</span>
                 </div>
                 {/* Paying first, then the ones showing intent by opening the
