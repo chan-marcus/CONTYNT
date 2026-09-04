@@ -687,7 +687,7 @@ function BusinessRow({ signup, approved, onApprove, onImpersonate, impersonating
             Ordered the way the work moves -- asked, selected, filming, in for
             review -- with the two that have already gone wrong beside the state
             they came from. */}
-        <div className="md:w-80 shrink-0 flex flex-wrap items-center gap-1.5">
+        <div className="md:w-96 shrink-0 flex flex-wrap items-center gap-1.5">
           <StatePill tone="amber" count={pendingFeats.length} label="to approve"
             title="Features this business asked for, waiting on a category and payout" />
           <StatePill tone="blue" count={interestedCount} label="interested"
@@ -1977,7 +1977,7 @@ export function Analytics({ adminToken }: { adminToken?: string } = {}) {
                   <span className="w-24">Plan</span>
                   <span className="w-24">Features</span>
                   <span className="w-20">Reels</span>
-                  <span className="w-80">Activity</span>
+                  <span className="w-96">Activity</span>
                   <span className="w-40 text-right">Joined</span>
                 </div>
                 {/* Paying first, then the ones showing intent by opening the
