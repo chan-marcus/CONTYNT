@@ -634,26 +634,32 @@ function BusinessRow({ signup, approved, onApprove, onImpersonate, impersonating
         : approved ? "bg-green-500/[0.04] border-green-500/20"
         : "bg-white/[0.03] border-white/10"
     }`}>
-      {/* ── The row itself. Column widths match the header above the list, so
-             the same fact sits at the same x on every row. ── */}
-      <div className="flex flex-col md:flex-row md:items-center gap-2 md:gap-3 px-3 py-2.5">
-        {/* Who. The whole block toggles, so the click target is the name and
-            not a chevron the size of a full stop. */}
-        <button onClick={() => setExpanded(v => !v)}
-          className="flex items-center gap-2 min-w-0 md:flex-1 text-left group">
-          <ChevronDown className={`w-3.5 h-3.5 text-neutral-600 shrink-0 transition-transform ${expanded ? "rotate-180" : ""}`} />
-          <span className="min-w-0">
-            {/* Signups no longer carry a business name, so the handle stands in.
-                Rows from before that still show whatever name they were given. */}
-            <span className="block font-semibold text-white truncate group-hover:text-blue-300 transition-colors">
-              {signup.businessName || igHandle(signup.instagram)}
-            </span>
-            <span className="block text-xs text-neutral-500 truncate">
-              {igHandle(signup.instagram)}{signup.city && <> · {signup.city}</>}
-            </span>
-          </span>
-        </button>
+      {/* ── Who, on its own line, as a tab across the top of the row. ──
+             The name used to be a column, which meant it competed for width
+             with everything else: every column added took letters off it, and
+             it was down to "Stray Dog Coffee &..." while the numbers beside it
+             had room to spare. A name is not a measurement -- it is the label
+             on the thing the measurements are about -- so it gets the line
+             above them and the whole width of the row.
+             Still the click target for expanding: it is the biggest thing here
+             and it is the thing you are pointing at. */}
+      <button onClick={() => setExpanded(v => !v)}
+        className="group flex items-center gap-2 min-w-0 max-w-full pl-2.5 pr-4 py-1.5 text-left
+                   bg-white/[0.04] border-b border-r border-white/10 rounded-br-xl transition-colors hover:bg-white/[0.07]">
+        <ChevronDown className={`w-3.5 h-3.5 text-neutral-600 shrink-0 transition-transform ${expanded ? "rotate-180" : ""}`} />
+        {/* Signups no longer carry a business name, so the handle stands in.
+            Rows from before that still show whatever name they were given. */}
+        <span className="font-semibold text-white truncate group-hover:text-blue-300 transition-colors">
+          {signup.businessName || igHandle(signup.instagram)}
+        </span>
+        <span className="text-xs text-neutral-500 truncate shrink-0">
+          {igHandle(signup.instagram)}{signup.city && <> · {signup.city}</>}
+        </span>
+      </button>
 
+      {/* ── The measurements. Column widths match the header above the list, so
+             the same fact sits at the same x on every row. ── */}
+      <div className="flex flex-col md:flex-row md:items-center gap-2 md:gap-3 px-3 py-2">
         {/* Plan */}
         <div className="md:w-24 shrink-0">
           {tier
@@ -687,7 +693,7 @@ function BusinessRow({ signup, approved, onApprove, onImpersonate, impersonating
             Ordered the way the work moves -- asked, selected, filming, in for
             review -- with the two that have already gone wrong beside the state
             they came from. */}
-        <div className="md:w-96 shrink-0 flex flex-wrap items-center gap-1.5">
+        <div className="md:flex-1 md:min-w-0 flex flex-wrap items-center gap-1.5">
           <StatePill tone="amber" count={pendingFeats.length} label="to approve"
             title="Features this business asked for, waiting on a category and payout" />
           <StatePill tone="blue" count={interestedCount} label="interested"
@@ -714,7 +720,7 @@ function BusinessRow({ signup, approved, onApprove, onImpersonate, impersonating
         </div>
 
         {/* Joined + the one action worth reaching without expanding. */}
-        <div className="md:w-40 shrink-0 flex items-center justify-end gap-2">
+        <div className="md:w-32 shrink-0 flex items-center justify-end gap-2">
           <span className="text-[10px] text-neutral-600 whitespace-nowrap">
             {new Date(signup.createdAt).toLocaleDateString("en-US", { month: "short", day: "numeric" })}
           </span>
@@ -1973,12 +1979,11 @@ export function Analytics({ adminToken }: { adminToken?: string } = {}) {
                     narrow screens, where the row stacks and the labels would
                     line up with nothing. */}
                 <div className="hidden md:flex items-center gap-3 px-3 pb-1 text-[10px] font-semibold uppercase tracking-widest text-neutral-600">
-                  <span className="flex-1 pl-[1.375rem]">Business</span>
                   <span className="w-24">Plan</span>
                   <span className="w-24">Features</span>
                   <span className="w-20">Reels</span>
-                  <span className="w-96">Activity</span>
-                  <span className="w-40 text-right">Joined</span>
+                  <span className="flex-1">Activity</span>
+                  <span className="w-32 text-right">Joined</span>
                 </div>
                 {/* Paying first, then the ones showing intent by opening the
                     pricing, then everyone else alphabetically. Insertion order
