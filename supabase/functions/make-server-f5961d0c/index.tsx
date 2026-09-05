@@ -2864,14 +2864,23 @@ const prettyLink = (u: string) =>
 const firstNameFor = (r: any) =>
   (r.instagram_handle || (r.instagram || "").replace(/^@+/, "").split(/[._]/)[0] || "there");
 
+// Sent on approval, and again as the reminder -- one template for both, so the
+// two cannot say different things about the same account.
+//
+// It used to open on "the first wave of features in San Francisco is dropping
+// soon", which was a launch announcement. There is no first wave any more, the
+// features are already live, and a creator reading it after being approved was
+// being told to wait for something that had already happened. The city was
+// hardcoded too, so a creator in Los Angeles was told about San Francisco --
+// their own city is not needed to say this, so it now says neither.
 function renderVerificationEmail(row: any, link: string) {
   const first = firstNameFor(row);
   const text =
 `Hi ${first},
 
-The first wave of features in San Francisco is dropping soon. You are on the early access list, so you get first look before they open up to everyone.
+You have been approved.
 
-Confirm your profile now and we will match you to the ones in your area the moment they go live:
+Confirm your account and we will match you to features in your area as they go live:
 ${prettyLink(link)}
 
 This link is good for 90 days and is just for you. Please do not forward it.
@@ -2879,19 +2888,18 @@ This link is good for 90 days and is just for you. Please do not forward it.
 CONTYNT
 San Francisco`;
   const html = emailShell({
-    preheader: "The first wave of features in San Francisco is dropping soon. Early access gets first look.",
-    footerNote: "You are receiving this because you signed up for Contynt early access.",
+    preheader: "Confirm your account and we will match you to features in your area.",
+    footerNote: "You are receiving this because you signed up for Contynt.",
     body:
-`      <p style="margin:0 0 16px 0;font-size:21px;line-height:1.35;font-weight:700;color:#0a0a0a;">The first wave of features is dropping soon</p>
+`      <p style="margin:0 0 16px 0;font-size:21px;line-height:1.35;font-weight:700;color:#0a0a0a;">You have been approved</p>
       <p style="margin:0 0 14px 0;">Hi ${esc(first)},</p>
-      <p style="margin:0 0 14px 0;">The first wave of features in San Francisco is dropping soon. You are on the early access list, so you get first look before they open up to everyone.</p>
-      <p style="margin:0;">Confirm your profile now and we will match you to the ones in your area the moment they go live.</p>
-${emailButton(link, "Confirm your profile")}
+      <p style="margin:0;">Confirm your account and we will match you to features in your area as they go live.</p>
+${emailButton(link, "Confirm your account")}
       <p style="margin:0 0 6px 0;font-size:13px;color:#8a8a8a;">Or paste this into your browser:</p>
       <p style="margin:0 0 18px 0;font-size:13px;word-break:break-all;"><a href="${esc(link)}" style="color:#525252;">${esc(prettyLink(link))}</a></p>
       <p style="margin:0;font-size:13px;color:#8a8a8a;">This link is good for 90 days and is just for you. Please do not forward it.</p>`,
   });
-  return { text, html, subject: "Confirm your Contynt profile" };
+  return { text, html, subject: "You have been approved: confirm your account" };
 }
 
 // City is stored two ways: the creator signup form saves its dropdown as a slug
