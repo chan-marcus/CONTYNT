@@ -620,6 +620,12 @@ async function creatorIsConfirmed(creatorId: string | undefined): Promise<boolea
 // ─── Creator verification ─────────────────────────────────────────────────────
 // How long a selected creator has to accept before the Feature goes back.
 const ACCEPTANCE_HOURS = 24;
+// The other half of the same clock: 24 hours to accept, then this long to film
+// and submit. Module scope rather than inside accept-feature, because the
+// reminder sweep, the portal's fallback and the copy in both all have to agree
+// with it, and a constant buried in one route handler is easy to change on its
+// own.
+const CLAIM_DAYS = 7;
 // How close to a deadline a reminder goes out, and how far past it is still
 // worth reminding -- a sweep that runs late should not skip somebody silently.
 const REMIND_WITHIN_HOURS = 6;
@@ -5042,8 +5048,7 @@ app.post("/make-server-f5961d0c/creator-portal/accept-feature", async (c) => {
     }
 
     const now = new Date();
-    // Creators get 5 days to film and submit once they accept a Feature.
-    const CLAIM_DAYS = 5;
+    // Creators get CLAIM_DAYS to film and submit once they accept a Feature.
     const expiresAt = new Date(now.getTime() + CLAIM_DAYS * 24 * 60 * 60 * 1000).toISOString();
     await db().from("creator_claims_f5961d0c").update({ status: "claimed", expires_at: expiresAt, claimed_at: now.toISOString() }).eq("creator_token", token).eq("feature_id", featureId);
     return c.json({ success: true, expiresAt });
@@ -5103,7 +5108,7 @@ app.post("/make-server-f5961d0c/creator-portal/submit", async (c) => {
 
     // The Reel has to be for a Feature this creator actually holds, and the
     // window to film it has to still be open. Neither was checked: any creator
-    // could submit against any Feature id, and a claim five days stale was as
+    // could submit against any Feature id, and a claim a week stale was as
     // good as a fresh one.
     const { data: ownClaim } = await db().from("creator_claims_f5961d0c")
       .select("status, expires_at").eq("creator_token", token).eq("feature_id", featureId).maybeSingle();
