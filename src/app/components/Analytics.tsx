@@ -3,6 +3,7 @@ import { CheckCircle, Copy, RefreshCw, ExternalLink, ThumbsUp, ThumbsDown, Link,
 import { projectId, publicAnonKey } from "/utils/supabase/info";
 import { AmbassadorAdmin, type AmbassadorAdminData } from "./AmbassadorAdmin";
 import { CreatorReadiness, type ReadinessData, type EmailHealth } from "./CreatorReadiness";
+import { EmailNotifications } from "./EmailNotifications";
 import { countQuotaUsed, quotaLimit } from "../lib/featureQuota";
 
 const BASE = `https://${projectId}.supabase.co/functions/v1/make-server-f5961d0c`;
@@ -34,7 +35,7 @@ const apiFetch = async (path: string, opts?: RequestInit) => {
   return res;
 };
 
-type Tab = "creators" | "businesses" | "reels" | "pageviews" | "ambassadors" | "readiness" | "billing";
+type Tab = "creators" | "businesses" | "reels" | "pageviews" | "ambassadors" | "readiness" | "emails" | "billing";
 
 interface Signup { id: string; instagram: string; email: string; city: string; createdAt: string; totalEarned?: number; pendingEarnings?: number; availableEarnings?: number; isAmbassador?: boolean; ambassadorCode?: string | null; }
 interface BusinessSignup { id: string; businessName: string; instagram: string; email: string; city: string; address: string; preferredContact: string; createdAt: string; referralSource?: string | null; referralCode?: string | null; referredByHandle?: string | null; }
@@ -381,7 +382,7 @@ function FeatureClaimRow({ claim, featureId, onApprove, onReset, isAmbassador, a
   };
   const cfg = statusConfig[status] || statusConfig.interested;
   // A claim runs against two clocks and only one of them was ever shown.
-  // expires_at is the seven days to film after accepting; acceptance_expires_at
+  // expires_at is the days to film after accepting; acceptance_expires_at
   // is the 24 hours to accept after being selected. The old gate required
   // status "claimed", which is the first clock only -- so a selection nobody
   // accepted went on reading "Approved" for as long as it sat there, which is
@@ -1246,6 +1247,54 @@ export function Analytics({ adminToken }: { adminToken?: string } = {}) {
     finally { setSendBusy(false); }
   }, [loadReadiness]);
 
+  // The submit-window announcement. Same shape as the drop, minus the Feature
+  // count, because this one says nothing that depends on what is published.
+  const sendSubmitWindowNotice = useCallback(async (creatorIds: string[], dryRun: boolean) => {
+    setSendBusy(true);
+    try {
+      const res = await apiFetch("/admin/submit-window-notice/send", {
+        method: "POST", body: JSON.stringify({ creatorIds, dryRun }),
+      });
+      const d = await res.json().catch(() => null);
+      if (!res.ok || !d?.success) { setSendResult(d?.error || "Send failed."); return; }
+      const results: any[] = d.results || [];
+      const tally = (key: string) => {
+        const counts = new Map<string, number>();
+        for (const r of results) if (r[key]) counts.set(r[key], (counts.get(r[key]) ?? 0) + 1);
+        return [...counts.entries()].map(([reason, n]) => `${n} ${reason}`);
+      };
+      const why = [...tally("skipped"), ...tally("error")];
+      const detail = why.length ? ` — ${why.join(", ")}` : "";
+      setSendResult(dryRun
+        ? `Dry run: ${results.filter(r => r.dryRun).length} would receive the submit-window notice${detail}.`
+        : d.problem
+          ? `Nothing sent. ${d.problem}${detail}`
+          : `Submit-window notice sent to ${d.sent}${detail}.`);
+      if (!dryRun) await loadReadiness();
+    } catch { setSendResult("Could not reach the server."); }
+    finally { setSendBusy(false); }
+  }, [loadReadiness]);
+
+  const testSubmitWindowNotice = useCallback(async (to: string) => {
+    setSendBusy(true);
+    try {
+      const res = await apiFetch("/admin/submit-window-notice/test", {
+        method: "POST", body: JSON.stringify({ to }),
+      });
+      const d = await res.json().catch(() => null);
+      setSendResult(!res.ok || !d?.success
+        ? (d?.error || "Test send failed.")
+        : `Test notice sent to ${d.to}. Subject: "${d.subject}"`);
+    } catch { setSendResult("Could not reach the server."); }
+    finally { setSendBusy(false); }
+  }, []);
+
+  const loadEmailHistory = useCallback(async () => {
+    const res = await apiFetch("/admin/email/history?limit=100").catch(() => null);
+    const json = await res?.json().catch(() => null);
+    return res?.ok ? (json?.events ?? []) : null;
+  }, []);
+
   const testFeatureDrop = useCallback(async (to: string, featureCount: number) => {
     setSendBusy(true);
     try {
@@ -1579,8 +1628,8 @@ export function Analytics({ adminToken }: { adminToken?: string } = {}) {
 
   useEffect(() => { if (isAuthenticated) fetchAll(); }, [isAuthenticated, fetchAll]);
   useEffect(() => { if (isAuthenticated && tab === "ambassadors" && !ambData) loadAmbassadors(); }, [isAuthenticated, tab, ambData, loadAmbassadors]);
-  useEffect(() => { if (isAuthenticated && tab === "readiness" && !readyData) loadReadiness(); }, [isAuthenticated, tab, readyData, loadReadiness]);
-  useEffect(() => { if (isAuthenticated && tab === "readiness" && !emailHealth) loadEmailHealth(); }, [isAuthenticated, tab, emailHealth, loadEmailHealth]);
+  useEffect(() => { if (isAuthenticated && (tab === "readiness" || tab === "emails") && !readyData) loadReadiness(); }, [isAuthenticated, tab, readyData, loadReadiness]);
+  useEffect(() => { if (isAuthenticated && (tab === "readiness" || tab === "emails") && !emailHealth) loadEmailHealth(); }, [isAuthenticated, tab, emailHealth, loadEmailHealth]);
 
 
   // Closing a "never arrived" report. Deliberately leaves the payout's own
@@ -1790,6 +1839,7 @@ export function Analytics({ adminToken }: { adminToken?: string } = {}) {
     { key: "reels", label: "Submitted Reels", count: submissions.length },
     { key: "ambassadors", label: "Ambassadors", count: ambData?.overview.totalAmbassadors },
     { key: "readiness", label: "Creator Readiness", count: readyData?.funnel.confirmed },
+    { key: "emails", label: "Emails" },
     { key: "billing", label: "Billing", count: subscribedBusinesses.length },
     { key: "pageviews", label: "Page Views" },
   ];
@@ -2201,6 +2251,30 @@ export function Analytics({ adminToken }: { adminToken?: string } = {}) {
             : <p className="text-neutral-400 text-sm">Loading ambassadors…</p>
         )}
 
+        {/* ── Emails ── */}
+        {!loading && tab === "emails" && (
+          readyData
+            ? <>
+                <EmailNotifications
+                  creators={readyData.creators}
+                  // "Active" means they have asked for a feature at least once.
+                  // Computed from the claims this dashboard already holds, so
+                  // the segment is real behaviour rather than a proxy like
+                  // having confirmed an email address.
+                  activeHandles={new Set(claims.map(c => igKey(c.creatorInstagram)))}
+                  health={emailHealth}
+                  busy={sendBusy}
+                  result={sendResult}
+                  onSendVerification={sendVerification}
+                  onSendDrop={sendFeatureDrop}
+                  onTestDrop={testFeatureDrop}
+                  onSendWindow={sendSubmitWindowNotice}
+                  onTestWindow={testSubmitWindowNotice}
+                  loadHistory={loadEmailHistory} />
+              </>
+            : <p className="text-neutral-400 text-sm">Loading creators…</p>
+        )}
+
         {!loading && tab === "readiness" && (
           readyData
             ? <div className="space-y-3">
@@ -2211,7 +2285,9 @@ export function Analytics({ adminToken }: { adminToken?: string } = {}) {
                       className="text-xs text-neutral-500 hover:text-neutral-300">Dismiss</button>
                   </div>
                 )}
-                <CreatorReadiness data={readyData} onSend={sendVerification} onSendFeatureDrop={sendFeatureDrop} onTestFeatureDrop={testFeatureDrop} onRemindExpiring={remindExpiring} onCopyLink={copyVerifyLink} busy={sendBusy}
+                <CreatorReadiness data={readyData} onSend={sendVerification} onSendFeatureDrop={sendFeatureDrop} onTestFeatureDrop={testFeatureDrop}
+                  onSendSubmitWindowNotice={sendSubmitWindowNotice} onTestSubmitWindowNotice={testSubmitWindowNotice}
+                  onRemindExpiring={remindExpiring} onCopyLink={copyVerifyLink} busy={sendBusy}
                   health={emailHealth} onTest={sendTestEmail} testing={testingEmail} testResult={testEmailResult} />
               </div>
             : <p className="text-neutral-400 text-sm">Loading readiness…</p>
