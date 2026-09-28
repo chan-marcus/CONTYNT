@@ -2285,8 +2285,7 @@ export function Analytics({ adminToken }: { adminToken?: string } = {}) {
                       className="text-xs text-neutral-500 hover:text-neutral-300">Dismiss</button>
                   </div>
                 )}
-                <CreatorReadiness data={readyData} onSend={sendVerification} onSendFeatureDrop={sendFeatureDrop} onTestFeatureDrop={testFeatureDrop}
-                  onSendSubmitWindowNotice={sendSubmitWindowNotice} onTestSubmitWindowNotice={testSubmitWindowNotice}
+                <CreatorReadiness data={readyData}
                   onRemindExpiring={remindExpiring} onCopyLink={copyVerifyLink} busy={sendBusy}
                   health={emailHealth} onTest={sendTestEmail} testing={testingEmail} testResult={testEmailResult} />
               </div>
