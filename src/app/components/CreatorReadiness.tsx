@@ -216,24 +216,6 @@ const cityLabel = (c: string) => {
   return CITY_LABELS[k] ?? k.replace(/(^|\s)\p{L}/gu, m => m.toUpperCase());
 };
 
-// The number the email will state, typed rather than counted: a Feature can be
-// published moments after the send, so the admin is the one who knows what the
-// drop actually is. Returns null when cancelled or unusable, which is also how
-// the send is called off -- there is no separate confirm.
-function askFeatureCount(recipients: number, preview: boolean): number | null {
-  const what = preview
-    ? `Preview the drop for ${recipients} selected creator${recipients === 1 ? "" : "s"}.`
-    : `Send the drop to ${recipients} selected creator${recipients === 1 ? "" : "s"}. This is real email and cannot be recalled.`;
-  const raw = window.prompt(`How many features are in this drop?\n\nThis is the number the email will say.\n\n${what}`, "");
-  if (raw === null) return null;
-  const n = Number(raw.trim());
-  if (!Number.isInteger(n) || n < 0 || n > 999) {
-    window.alert("Enter a whole number of features, 0 to 999.");
-    return null;
-  }
-  return n;
-}
-
 const fmt = (d: string | null) =>
   d ? new Date(d).toLocaleDateString("en-US", { month: "short", day: "numeric" }) : "—";
 
@@ -263,13 +245,8 @@ function ReachChips({ email, dm }: { email: boolean; dm: boolean }) {
   );
 }
 
-export function CreatorReadiness({ data, onSend, onSendFeatureDrop, onTestFeatureDrop, onSendSubmitWindowNotice, onTestSubmitWindowNotice, onRemindExpiring, onCopyLink, busy, health, onTest, testing, testResult }: {
+export function CreatorReadiness({ data, onRemindExpiring, onCopyLink, busy, health, onTest, testing, testResult }: {
   data: ReadinessData;
-  onSend: (creatorIds: string[], reminderOnly: boolean, dryRun: boolean) => void;
-  onSendFeatureDrop: (creatorIds: string[], dryRun: boolean, featureCount: number) => void;
-  onTestFeatureDrop: (to: string, featureCount: number) => void;
-  onSendSubmitWindowNotice: (creatorIds: string[], dryRun: boolean) => void;
-  onTestSubmitWindowNotice: (to: string) => void;
   onRemindExpiring: (dryRun: boolean) => void;
   onCopyLink: (creatorId: string) => Promise<string | null>;
   busy: boolean;
@@ -282,7 +259,6 @@ export function CreatorReadiness({ data, onSend, onSendFeatureDrop, onTestFeatur
   const [status, setStatus] = useState("");
   const [amb, setAmb] = useState("");
   const [days, setDays] = useState("");
-  const [selected, setSelected] = useState<Set<string>>(new Set());
 
   const rows = useMemo(() => data.creators.filter(c => {
     if (tier && c.tier !== tier) return false;
@@ -317,16 +293,6 @@ export function CreatorReadiness({ data, onSend, onSendFeatureDrop, onTestFeatur
       rank(a) - rank(b) || a.localeCompare(b));
   }, [rows]);
 
-  const allShown = rows.length > 0 && rows.every(r => selected.has(r.id));
-  const toggleAll = () =>
-    setSelected(allShown ? new Set() : new Set(rows.map(r => r.id)));
-  const toggle = (id: string) =>
-    setSelected(prev => {
-      const n = new Set(prev);
-      n.has(id) ? n.delete(id) : n.add(id);
-      return n;
-    });
-
   // Exports what is on screen, not the whole table: the filters are the point.
   const exportCsv = () => {
     const cols = ["handle", "email", "city", "tier", "status", "sentAt", "openedAt", "confirmedAt",
@@ -347,9 +313,7 @@ export function CreatorReadiness({ data, onSend, onSendFeatureDrop, onTestFeatur
     URL.revokeObjectURL(url);
   };
 
-  const ids = [...selected];
-  // Dry run stays available whatever the configuration -- it sends nothing and
-  // rendering the links is exactly how you check them before Postmark is live.
+  // Still read by the expiry reminders, the one send left on this screen.
   const canSend = !health || (health.config.serverToken && health.ok);
   const sendBlocked = canSend ? undefined : "Email is not configured, so this would send nothing.";
   const funnel: [string, number][] = [
@@ -395,82 +359,6 @@ export function CreatorReadiness({ data, onSend, onSendFeatureDrop, onTestFeatur
       </div>
 
       <div className="flex flex-wrap items-center gap-2">
-        <button onClick={() => onSend(ids, false, true)} disabled={busy || !ids.length}
-          className="flex items-center gap-1.5 px-3 py-2 text-xs rounded-xl bg-white/5 border border-white/15 text-neutral-200 hover:border-white/30 transition-all disabled:opacity-40">
-          {busy ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Send className="w-3.5 h-3.5" />}
-          Dry run ({ids.length})
-        </button>
-        <button onClick={() => onSend(ids, false, false)} disabled={busy || !ids.length || !canSend} title={sendBlocked}
-          className="flex items-center gap-1.5 px-3 py-2 text-xs rounded-xl bg-white text-neutral-900 font-semibold hover:bg-neutral-100 transition-all disabled:opacity-40">
-          <Send className="w-3.5 h-3.5" />Send verification email
-        </button>
-        <button onClick={() => onSend(ids, true, false)} disabled={busy || !ids.length || !canSend} title={sendBlocked}
-          className="flex items-center gap-1.5 px-3 py-2 text-xs rounded-xl bg-white/5 border border-white/15 text-neutral-200 hover:border-white/30 transition-all disabled:opacity-40">
-          <Send className="w-3.5 h-3.5" />Remind non-confirmers
-        </button>
-        {/* Preview first, then send. Both ask for the number, because a preview
-            of a different email than the one that sends is worth nothing.
-            Cancelling the prompt is the way out -- it is the confirm step too,
-            since this is the one button here that mails people already on board
-            and cannot be recalled. */}
-        {/* Proves the whole path -- template, Postmark, stream, signature -- on
-            one address, before it is pointed at creators. Needs no selection,
-            because it mails nobody on the list. */}
-        <button
-          onClick={() => {
-            const to = window.prompt("Send a test drop to which address?\n\nThe real email, to you only. No creator is touched.", "");
-            if (to === null || !to.trim()) return;
-            const n = askFeatureCount(1, true);
-            if (n !== null) onTestFeatureDrop(to.trim(), n);
-          }}
-          disabled={busy || !canSend} title={sendBlocked}
-          className="flex items-center gap-1.5 px-3 py-2 text-xs rounded-xl bg-white/5 border border-white/15 text-neutral-200 hover:border-white/30 transition-all disabled:opacity-40">
-          <Megaphone className="w-3.5 h-3.5" />Test drop on me
-        </button>
-        <button onClick={() => { const n = askFeatureCount(ids.length, true); if (n !== null) onSendFeatureDrop(ids, true, n); }}
-          disabled={busy || !ids.length}
-          title="Show what would go out, without sending"
-          className="flex items-center gap-1.5 px-3 py-2 text-xs rounded-xl bg-white/5 border border-white/15 text-neutral-200 hover:border-white/30 transition-all disabled:opacity-40">
-          <Megaphone className="w-3.5 h-3.5" />Preview drop ({ids.length})
-        </button>
-        <button onClick={() => { const n = askFeatureCount(ids.length, false); if (n !== null) onSendFeatureDrop(ids, false, n); }}
-          disabled={busy || !ids.length || !canSend} title={sendBlocked}
-          className="flex items-center gap-1.5 px-3 py-2 text-xs rounded-xl bg-purple-500 text-white font-semibold hover:bg-purple-400 transition-all disabled:opacity-40">
-          <Megaphone className="w-3.5 h-3.5" />Send feature drop
-        </button>
-
-        {/* The longer-submit-window announcement. Its own trio rather than a
-            field on the
-            drop, because it says nothing about what is published and should not
-            wait for there to be Features to announce.
-            Sending is idempotent per creator -- the batch skips anyone already
-            marked as having had it -- so a second press cannot mail the same
-            person twice. */}
-        <button
-          onClick={() => {
-            const to = window.prompt("Send the submit-window notice to which address?\n\nThe real email, to you only. No creator is touched.", "");
-            if (to === null || !to.trim()) return;
-            onTestSubmitWindowNotice(to.trim());
-          }}
-          disabled={busy || !canSend} title={sendBlocked}
-          className="flex items-center gap-1.5 px-3 py-2 text-xs rounded-xl bg-white/5 border border-white/15 text-neutral-200 hover:border-white/30 transition-all disabled:opacity-40">
-          <Megaphone className="w-3.5 h-3.5" />Test window notice on me
-        </button>
-        <button onClick={() => onSendSubmitWindowNotice(ids, true)}
-          disabled={busy || !ids.length}
-          title="Show who would get the submit-window notice, without sending"
-          className="flex items-center gap-1.5 px-3 py-2 text-xs rounded-xl bg-white/5 border border-white/15 text-neutral-200 hover:border-white/30 transition-all disabled:opacity-40">
-          <Megaphone className="w-3.5 h-3.5" />Preview window notice ({ids.length})
-        </button>
-        <button
-          onClick={() => {
-            if (!window.confirm(`Email ${ids.length} creator${ids.length === 1 ? "" : "s"} to say the submit window is longer now?\n\nAnyone who has already had it is skipped.`)) return;
-            onSendSubmitWindowNotice(ids, false);
-          }}
-          disabled={busy || !ids.length || !canSend} title={sendBlocked}
-          className="flex items-center gap-1.5 px-3 py-2 text-xs rounded-xl bg-purple-500 text-white font-semibold hover:bg-purple-400 transition-all disabled:opacity-40">
-          <Megaphone className="w-3.5 h-3.5" />Send window notice
-        </button>
 
         {/* Nothing in this project schedules anything, so a deadline only gets
             chased when somebody runs this. Idempotent, so running it twice in a
@@ -495,9 +383,6 @@ export function CreatorReadiness({ data, onSend, onSendFeatureDrop, onTestFeatur
         <table className="w-full text-xs whitespace-nowrap">
           <thead className="bg-white/5 text-neutral-400">
             <tr>
-              <th className="px-3 py-2.5 text-left">
-                <input type="checkbox" checked={allShown} onChange={toggleAll} aria-label="Select all shown" />
-              </th>
               {["Handle", "Email", "Tier", "Status", "Sent", "Opened", "Confirmed", "Reach", "Amb"].map(h => (
                 <th key={h} className="px-3 py-2.5 text-left font-medium">{h}</th>
               ))}
@@ -516,10 +401,6 @@ export function CreatorReadiness({ data, onSend, onSendFeatureDrop, onTestFeatur
                 </tr>
                 {members.map(r => (
               <tr key={r.id} className="border-t border-white/5 hover:bg-white/[0.03]">
-                <td className="px-3 py-2.5">
-                  <input type="checkbox" checked={selected.has(r.id)} onChange={() => toggle(r.id)}
-                    aria-label={`Select ${r.handle}`} />
-                </td>
                 <td className="px-3 py-2.5">
                   {(() => {
                     const url = instagramUrl(r.handle);
