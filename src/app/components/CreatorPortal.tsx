@@ -1091,7 +1091,7 @@ function FeatureCard({ feature, claim, token, onClaim, onUnclaim, onAccept, onSu
             </button>
           </>}
 
-          {/* ── Claimed expired (7-day window passed) ── */}
+          {/* ── Claimed expired (the submit window passed) ── */}
           {cardState === "claimed" && isExpired && <>
             <div className="flex items-start justify-between gap-3">
               <div>
@@ -1492,7 +1492,7 @@ export function CreatorPortal({ token, impersonating }: { token: string; imperso
     const expiresAt = body?.expiresAt
       // Fallback only; the server returns the authoritative expiry. Kept in
       // step with CLAIM_DAYS in the accept-feature route.
-      ?? new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
+      ?? new Date(Date.now() + 10 * 24 * 60 * 60 * 1000).toISOString();
     setClaims(prev => {
       const updated = { ...prev, [featureId]: { ...prev[featureId], status: "claimed" as const, expiresAt } };
       saveLocalClaims(updated);
@@ -1942,7 +1942,7 @@ export function CreatorPortal({ token, impersonating }: { token: string; imperso
             <div className="space-y-2 text-xs text-neutral-400">
               <p><span className="text-white font-medium">1. Request</span> — Pick a feature near you. Only request it if you're ready to film it.</p>
               <p><span className="text-white font-medium">2. Get Selected</span> — If the business picks you, you'll get a notification to start.</p>
-              <p><span className="text-white font-medium">3. Film and Post</span> — Shoot at the location, hit the requirements and post your Reel within 7 days.</p>
+              <p><span className="text-white font-medium">3. Film and Post</span> — Shoot at the location, hit the requirements and post your Reel within 10 days.</p>
               <p><span className="text-white font-medium">4. Submit</span> — Drop your Reel URL for review.</p>
               <p><span className="text-white font-medium">5. Get Paid</span> — Once approved, your earnings are added to your balance. Cash out any time.</p>
             </div>

@@ -625,7 +625,7 @@ const ACCEPTANCE_HOURS = 24;
 // reminder sweep, the portal's fallback and the copy in both all have to agree
 // with it, and a constant buried in one route handler is easy to change on its
 // own.
-const CLAIM_DAYS = 7;
+const CLAIM_DAYS = 10;
 // How close to a deadline a reminder goes out, and how far past it is still
 // worth reminding -- a sweep that runs late should not skip somebody silently.
 const REMIND_WITHIN_HOURS = 6;
@@ -2990,6 +2990,42 @@ ${emailButton(link, "Open your portal")}
 // transactional stream, not the broadcast one the drop announcement uses. A
 // creator who muted announcements has not asked to stop hearing that the thing
 // they are holding is about to lapse.
+// A one-off announcement: the submit window went from 5 days to 7. Its own
+// template rather than a general "announcement" one, because a generic body
+// with an admin-typed message in it is how a broadcast ends up saying
+// something nobody proofread.
+function renderSubmitWindowEmail(row: any, link: string, unsubLink?: string) {
+  const first = firstNameFor(row);
+  const text =
+`Hi ${first},
+
+You asked for more time. So we changed it.
+
+Accept a feature and you now have ${CLAIM_DAYS} days to post your Reel, up from 5.
+
+Nothing else changes. You still have ${ACCEPTANCE_HOURS} hours to accept a feature.
+
+Open your portal:
+${prettyLink(link)}
+
+CONTYNT
+San Francisco${unsubLink ? `\n\nStop these emails: ${unsubLink}` : ""}`;
+  const html = emailShell({
+    preheader: `You asked for more time to film. The window is now ${CLAIM_DAYS} days.`,
+    footerNote: unsubLink
+      ? `You are receiving this because you signed up for Contynt. <a href="${esc(unsubLink)}" style="color:#8a8a8a;text-decoration:underline;">Unsubscribe</a>.`
+      : "You are receiving this because you signed up for Contynt.",
+    body:
+`      <p style="margin:0 0 16px 0;font-size:21px;line-height:1.35;font-weight:700;color:#0a0a0a;">${CLAIM_DAYS} days to film, not 5</p>
+      <p style="margin:0 0 14px 0;">Hi ${esc(first)},</p>
+      <p style="margin:0 0 14px 0;">You asked for more time. So we changed it.</p>
+      <p style="margin:0 0 14px 0;">Accept a feature and you now have <strong>${CLAIM_DAYS} days</strong> to post your Reel, up from 5.</p>
+      <p style="margin:0;">Nothing else changes. You still have ${ACCEPTANCE_HOURS} hours to accept a feature.</p>
+${emailButton(link, "Open your portal")}`,
+  });
+  return { text, html, subject: `You asked for more time. Now you have ${CLAIM_DAYS} days.` };
+}
+
 function renderSelectedEmail(row: any, feature: any, link: string, hoursToAccept: number) {
   const first = firstNameFor(row);
   const where = [feature?.business_name, cityLabel(feature?.city)].filter(Boolean).join(", ");
@@ -3345,6 +3381,115 @@ async function sendFeatureDropBatch(opts: { creatorIds?: string[]; dryRun?: bool
   };
 }
 
+// The submit-window announcement, sent on the broadcast stream with the same
+// guards the feature drop uses: no address, a hard suppression, or the
+// creator's own email preference all stop it.
+//
+// Idempotency comes off the event log rather than a new stamp column. This is
+// a one-off -- a column for it would outlive the announcement by years -- and
+// the log already answers "has this person had it" durably, in one read for
+// the whole batch.
+const SUBMIT_WINDOW_EVENT = "submit_window_notice_sent";
+
+async function sendSubmitWindowBatch(opts: { creatorIds?: string[]; dryRun?: boolean; limit?: number }) {
+  const supabase = db();
+  let q = supabase.from("creator_signups_f5961d0c").select("*");
+  if (opts.creatorIds?.length) q = q.in("id", opts.creatorIds);
+  const { data: rows, error } = await q;
+  if (error) throw error;
+
+  const { data: already } = await supabase.from("creator_events_f5961d0c")
+    .select("creator_id").eq("type", SUBMIT_WINDOW_EVENT);
+  const alreadySent = new Set((already ?? []).map((e: any) => String(e.creator_id)));
+
+  const results: any[] = [];
+  for (const r of (rows ?? []).slice(0, opts.limit ?? 500)) {
+    const email = (r.email || "").trim();
+    if (!email) { results.push({ id: r.id, skipped: "no email" }); continue; }
+    if (r.email_bounced_at || r.email_complained_at) { results.push({ id: r.id, email, skipped: "suppressed" }); continue; }
+    if (r.notify_email === false) { results.push({ id: r.id, email, skipped: "email notifications off" }); continue; }
+    if (alreadySent.has(String(r.id))) { results.push({ id: r.id, email, skipped: "already sent" }); continue; }
+
+    const portalToken = await ensureCreatorPortalToken(r);
+    const link = `${SITE_ORIGIN}/app?creator=${encodeURIComponent(portalToken)}`;
+    const unsubLink = await unsubLinkFor(r.id);
+    const rendered = renderSubmitWindowEmail(r, link, unsubLink);
+
+    if (opts.dryRun) {
+      results.push({ id: r.id, email, link, subject: rendered.subject, dryRun: true });
+      continue;
+    }
+
+    try {
+      const sent = await postmarkSend({
+        to: email, ...rendered, stream: POSTMARK_STREAM,
+        headers: {
+          "List-Unsubscribe": `<${unsubLink}>`,
+          "List-Unsubscribe-Post": "List-Unsubscribe=One-Click",
+        },
+      });
+      if (!sent.ok) { results.push({ id: r.id, email, error: sent.error }); continue; }
+      // Stamped only after Postmark accepts it, so a failure can be retried by
+      // pressing the button again rather than being recorded as delivered.
+      await logCreatorEvent(r.id, SUBMIT_WINDOW_EVENT, { messageId: sent.payload?.MessageID ?? null });
+      results.push({ id: r.id, email, sent: true, messageId: sent.payload?.MessageID ?? null });
+    } catch (e: any) {
+      results.push({ id: r.id, email, error: e?.message ?? String(e) });
+    }
+  }
+
+  const sentCount = results.filter(r => r.sent).length;
+  return {
+    dryRun: !!opts.dryRun,
+    problem: !opts.dryRun && sentCount === 0
+      ? (!POSTMARK_SERVER_TOKEN
+          ? "POSTMARK_SERVER_TOKEN is not set on the server, so nothing can be sent."
+          : rows?.length ? "Every selected creator was skipped." : "No creators were selected.")
+      : null,
+    considered: rows?.length ?? 0,
+    sent: sentCount,
+    skipped: results.filter(r => r.skipped).length,
+    failed: results.filter(r => r.error).length,
+    results,
+  };
+}
+
+// Same shape as the feature-drop pair: prove the whole path on one address
+// first, then point it at everybody.
+app.post("/make-server-f5961d0c/admin/submit-window-notice/test", async (c) => {
+  try {
+    const body = await c.req.json().catch(() => ({}));
+    const to = String(body.to ?? "").trim().toLowerCase();
+    if (!to || !to.includes("@")) return c.json({ error: "Enter an address to send the test to." }, 400);
+    if (!POSTMARK_SERVER_TOKEN) return c.json({ error: "POSTMARK_SERVER_TOKEN is not set, so nothing can be sent." }, 400);
+    // Inert on both counts: the signed-out portal rather than somebody's token,
+    // and an unsubscribe link that belongs to nobody.
+    const exampleUnsub = `${VERIFY_ORIGIN}/portal/unsubscribe?c=example&s=example`;
+    const rendered = renderSubmitWindowEmail({ instagram_handle: "there" }, `${SITE_ORIGIN}/app`, exampleUnsub);
+    const sent = await postmarkSend({
+      to, ...rendered, stream: POSTMARK_STREAM,
+      headers: {
+        "List-Unsubscribe": `<${exampleUnsub}>`,
+        "List-Unsubscribe-Post": "List-Unsubscribe=One-Click",
+      },
+    });
+    if (!sent.ok) return c.json({ error: sent.error || "Postmark rejected the message." }, 502);
+    return c.json({ success: true, to, subject: rendered.subject });
+  } catch (e: any) { return c.json({ error: "Test send failed", details: e.message }, 500); }
+});
+
+app.post("/make-server-f5961d0c/admin/submit-window-notice/send", async (c) => {
+  try {
+    const body = await c.req.json().catch(() => ({}));
+    const out = await sendSubmitWindowBatch({
+      creatorIds: Array.isArray(body.creatorIds) ? body.creatorIds : undefined,
+      dryRun: !!body.dryRun,
+      limit: Number(body.limit) || undefined,
+    });
+    return c.json({ success: true, ...out });
+  } catch (e: any) { return c.json({ error: "Send failed", details: e.message }, 500); }
+});
+
 // Sends the real drop email, rendered exactly as a creator would receive it, to
 // one address of the admin's choosing. Nothing is stamped and no creator is
 // touched, so the whole path -- template, Postmark, stream, sender signature --
@@ -3395,6 +3540,45 @@ app.post("/make-server-f5961d0c/admin/feature-drop/send", async (c) => {
     });
     return c.json({ success: true, ...out });
   } catch (e: any) { return c.json({ error: "Send failed", details: e.message }, 500); }
+});
+
+// What has actually been mailed to creators, newest first. Every send already
+// writes a creator event, so this is a read of the record rather than a second
+// ledger that could disagree with it.
+//
+// Only the broadcast kinds. Login codes and selection notices are transactional
+// and fire on their own; listing them here would bury the handful of sends an
+// admin actually chose to make under hundreds they did not.
+const BROADCAST_EVENTS = ["verify_email_sent", "feature_drop_sent", SUBMIT_WINDOW_EVENT];
+
+app.get("/make-server-f5961d0c/admin/email/history", async (c) => {
+  try {
+    const limit = Math.min(Math.max(Number(c.req.query("limit") || 100), 1), 500);
+    const { data, error } = await db().from("creator_events_f5961d0c")
+      .select("creator_id, type, payload, created_at")
+      .in("type", BROADCAST_EVENTS)
+      .order("created_at", { ascending: false }).limit(limit);
+    if (error) throw error;
+
+    // Resolved to handles here rather than in the dashboard: an id is not
+    // something anybody recognises, and this is one query for the whole page.
+    const ids = [...new Set((data ?? []).map((e: any) => String(e.creator_id)))];
+    const handleById: Record<string, string> = {};
+    if (ids.length) {
+      const { data: creators } = await db().from("creator_signups_f5961d0c")
+        .select("id, instagram, instagram_handle").in("id", ids);
+      for (const r of (creators ?? [])) {
+        handleById[String(r.id)] = r.instagram_handle || (r.instagram || "").replace(/^@+/, "") || "";
+      }
+    }
+    return c.json({
+      events: (data ?? []).map((e: any) => ({
+        type: e.type, at: e.created_at,
+        handle: handleById[String(e.creator_id)] || "",
+        reminder: !!e.payload?.reminder,
+      })),
+    });
+  } catch (e: any) { return c.json({ error: "Failed to fetch email history", details: e.message }, 500); }
 });
 
 // ─── Email health ─────────────────────────────────────────────────────────────
@@ -5009,7 +5193,7 @@ app.post("/make-server-f5961d0c/admin/approve-creator-claim", async (c) => {
   } catch (e: any) { return c.json({ error: e.message }, 500); }
 });
 
-// Creator accepts the feature → starts 7-day in-progress countdown
+// Creator accepts the feature → starts the CLAIM_DAYS in-progress countdown
 app.post("/make-server-f5961d0c/creator-portal/accept-feature", async (c) => {
   try {
     const { token: rawToken, featureId } = await c.req.json();

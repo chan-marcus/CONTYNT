@@ -263,11 +263,13 @@ function ReachChips({ email, dm }: { email: boolean; dm: boolean }) {
   );
 }
 
-export function CreatorReadiness({ data, onSend, onSendFeatureDrop, onTestFeatureDrop, onRemindExpiring, onCopyLink, busy, health, onTest, testing, testResult }: {
+export function CreatorReadiness({ data, onSend, onSendFeatureDrop, onTestFeatureDrop, onSendSubmitWindowNotice, onTestSubmitWindowNotice, onRemindExpiring, onCopyLink, busy, health, onTest, testing, testResult }: {
   data: ReadinessData;
   onSend: (creatorIds: string[], reminderOnly: boolean, dryRun: boolean) => void;
   onSendFeatureDrop: (creatorIds: string[], dryRun: boolean, featureCount: number) => void;
   onTestFeatureDrop: (to: string, featureCount: number) => void;
+  onSendSubmitWindowNotice: (creatorIds: string[], dryRun: boolean) => void;
+  onTestSubmitWindowNotice: (to: string) => void;
   onRemindExpiring: (dryRun: boolean) => void;
   onCopyLink: (creatorId: string) => Promise<string | null>;
   busy: boolean;
@@ -435,6 +437,39 @@ export function CreatorReadiness({ data, onSend, onSendFeatureDrop, onTestFeatur
           disabled={busy || !ids.length || !canSend} title={sendBlocked}
           className="flex items-center gap-1.5 px-3 py-2 text-xs rounded-xl bg-purple-500 text-white font-semibold hover:bg-purple-400 transition-all disabled:opacity-40">
           <Megaphone className="w-3.5 h-3.5" />Send feature drop
+        </button>
+
+        {/* The longer-submit-window announcement. Its own trio rather than a
+            field on the
+            drop, because it says nothing about what is published and should not
+            wait for there to be Features to announce.
+            Sending is idempotent per creator -- the batch skips anyone already
+            marked as having had it -- so a second press cannot mail the same
+            person twice. */}
+        <button
+          onClick={() => {
+            const to = window.prompt("Send the submit-window notice to which address?\n\nThe real email, to you only. No creator is touched.", "");
+            if (to === null || !to.trim()) return;
+            onTestSubmitWindowNotice(to.trim());
+          }}
+          disabled={busy || !canSend} title={sendBlocked}
+          className="flex items-center gap-1.5 px-3 py-2 text-xs rounded-xl bg-white/5 border border-white/15 text-neutral-200 hover:border-white/30 transition-all disabled:opacity-40">
+          <Megaphone className="w-3.5 h-3.5" />Test window notice on me
+        </button>
+        <button onClick={() => onSendSubmitWindowNotice(ids, true)}
+          disabled={busy || !ids.length}
+          title="Show who would get the submit-window notice, without sending"
+          className="flex items-center gap-1.5 px-3 py-2 text-xs rounded-xl bg-white/5 border border-white/15 text-neutral-200 hover:border-white/30 transition-all disabled:opacity-40">
+          <Megaphone className="w-3.5 h-3.5" />Preview window notice ({ids.length})
+        </button>
+        <button
+          onClick={() => {
+            if (!window.confirm(`Email ${ids.length} creator${ids.length === 1 ? "" : "s"} to say the submit window is longer now?\n\nAnyone who has already had it is skipped.`)) return;
+            onSendSubmitWindowNotice(ids, false);
+          }}
+          disabled={busy || !ids.length || !canSend} title={sendBlocked}
+          className="flex items-center gap-1.5 px-3 py-2 text-xs rounded-xl bg-purple-500 text-white font-semibold hover:bg-purple-400 transition-all disabled:opacity-40">
+          <Megaphone className="w-3.5 h-3.5" />Send window notice
         </button>
 
         {/* Nothing in this project schedules anything, so a deadline only gets
