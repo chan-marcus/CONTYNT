@@ -3061,16 +3061,28 @@ ${emailButton(link, "Accept the feature")}
 // One template for both deadlines. What changes is what runs out and what the
 // creator has to do about it, so those are the arguments.
 function renderClaimExpiryEmail(row: any, feature: any, link: string, opts: {
-  hoursLeft: number; kind: "accept" | "submit";
+  hoursLeft: number; kind: "accept" | "submit"; midpoint?: boolean;
 }) {
   const first = firstNameFor(row);
   const where = [feature?.business_name, cityLabel(feature?.city)].filter(Boolean).join(", ");
-  const hrs = opts.hoursLeft === 1 ? "1 hour" : `${opts.hoursLeft} hours`;
+  // "You have 120 hours left" is a number nobody converts. Past two days it is
+  // read in days, which is also how the window was described to them.
+  const hrs = opts.hoursLeft >= 48
+    ? `${Math.round(opts.hoursLeft / 24)} days`
+    : opts.hoursLeft === 1 ? "1 hour" : `${opts.hoursLeft} hours`;
   // The verb and its preposition travel together, or the sentence reads
   // "accept it for Poop Cafe".
+  //
+  // The midpoint nudge is deliberately not written as a warning. Nothing is
+  // wrong at the halfway mark and the deadline is days away; leading with
+  // "about to expire" there spends the alarm early and makes the real warning
+  // read as a repeat.
   const what = opts.kind === "accept"
     ? { head: "Your feature is about to expire", act: "accept the feature", prep: "at",
         lost: "it goes back to everyone else", cta: "Accept the feature" }
+    : opts.midpoint
+    ? { head: "Still time to film", act: "submit your Reel", prep: "for",
+        lost: "the feature is released", cta: "Submit your Reel" }
     : { head: "Your feature is about to expire", act: "submit your Reel", prep: "for",
         lost: "the feature is released", cta: "Submit your Reel" };
 
@@ -5474,7 +5486,7 @@ async function sendClaimExpiryReminders(opts: { dryRun?: boolean } = {}) {
   const horizon = REMIND_WITHIN_HOURS * 3600e3;
 
   const { data: claims } = await db().from("creator_claims_f5961d0c")
-    .select("feature_id, creator_token, status, acceptance_expires_at, expires_at, acceptance_reminded_at, expiry_reminded_at")
+    .select("feature_id, creator_token, status, claimed_at, acceptance_expires_at, expires_at, acceptance_reminded_at, expiry_reminded_at, expiry_midpoint_reminded_at")
     .in("status", ["approved", "claimed"]);
 
   const results: any[] = [];
@@ -5483,33 +5495,57 @@ async function sendClaimExpiryReminders(opts: { dryRun?: boolean } = {}) {
     // is waiting to be accepted, a claimed one is waiting for a Reel.
     const kind: "accept" | "submit" = cl.status === "approved" ? "accept" : "submit";
     const dueAt = kind === "accept" ? cl.acceptance_expires_at : cl.expires_at;
-    const alreadySent = kind === "accept" ? cl.acceptance_reminded_at : cl.expiry_reminded_at;
-    if (!dueAt || alreadySent) continue;
+    if (!dueAt) continue;
 
     const msLeft = new Date(dueAt).getTime() - now;
     // Past the deadline there is nothing to save, and the sweep that reclaims
     // expired claims is a separate concern from telling anyone about it.
-    if (msLeft <= 0 || msLeft > horizon) continue;
+    if (msLeft <= 0) continue;
     const hoursLeft = Math.max(1, Math.ceil(msLeft / 3600e3));
 
+    // Two sends on the submit clock, one on the acceptance clock.
+    //
+    // The 24 hours to accept needs no midpoint: the final warning lands with
+    // 6 hours to go, which is most of the window and plenty to click a button.
+    // Filming is different. On a ten day window the only nudge used to arrive
+    // with six hours left, which is not enough notice to arrange a shoot, so
+    // the halfway point gets its own -- far enough out to still be actionable.
+    //
+    // Measured off the window the claim was actually given rather than
+    // CLAIM_DAYS, so a claim stamped under an older rule is reminded halfway
+    // through its own window and not somebody else's.
+    const windowMs = kind === "submit" && cl.claimed_at
+      ? new Date(dueAt).getTime() - new Date(cl.claimed_at).getTime()
+      : 0;
+    const midpointDue = kind === "submit" && windowMs > 0
+      && !cl.expiry_midpoint_reminded_at
+      && msLeft <= windowMs / 2
+      && msLeft > horizon;          // inside the last stretch the warning takes over
+    const finalDue = msLeft <= horizon
+      && !(kind === "accept" ? cl.acceptance_reminded_at : cl.expiry_reminded_at);
+    if (!midpointDue && !finalDue) continue;
+    const midpoint = midpointDue;
+
     if (opts.dryRun) {
-      results.push({ featureId: cl.feature_id, kind, hoursLeft, wouldSend: true });
+      results.push({ featureId: cl.feature_id, kind, hoursLeft, midpoint, wouldSend: true });
       continue;
     }
     const out = await mailClaimCreator({
       creatorToken: cl.creator_token, featureId: cl.feature_id,
-      build: (creator, feature, link) => renderClaimExpiryEmail(creator, feature, link, { hoursLeft, kind }),
+      build: (creator, feature, link) => renderClaimExpiryEmail(creator, feature, link, { hoursLeft, kind, midpoint }),
     });
-    if (!out.ok) { results.push({ featureId: cl.feature_id, kind, skipped: out.reason }); continue; }
+    if (!out.ok) { results.push({ featureId: cl.feature_id, kind, midpoint, skipped: out.reason }); continue; }
 
     // Stamped only after Postmark accepted, so a failed send is retried by the
     // next sweep rather than silently counted as done.
     await db().from("creator_claims_f5961d0c")
-      .update(kind === "accept"
-        ? { acceptance_reminded_at: new Date().toISOString() }
-        : { expiry_reminded_at: new Date().toISOString() })
+      .update(midpoint
+        ? { expiry_midpoint_reminded_at: new Date().toISOString() }
+        : kind === "accept"
+          ? { acceptance_reminded_at: new Date().toISOString() }
+          : { expiry_reminded_at: new Date().toISOString() })
       .eq("feature_id", cl.feature_id).eq("creator_token", cl.creator_token);
-    results.push({ featureId: cl.feature_id, kind, hoursLeft, sent: true });
+    results.push({ featureId: cl.feature_id, kind, hoursLeft, midpoint, sent: true });
   }
 
   return {
