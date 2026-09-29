@@ -2905,7 +2905,7 @@ ${emailButton(link, "Confirm your account")}
       <p style="margin:0 0 18px 0;font-size:13px;word-break:break-all;"><a href="${esc(link)}" style="color:#525252;">${esc(prettyLink(link))}</a></p>
       <p style="margin:0;font-size:13px;color:#8a8a8a;">This link is good for 90 days and is just for you. Please do not forward it.</p>`,
   });
-  return { text, html, subject: "You have been approved: confirm your account" };
+  return { text, html, subject: "Confirm your Contynt account" };
 }
 
 // City is stored two ways: the creator signup form saves its dropdown as a slug
@@ -3032,9 +3032,9 @@ function renderSelectedEmail(row: any, feature: any, link: string, hoursToAccept
   const text =
 `Hi ${first},
 
-You have been selected for the feature at ${where}.
+The feature at ${where} is yours to film if you want it.
 
-Accept it within ${hoursToAccept} hours and it is yours to film.
+You have ${hoursToAccept} hours to accept it.
 
 Leave it and it goes back to everyone else.
 
@@ -3046,16 +3046,16 @@ San Francisco`;
   const html = emailShell({
     preheader: `Accept within ${hoursToAccept} hours to keep it.`,
     body:
-`      <p style="margin:0 0 16px 0;font-size:21px;line-height:1.35;font-weight:700;color:#0a0a0a;">You have been selected</p>
+`      <p style="margin:0 0 16px 0;font-size:21px;line-height:1.35;font-weight:700;color:#0a0a0a;">Your feature at ${esc(where)}</p>
       <p style="margin:0 0 14px 0;">Hi ${esc(first)},</p>
-      <p style="margin:0 0 14px 0;">You have been selected for the feature at <strong>${esc(where)}</strong>.</p>
-      <p style="margin:0 0 14px 0;">Accept it within ${hoursToAccept} hours and it is yours to film.</p>
+      <p style="margin:0 0 14px 0;">The feature at <strong>${esc(where)}</strong> is yours to film if you want it.</p>
+      <p style="margin:0 0 14px 0;">You have ${hoursToAccept} hours to accept it.</p>
       <p style="margin:0;">Leave it and it goes back to everyone else.</p>
 ${emailButton(link, "Accept the feature")}
       <p style="margin:0 0 6px 0;font-size:13px;color:#8a8a8a;">Or paste this into your browser:</p>
       <p style="margin:0;font-size:13px;word-break:break-all;"><a href="${esc(link)}" style="color:#525252;">${esc(prettyLink(link))}</a></p>`,
   });
-  return { text, html, subject: `You have been selected: ${where}` };
+  return { text, html, subject: `Accept within ${hoursToAccept} hours: ${where}` };
 }
 
 // One template for both deadlines. What changes is what runs out and what the
