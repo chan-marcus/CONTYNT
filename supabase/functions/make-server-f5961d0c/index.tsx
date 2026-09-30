@@ -2864,11 +2864,18 @@ const emailButton = (href: string, label: string) =>
 const prettyLink = (u: string) =>
   String(u ?? "").replace(/^https:\/\/getcontynt\.com/i, "https://GetContynt.com");
 
-// There is no name column on creator_signups, so the handle is the only thing
-// resembling a first name we have. Better than an empty greeting, and the
-// template degrades to "there" when even that is missing.
-const firstNameFor = (r: any) =>
-  (r.instagram_handle || (r.instagram || "").replace(/^@+/, "").split(/[._]/)[0] || "there");
+// There is no name column on creator_signups, so the handle is what a creator
+// gets greeted by. It used to take only the part before the first dot or
+// underscore, on the theory that it approximated a first name -- but a handle
+// is not a name, and the guess reads worse than the thing it guesses from:
+// @sierra.eats.8 became "Hi sierra", and @ugcwith_diana would become "Hi
+// ugcwith". Nobody is truncated in the data today, which is exactly why it was
+// never noticed.
+//
+// "there" is the last resort for a row with no handle at all, and no creator
+// currently hits it.
+const greetingFor = (r: any) =>
+  (r.instagram_handle || (r.instagram || "").replace(/^@+/, "").trim() || "there");
 
 // Sent on approval, and again as the reminder -- one template for both, so the
 // two cannot say different things about the same account.
@@ -2880,7 +2887,7 @@ const firstNameFor = (r: any) =>
 // hardcoded too, so a creator in Los Angeles was told about San Francisco --
 // their own city is not needed to say this, so it now says neither.
 function renderVerificationEmail(row: any, link: string) {
-  const first = firstNameFor(row);
+  const first = greetingFor(row);
   const text =
 `Hi ${first},
 
@@ -2937,7 +2944,7 @@ function cityLabel(raw: any): string {
 // they have just dropped something; the number is the one fact that is checked
 // at send time.
 function renderFeatureDropEmail(row: any, link: string, count: number, cities: string[], unsubLink?: string) {
-  const first = firstNameFor(row);
+  const first = greetingFor(row);
   const isAre = count === 1 ? "is" : "are";
   const plural = count === 1 ? "Feature" : "Features";
   // Two cities read as a list; more than two would run long in a subject line.
@@ -2995,7 +3002,7 @@ ${emailButton(link, "Open your portal")}
 // with an admin-typed message in it is how a broadcast ends up saying
 // something nobody proofread.
 function renderSubmitWindowEmail(row: any, link: string, unsubLink?: string) {
-  const first = firstNameFor(row);
+  const first = greetingFor(row);
   const text =
 `Hi ${first},
 
@@ -3027,7 +3034,7 @@ ${emailButton(link, "Open your portal")}`,
 }
 
 function renderSelectedEmail(row: any, feature: any, link: string, hoursToAccept: number) {
-  const first = firstNameFor(row);
+  const first = greetingFor(row);
   const where = [feature?.business_name, cityLabel(feature?.city)].filter(Boolean).join(", ");
   const text =
 `Hi ${first},
@@ -3063,7 +3070,7 @@ ${emailButton(link, "Accept the feature")}
 function renderClaimExpiryEmail(row: any, feature: any, link: string, opts: {
   hoursLeft: number; kind: "accept" | "submit"; midpoint?: boolean;
 }) {
-  const first = firstNameFor(row);
+  const first = greetingFor(row);
   const where = [feature?.business_name, cityLabel(feature?.city)].filter(Boolean).join(", ");
   // "You have 120 hours left" is a number nobody converts. Past two days it is
   // read in days, which is also how the window was described to them.
@@ -3468,6 +3475,23 @@ async function sendSubmitWindowBatch(opts: { creatorIds?: string[]; dryRun?: boo
 
 // Same shape as the feature-drop pair: prove the whole path on one address
 // first, then point it at everybody.
+// Who a test send should be addressed to.
+//
+// Both test routes used to hard-code the handle "there", so pressing "send to
+// me only" produced "Hi there," -- the one greeting a real creator never sees,
+// on the send whose whole purpose is showing what a real creator sees.
+//
+// The address is the admin's own, so looking it up leaks nothing: if it belongs
+// to a creator the test renders exactly what that person would get, and
+// otherwise the local part of their address stands in, which at least looks
+// like a greeting rather than a placeholder.
+async function testRecipientRow(to: string) {
+  const { data } = await db().from("creator_signups_f5961d0c")
+    .select("instagram, instagram_handle").ilike("email", to).maybeSingle();
+  if (data) return data;
+  return { instagram_handle: to.split("@")[0] || "there" };
+}
+
 app.post("/make-server-f5961d0c/admin/submit-window-notice/test", async (c) => {
   try {
     const body = await c.req.json().catch(() => ({}));
@@ -3477,7 +3501,7 @@ app.post("/make-server-f5961d0c/admin/submit-window-notice/test", async (c) => {
     // Inert on both counts: the signed-out portal rather than somebody's token,
     // and an unsubscribe link that belongs to nobody.
     const exampleUnsub = `${VERIFY_ORIGIN}/portal/unsubscribe?c=example&s=example`;
-    const rendered = renderSubmitWindowEmail({ instagram_handle: "there" }, `${SITE_ORIGIN}/app`, exampleUnsub);
+    const rendered = renderSubmitWindowEmail(await testRecipientRow(to), `${SITE_ORIGIN}/app`, exampleUnsub);
     const sent = await postmarkSend({
       to, ...rendered, stream: POSTMARK_STREAM,
       headers: {
@@ -3523,7 +3547,7 @@ app.post("/make-server-f5961d0c/admin/feature-drop/test", async (c) => {
     // A real portal link would sign the recipient in as whichever creator it
     // belonged to, so the test carries the signed-out portal instead.
     const exampleUnsub = `${VERIFY_ORIGIN}/portal/unsubscribe?c=example&s=example`;
-    const rendered = renderFeatureDropEmail({ instagram_handle: "there" }, `${SITE_ORIGIN}/app`, count, cities, exampleUnsub);
+    const rendered = renderFeatureDropEmail(await testRecipientRow(to), `${SITE_ORIGIN}/app`, count, cities, exampleUnsub);
     // Carries the real headers, not just the real body. Postmark rejecting a
     // custom List-Unsubscribe is the one failure this test can catch that
     // reading the message cannot, and it is better caught here than on a batch.
