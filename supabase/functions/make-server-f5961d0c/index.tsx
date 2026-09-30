@@ -3003,46 +3003,41 @@ ${emailButton(link, "Open your portal")}
 // something nobody proofread.
 function renderSubmitWindowEmail(row: any, link: string, unsubLink?: string) {
   const first = greetingFor(row);
-  // Playful, but dry rather than loud. No emoji, no exclamation marks, nothing
-  // in capitals: this goes out on the broadcast stream to a domain that has
-  // already had one message filed as spam, and the things that read as fun to
-  // a person are the same things a filter reads as promotional.
+  // Plain rather than playful. An earlier draft opened "You asked. We caved.",
+  // which was funnier and put the joke ahead of the news; this is the one piece
+  // of unambiguously good news the product has ever sent creators, and it does
+  // not need help landing.
   //
-  // The jokes are carried by the sentences, and every one of them still lands
-  // on a fact -- the multiple, the old number, the clock that did not move --
-  // so a creator skimming it learns the same things the plain version told
-  // them.
+  // Both numbers read from the constants, so a further change to either window
+  // rewrites this email rather than leaving it to be found later.
   const text =
 `Hi ${first},
 
-Five days was tight. You said so, loudly.
+The window to film and submit a Reel is now ${CLAIM_DAYS} days, up from five.
 
-It is ${CLAIM_DAYS} days now. Nearly triple what you had.
+It was the most asked-for change, and five days left no room for a reshoot.
 
-More than we planned, but you won.
+Accepting a feature still has a ${ACCEPTANCE_HOURS} hour window, so do that one promptly.
 
-The ${ACCEPTANCE_HOURS} hours to accept has not moved, so do not sleep on that one.
-
-Go find something to film:
+Open your portal:
 ${prettyLink(link)}
 
 CONTYNT
 San Francisco${unsubLink ? `\n\nStop these emails: ${unsubLink}` : ""}`;
   const html = emailShell({
-    preheader: `Five days was tight. It is ${CLAIM_DAYS} now.`,
+    preheader: `The window to film and submit a Reel is now ${CLAIM_DAYS} days.`,
     footerNote: unsubLink
       ? `You are receiving this because you signed up for Contynt. <a href="${esc(unsubLink)}" style="color:#8a8a8a;text-decoration:underline;">Unsubscribe</a>.`
       : "You are receiving this because you signed up for Contynt.",
     body:
-`      <p style="margin:0 0 16px 0;font-size:21px;line-height:1.35;font-weight:700;color:#0a0a0a;">You asked. We caved.</p>
+`      <p style="margin:0 0 16px 0;font-size:21px;line-height:1.35;font-weight:700;color:#0a0a0a;">More time to film</p>
       <p style="margin:0 0 14px 0;">Hi ${esc(first)},</p>
-      <p style="margin:0 0 14px 0;">Five days was tight. You said so, loudly.</p>
-      <p style="margin:0 0 14px 0;">It is <strong>${CLAIM_DAYS} days</strong> now. Nearly triple what you had.</p>
-      <p style="margin:0 0 14px 0;">More than we planned, but you won.</p>
-      <p style="margin:0;">The ${ACCEPTANCE_HOURS} hours to accept has not moved, so do not sleep on that one.</p>
-${emailButton(link, "Go find something to film")}`,
+      <p style="margin:0 0 14px 0;">The window to film and submit a Reel is now <strong>${CLAIM_DAYS} days</strong>, up from five.</p>
+      <p style="margin:0 0 14px 0;">It was the most asked-for change, and five days left no room for a reshoot.</p>
+      <p style="margin:0;">Accepting a feature still has a ${ACCEPTANCE_HOURS} hour window, so do that one promptly.</p>
+${emailButton(link, "Open your portal")}`,
   });
-  return { text, html, subject: `You asked. We caved. ${CLAIM_DAYS} days to film.` };
+  return { text, html, subject: `The filming window is now ${CLAIM_DAYS} days` };
 }
 
 function renderSelectedEmail(row: any, feature: any, link: string, hoursToAccept: number) {
