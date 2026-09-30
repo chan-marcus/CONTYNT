@@ -3003,34 +3003,46 @@ ${emailButton(link, "Open your portal")}
 // something nobody proofread.
 function renderSubmitWindowEmail(row: any, link: string, unsubLink?: string) {
   const first = greetingFor(row);
+  // Playful, but dry rather than loud. No emoji, no exclamation marks, nothing
+  // in capitals: this goes out on the broadcast stream to a domain that has
+  // already had one message filed as spam, and the things that read as fun to
+  // a person are the same things a filter reads as promotional.
+  //
+  // The jokes are carried by the sentences, and every one of them still lands
+  // on a fact -- the multiple, the old number, the clock that did not move --
+  // so a creator skimming it learns the same things the plain version told
+  // them.
   const text =
 `Hi ${first},
 
-You asked for more time. So we changed it.
+Five days was tight. You said so, loudly.
 
-Accept a feature and you now have ${CLAIM_DAYS} days to post your Reel, up from 5.
+It is ${CLAIM_DAYS} days now. Nearly triple what you had.
 
-Nothing else changes. You still have ${ACCEPTANCE_HOURS} hours to accept a feature.
+More than we planned, but you won.
 
-Open your portal:
+The ${ACCEPTANCE_HOURS} hours to accept has not moved, so do not sleep on that one.
+
+Go find something to film:
 ${prettyLink(link)}
 
 CONTYNT
 San Francisco${unsubLink ? `\n\nStop these emails: ${unsubLink}` : ""}`;
   const html = emailShell({
-    preheader: `You asked for more time to film. The window is now ${CLAIM_DAYS} days.`,
+    preheader: `Five days was tight. It is ${CLAIM_DAYS} now.`,
     footerNote: unsubLink
       ? `You are receiving this because you signed up for Contynt. <a href="${esc(unsubLink)}" style="color:#8a8a8a;text-decoration:underline;">Unsubscribe</a>.`
       : "You are receiving this because you signed up for Contynt.",
     body:
-`      <p style="margin:0 0 16px 0;font-size:21px;line-height:1.35;font-weight:700;color:#0a0a0a;">${CLAIM_DAYS} days to film, not 5</p>
+`      <p style="margin:0 0 16px 0;font-size:21px;line-height:1.35;font-weight:700;color:#0a0a0a;">You asked. We caved.</p>
       <p style="margin:0 0 14px 0;">Hi ${esc(first)},</p>
-      <p style="margin:0 0 14px 0;">You asked for more time. So we changed it.</p>
-      <p style="margin:0 0 14px 0;">Accept a feature and you now have <strong>${CLAIM_DAYS} days</strong> to post your Reel, up from 5.</p>
-      <p style="margin:0;">Nothing else changes. You still have ${ACCEPTANCE_HOURS} hours to accept a feature.</p>
-${emailButton(link, "Open your portal")}`,
+      <p style="margin:0 0 14px 0;">Five days was tight. You said so, loudly.</p>
+      <p style="margin:0 0 14px 0;">It is <strong>${CLAIM_DAYS} days</strong> now. Nearly triple what you had.</p>
+      <p style="margin:0 0 14px 0;">More than we planned, but you won.</p>
+      <p style="margin:0;">The ${ACCEPTANCE_HOURS} hours to accept has not moved, so do not sleep on that one.</p>
+${emailButton(link, "Go find something to film")}`,
   });
-  return { text, html, subject: `You asked for more time. Now you have ${CLAIM_DAYS} days.` };
+  return { text, html, subject: `You asked. We caved. ${CLAIM_DAYS} days to film.` };
 }
 
 function renderSelectedEmail(row: any, feature: any, link: string, hoursToAccept: number) {
