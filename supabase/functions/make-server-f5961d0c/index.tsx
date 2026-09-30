@@ -625,7 +625,7 @@ const ACCEPTANCE_HOURS = 24;
 // reminder sweep, the portal's fallback and the copy in both all have to agree
 // with it, and a constant buried in one route handler is easy to change on its
 // own.
-const CLAIM_DAYS = 10;
+const CLAIM_DAYS = 14;
 // How close to a deadline a reminder goes out, and how far past it is still
 // worth reminding -- a sweep that runs late should not skip somebody silently.
 const REMIND_WITHIN_HOURS = 6;
