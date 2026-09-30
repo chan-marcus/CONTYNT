@@ -3597,10 +3597,13 @@ const BROADCAST_EVENTS = ["verify_email_sent", "feature_drop_sent", SUBMIT_WINDO
 app.get("/make-server-f5961d0c/admin/email/history", async (c) => {
   try {
     const limit = Math.min(Math.max(Number(c.req.query("limit") || 100), 1), 500);
+    // occurred_at, not created_at. This table has never had a created_at, and
+    // asking for one fails the whole select rather than returning null for it,
+    // so the panel could only ever say it could not load.
     const { data, error } = await db().from("creator_events_f5961d0c")
-      .select("creator_id, type, payload, created_at")
+      .select("creator_id, type, payload, occurred_at")
       .in("type", BROADCAST_EVENTS)
-      .order("created_at", { ascending: false }).limit(limit);
+      .order("occurred_at", { ascending: false }).limit(limit);
     if (error) throw error;
 
     // Resolved to handles here rather than in the dashboard: an id is not
@@ -3616,7 +3619,7 @@ app.get("/make-server-f5961d0c/admin/email/history", async (c) => {
     }
     return c.json({
       events: (data ?? []).map((e: any) => ({
-        type: e.type, at: e.created_at,
+        type: e.type, at: e.occurred_at,
         handle: handleById[String(e.creator_id)] || "",
         reminder: !!e.payload?.reminder,
       })),
@@ -4815,10 +4818,16 @@ app.get("/make-server-f5961d0c/admin/creator-events", async (c) => {
     if (!creatorId) return c.json({ error: "creatorId required" }, 400);
     const limit = Math.min(Math.max(Number(c.req.query("limit") || 60), 1), 200);
 
-    const { data: events, error } = await db().from("creator_events_f5961d0c")
-      .select("type, payload, created_at").eq("creator_id", creatorId)
-      .order("created_at", { ascending: false }).limit(limit);
+    // Same column mistake as the email history had: the timestamp is
+    // occurred_at. Renamed on the way out so the merge with feature views
+    // below, and the dashboard reading it, keep one field name.
+    const { data: rows, error } = await db().from("creator_events_f5961d0c")
+      .select("type, payload, occurred_at").eq("creator_id", creatorId)
+      .order("occurred_at", { ascending: false }).limit(limit);
     if (error) throw error;
+    const events = (rows ?? []).map((e: any) => ({
+      type: e.type, payload: e.payload, created_at: e.occurred_at,
+    }));
 
     // Opening a Feature is the one thing a creator does in the portal that is
     // not in the event log -- view-feature stamps last_viewed on the claim
