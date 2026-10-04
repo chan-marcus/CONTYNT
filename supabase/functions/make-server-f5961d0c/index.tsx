@@ -3627,6 +3627,48 @@ app.get("/make-server-f5961d0c/admin/email/history", async (c) => {
   } catch (e: any) { return c.json({ error: "Failed to fetch email history", details: e.message }, 500); }
 });
 
+// The webhook writes a record of every delivery to stripehook_last, including
+// whether the signature verified. Nothing read it, so the one fact that would
+// have explained a silent billing outage sat in the KV store while Stripe
+// emailed about failures eleven days later.
+//
+// Read-only and derived entirely from that record. It deliberately does not
+// call Stripe: the question here is what reached us and whether we accepted it,
+// which is answerable without a round trip and stays answerable when the key
+// itself is the thing that is wrong.
+app.get("/make-server-f5961d0c/admin/stripe/webhook-status", async (c) => {
+  try {
+    const last = await kv.get("stripehook_last").catch(() => null);
+    if (!last) {
+      return c.json({
+        everDelivered: false,
+        secretConfigured: !!STRIPE_WEBHOOK_SECRET,
+        problem: "Stripe has never reached this endpoint. Check the endpoint URL in Stripe.",
+      });
+    }
+    const ageHours = last.at ? (Date.now() - new Date(last.at).getTime()) / 3600e3 : null;
+    // Each of these is a different fix, so each gets its own sentence rather
+    // than one "webhook broken" that sends you looking in the wrong place.
+    const problem = !last.secretConfigured
+      ? "STRIPE_WEBHOOK_SECRET is not set, so no delivery can ever verify."
+      : !last.hadSignatureHeader
+      ? "The last request arrived without a Stripe signature. Something other than Stripe is posting here."
+      : !last.signatureValid
+      ? "The last delivery failed its signature check. STRIPE_WEBHOOK_SECRET does not match the endpoint Stripe is posting from -- usually a live secret against a test endpoint, or an endpoint that was recreated."
+      : null;
+    return c.json({
+      everDelivered: true,
+      at: last.at ?? null,
+      ageHours: ageHours === null ? null : Math.round(ageHours * 10) / 10,
+      signatureValid: !!last.signatureValid,
+      hadSignatureHeader: !!last.hadSignatureHeader,
+      secretConfigured: !!last.secretConfigured,
+      eventType: last.type ?? null,
+      problem,
+    });
+  } catch (e: any) { return c.json({ error: "Failed to read webhook status", details: e.message }, 500); }
+});
+
 // ─── Email health ─────────────────────────────────────────────────────────────
 // Every send in this file fails quietly by design: the verification batch skips
 // a creator when the token is missing, and the login routes answer "a code is on

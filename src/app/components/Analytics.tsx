@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from "react";
-import { CheckCircle, Copy, RefreshCw, ExternalLink, ThumbsUp, ThumbsDown, Link, ChevronDown, Award, Eye } from "lucide-react";
+import { CheckCircle, Copy, RefreshCw, ExternalLink, ThumbsUp, ThumbsDown, Link, ChevronDown, Award, Eye, AlertTriangle } from "lucide-react";
 import { projectId, publicAnonKey } from "/utils/supabase/info";
 import { AmbassadorAdmin, type AmbassadorAdminData } from "./AmbassadorAdmin";
 import { CreatorReadiness, type ReadinessData, type EmailHealth } from "./CreatorReadiness";
@@ -1289,6 +1289,13 @@ export function Analytics({ adminToken }: { adminToken?: string } = {}) {
     finally { setSendBusy(false); }
   }, []);
 
+  const [hookStatus, setHookStatus] = useState<any>(null);
+  const loadHookStatus = useCallback(async () => {
+    const res = await apiFetch("/admin/stripe/webhook-status").catch(() => null);
+    const json = await res?.json().catch(() => null);
+    if (res?.ok) setHookStatus(json);
+  }, []);
+
   const loadEmailHistory = useCallback(async () => {
     const res = await apiFetch("/admin/email/history?limit=100").catch(() => null);
     const json = await res?.json().catch(() => null);
@@ -1628,6 +1635,7 @@ export function Analytics({ adminToken }: { adminToken?: string } = {}) {
 
   useEffect(() => { if (isAuthenticated) fetchAll(); }, [isAuthenticated, fetchAll]);
   useEffect(() => { if (isAuthenticated && tab === "ambassadors" && !ambData) loadAmbassadors(); }, [isAuthenticated, tab, ambData, loadAmbassadors]);
+  useEffect(() => { if (isAuthenticated && tab === "billing" && !hookStatus) loadHookStatus(); }, [isAuthenticated, tab, hookStatus, loadHookStatus]);
   useEffect(() => { if (isAuthenticated && (tab === "readiness" || tab === "emails") && !readyData) loadReadiness(); }, [isAuthenticated, tab, readyData, loadReadiness]);
   useEffect(() => { if (isAuthenticated && (tab === "readiness" || tab === "emails") && !emailHealth) loadEmailHealth(); }, [isAuthenticated, tab, emailHealth, loadEmailHealth]);
 
@@ -2102,6 +2110,36 @@ export function Analytics({ adminToken }: { adminToken?: string } = {}) {
                 buttons below only make sense against this: "Sync from Stripe"
                 is worth pressing when a row here disagrees with the dashboard,
                 and pointless when they already match. */}
+            {/* Every row below is only as true as the last webhook that got
+                through, so the state of that webhook belongs above them rather
+                than in a log nobody opens. */}
+            {hookStatus && (
+              <div className={`rounded-xl px-4 py-3 border ${
+                hookStatus.problem ? "bg-red-500/10 border-red-500/25" : "bg-green-500/10 border-green-500/20"}`}>
+                <div className="flex items-start gap-2">
+                  {hookStatus.problem
+                    ? <AlertTriangle className="w-4 h-4 text-red-300 shrink-0 mt-0.5" />
+                    : <CheckCircle className="w-4 h-4 text-green-400 shrink-0 mt-0.5" />}
+                  <div className="min-w-0">
+                    <p className={`text-sm font-medium ${hookStatus.problem ? "text-red-200" : "text-green-300"}`}>
+                      {hookStatus.problem
+                        ? "Stripe webhook is failing"
+                        : "Stripe webhook is verifying"}
+                    </p>
+                    {hookStatus.problem && <p className="text-xs text-red-200/90 mt-0.5">{hookStatus.problem}</p>}
+                    <p className="text-[11px] text-neutral-400 mt-1">
+                      {hookStatus.everDelivered
+                        ? <>Last delivery {ts(hookStatus.at)}
+                            {hookStatus.eventType ? <> · {hookStatus.eventType}</> : null}
+                            {hookStatus.ageHours !== null && hookStatus.ageHours > 48
+                              ? <> · {Math.round(hookStatus.ageHours / 24)} days ago</> : null}</>
+                        : "Stripe has never reached this endpoint."}
+                    </p>
+                  </div>
+                </div>
+              </div>
+            )}
+
             <div>
               <h2 className="text-lg font-semibold text-white mb-1">Subscriptions</h2>
               <p className="text-sm text-neutral-400 mb-3">
