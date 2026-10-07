@@ -1849,7 +1849,7 @@ export function Analytics({ adminToken }: { adminToken?: string } = {}) {
     { key: "ambassadors", label: "Ambassadors", count: ambData?.overview.totalAmbassadors },
     { key: "readiness", label: "Creator Readiness", count: readyData?.funnel.confirmed },
     { key: "emails", label: "Emails" },
-    { key: "cashouts", label: "Cash-outs",
+    { key: "cashouts", label: "Cash Outs",
       count: payoutRequests.filter(r => r.status === "requested" || (r.notReceivedAt && !r.issueResolvedAt)).length },
     { key: "billing", label: "Billing", count: subscribedBusinesses.length },
     { key: "pageviews", label: "Page Views" },
@@ -2228,7 +2228,7 @@ export function Analytics({ adminToken }: { adminToken?: string } = {}) {
             : <p className="text-neutral-400 text-sm">Loading ambassadors…</p>
         )}
 
-        {/* ── Cash-outs ── */}
+        {/* ── Cash Outs ── */}
         {!loading && tab === "cashouts" && (
           <CashoutRequests
             requests={payoutRequests}

@@ -75,7 +75,7 @@ export function CashoutRequests({ requests, owed, onSettle, onResolve, settling 
     <div className="space-y-6">
       <div className="flex items-center gap-2">
         <Banknote className="w-5 h-5 text-green-300" />
-        <h2 className="text-lg font-semibold text-white">Cash-outs</h2>
+        <h2 className="text-lg font-semibold text-white">Cash Outs</h2>
       </div>
 
       {/* The two numbers worth knowing before reading anything: what you owe
