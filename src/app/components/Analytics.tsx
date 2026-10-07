@@ -4,6 +4,7 @@ import { projectId, publicAnonKey } from "/utils/supabase/info";
 import { AmbassadorAdmin, type AmbassadorAdminData } from "./AmbassadorAdmin";
 import { CreatorReadiness, type ReadinessData, type EmailHealth } from "./CreatorReadiness";
 import { EmailNotifications } from "./EmailNotifications";
+import { CashoutRequests } from "./CashoutRequests";
 import { countQuotaUsed, quotaLimit } from "../lib/featureQuota";
 
 const BASE = `https://${projectId}.supabase.co/functions/v1/make-server-f5961d0c`;
@@ -35,7 +36,7 @@ const apiFetch = async (path: string, opts?: RequestInit) => {
   return res;
 };
 
-type Tab = "creators" | "businesses" | "reels" | "pageviews" | "ambassadors" | "readiness" | "emails" | "billing";
+type Tab = "creators" | "businesses" | "reels" | "pageviews" | "ambassadors" | "readiness" | "emails" | "cashouts" | "billing";
 
 interface Signup { id: string; instagram: string; email: string; city: string; createdAt: string; totalEarned?: number; pendingEarnings?: number; availableEarnings?: number; isAmbassador?: boolean; ambassadorCode?: string | null; }
 interface BusinessSignup { id: string; businessName: string; instagram: string; email: string; city: string; address: string; preferredContact: string; createdAt: string; referralSource?: string | null; referralCode?: string | null; referredByHandle?: string | null; }
@@ -1848,6 +1849,8 @@ export function Analytics({ adminToken }: { adminToken?: string } = {}) {
     { key: "ambassadors", label: "Ambassadors", count: ambData?.overview.totalAmbassadors },
     { key: "readiness", label: "Creator Readiness", count: readyData?.funnel.confirmed },
     { key: "emails", label: "Emails" },
+    { key: "cashouts", label: "Cash-outs",
+      count: payoutRequests.filter(r => r.status === "requested" || (r.notReceivedAt && !r.issueResolvedAt)).length },
     { key: "billing", label: "Billing", count: subscribedBusinesses.length },
     { key: "pageviews", label: "Page Views" },
   ];
@@ -1927,70 +1930,6 @@ export function Analytics({ adminToken }: { adminToken?: string } = {}) {
           <div>
             <h2 className="text-lg font-semibold text-white mb-4">Creators</h2>
 
-            {/* Above the queue of new requests on purpose. A cash-out waiting to
-                be sent is routine; money the app already claims it sent, that
-                never arrived, is the one that has already gone wrong. */}
-            {payoutRequests.filter(r => r.notReceivedAt && !r.issueResolvedAt).length > 0 && (
-              <div className="mb-6 space-y-2">
-                <p className="text-xs font-semibold text-red-400 uppercase tracking-wider">
-                  Not received · {payoutRequests.filter(r => r.notReceivedAt && !r.issueResolvedAt).length}
-                </p>
-                {payoutRequests.filter(r => r.notReceivedAt && !r.issueResolvedAt).map(r => (
-                  <div key={r.id} className="bg-red-500/5 border border-red-500/30 rounded-xl px-4 py-3 space-y-2">
-                    <div className="flex flex-col sm:flex-row sm:items-center gap-3">
-                      <div className="flex-1 min-w-0">
-                        <p>
-                          <IgLink handle={r.creatorInstagram} className="font-semibold text-white" />
-                          <span className="ml-2 font-semibold text-red-300">${r.amount}</span>
-                        </p>
-                        <p className="text-xs text-neutral-400 mt-0.5">
-                          Sent {r.method} to <span className="font-mono text-neutral-300">{r.handle}</span>
-                          {r.paidAt && <span className="text-neutral-600"> · marked sent {new Date(r.paidAt).toLocaleDateString()}</span>}
-                        </p>
-                        <p className="text-xs text-red-300/80 mt-0.5">
-                          Reported {new Date(r.notReceivedAt).toLocaleDateString()}
-                        </p>
-                      </div>
-                      <button onClick={() => resolvePayoutIssue(r)} disabled={settling === r.id}
-                        className="shrink-0 px-3 py-1.5 text-xs bg-white/10 text-neutral-200 rounded-lg hover:bg-white/20 transition-all disabled:opacity-50 whitespace-nowrap">
-                        {settling === r.id ? "Closing…" : "Close report"}
-                      </button>
-                    </div>
-                    {r.notReceivedNote && (
-                      <p className="text-xs text-neutral-300 bg-black/30 border border-white/10 rounded-lg px-3 py-2 whitespace-pre-wrap break-words">
-                        {r.notReceivedNote}
-                      </p>
-                    )}
-                  </div>
-                ))}
-              </div>
-            )}
-
-            {payoutRequests.filter(r => r.status === "requested").length > 0 && (
-              <div className="mb-6 space-y-2">
-                <p className="text-xs font-semibold text-yellow-400 uppercase tracking-wider">
-                  Cash-out requests · {payoutRequests.filter(r => r.status === "requested").length}
-                </p>
-                {payoutRequests.filter(r => r.status === "requested").map(r => (
-                  <div key={r.id} className="bg-yellow-500/5 border border-yellow-500/25 rounded-xl px-4 py-3 flex flex-col sm:flex-row sm:items-center gap-3">
-                    <div className="flex-1 min-w-0">
-                      <p>
-                        <IgLink handle={r.creatorInstagram} className="font-semibold text-white" />
-                        <span className="ml-2 font-semibold text-green-400">${r.amount}</span>
-                      </p>
-                      <p className="text-xs text-neutral-400 mt-0.5">
-                        {r.method} · <span className="font-mono text-neutral-300">{r.handle}</span>
-                        <span className="text-neutral-600"> · {new Date(r.requestedAt).toLocaleDateString()}</span>
-                      </p>
-                    </div>
-                    <button onClick={() => settlePayoutRequest(r)} disabled={settling === r.id}
-                      className="shrink-0 px-3 py-1.5 text-xs bg-green-600 text-white rounded-lg hover:bg-green-500 transition-all disabled:opacity-50 whitespace-nowrap">
-                      {settling === r.id ? "Settling…" : "Mark as Sent"}
-                    </button>
-                  </div>
-                ))}
-              </div>
-            )}
             {signups.length === 0 ? <p className="text-neutral-400 text-sm">No creator sign-ups yet.</p> : (
               <div className="space-y-6">
                 {Object.entries(
@@ -2287,6 +2226,28 @@ export function Analytics({ adminToken }: { adminToken?: string } = {}) {
                 onBackfill={backfillReferrals}
               />
             : <p className="text-neutral-400 text-sm">Loading ambassadors…</p>
+        )}
+
+        {/* ── Cash-outs ── */}
+        {!loading && tab === "cashouts" && (
+          <CashoutRequests
+            requests={payoutRequests}
+            // Who is owed money and has not asked for it. Derived from the
+            // creator balances already loaded rather than a second query, and
+            // excluding anyone with a request in flight so the same money is
+            // never shown as both waiting and unasked for.
+            owed={signups
+              .filter(s => (s.availableEarnings ?? 0) > 0
+                && !payoutRequests.some(r => r.status === "requested" && igKey(r.creatorInstagram) === igKey(s.instagram)))
+              .map(s => ({
+                id: s.id, instagram: s.instagram,
+                availableEarnings: s.availableEarnings ?? 0,
+                pendingEarnings: s.pendingEarnings ?? 0,
+              }))
+              .sort((a, b) => b.availableEarnings - a.availableEarnings)}
+            onSettle={settlePayoutRequest}
+            onResolve={resolvePayoutIssue}
+            settling={settling} />
         )}
 
         {/* ── Emails ── */}
