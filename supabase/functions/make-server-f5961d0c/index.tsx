@@ -3053,31 +3053,41 @@ ${emailButton(link, "Open your portal")}`,
 // the thing.
 function renderPortalNudgeEmail(row: any, link: string, unsubLink?: string) {
   const first = greetingFor(row);
+  // The one email here allowed to sell. The others report a fact or carry a
+  // deadline; this one has no news in it at all, so energy is the only thing
+  // it has -- but energy from short sentences and concrete verbs, not from
+  // exclamation marks, capitals or emoji, which are what a filter counts.
+  //
+  // Every line is still true. Features really are first come, the job really
+  // is pick-film-post, and the money really is sitting in there.
   const text =
 `Hi ${first},
 
-Features go to whoever asks first, so checking often is most of the job.
+Pick a spot near you, film a Reel, get paid. That is the whole job.
 
-Your earnings, a cash out button and your ambassador link are in there too.
+Features are first come. Good ones go fast.
 
-Worth a look today:
+Your earnings and cash out are in there too.
+
+Go claim one:
 ${prettyLink(link)}
 
 CONTYNT
 San Francisco${unsubLink ? `\n\nStop these emails: ${unsubLink}` : ""}`;
   const html = emailShell({
-    preheader: "Features go to whoever asks first. Your earnings are in there too.",
+    preheader: "Features are first come. The creators who check most are the ones filming.",
     footerNote: unsubLink
       ? `You are receiving this because you signed up for Contynt. <a href="${esc(unsubLink)}" style="color:#8a8a8a;text-decoration:underline;">Unsubscribe</a>.`
       : "You are receiving this because you signed up for Contynt.",
     body:
-`      <p style="margin:0 0 16px 0;font-size:21px;line-height:1.35;font-weight:700;color:#0a0a0a;">Your portal, in a minute</p>
+`      <p style="margin:0 0 16px 0;font-size:21px;line-height:1.35;font-weight:700;color:#0a0a0a;">Go claim something</p>
       <p style="margin:0 0 14px 0;">Hi ${esc(first)},</p>
-      <p style="margin:0 0 14px 0;">Features go to whoever asks first, so checking often is most of the job.</p>
-      <p style="margin:0;">Your earnings, a cash out button and your ambassador link are in there too.</p>
-${emailButton(link, "Open your portal")}`,
+      <p style="margin:0 0 14px 0;">Pick a spot near you, film a Reel, get paid. That is the whole job.</p>
+      <p style="margin:0 0 14px 0;">Features are <strong>first come</strong>. Good ones go fast.</p>
+      <p style="margin:0;">Your earnings and cash out are in there too.</p>
+${emailButton(link, "Go claim a feature")}`,
   });
-  return { text, html, subject: "Features go to whoever asks first" };
+  return { text, html, subject: "Pick a spot. Film it. Get paid." };
 }
 
 function renderSelectedEmail(row: any, feature: any, link: string, hoursToAccept: number) {
