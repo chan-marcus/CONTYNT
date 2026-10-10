@@ -3053,41 +3053,47 @@ ${emailButton(link, "Open your portal")}`,
 // the thing.
 function renderPortalNudgeEmail(row: any, link: string, unsubLink?: string) {
   const first = greetingFor(row);
-  // The one email here allowed to sell. The others report a fact or carry a
-  // deadline; this one has no news in it at all, so energy is the only thing
-  // it has -- but energy from short sentences and concrete verbs, not from
-  // exclamation marks, capitals or emoji, which are what a filter counts.
+  // The one email here allowed to sell, and the only one with no news in it,
+  // so tone is all it has. Energy from short sentences and concrete verbs
+  // rather than exclamation marks, capitals or emoji, which are what a filter
+  // counts and what put us in a spam folder once already.
   //
-  // Every line is still true. Features really are first come, the job really
-  // is pick-film-post, and the money really is sitting in there.
+  // Deliberately never calls this work. "That is the whole job" was accurate
+  // and made a paid afternoon at a cafe sound like a shift. A creator is being
+  // offered an outing they would half enjoy anyway, with money at the end of
+  // it, and the copy should sound like the thing being offered.
+  //
+  // Every line is still true: features are first come, the money is really
+  // sitting there, and nothing here promises free food, which no Feature
+  // actually guarantees.
   const text =
 `Hi ${first},
 
-Pick a spot near you, film a Reel, get paid. That is the whole job.
+Pick somewhere near you, make a Reel, and get paid for the afternoon.
 
-Features are first come. Good ones go fast.
+Features are first come, and the good ones never stay open for long.
 
-Your earnings and cash out are in there too.
+Plus whatever you have already earned is in there waiting for you.
 
-Go claim one:
+Go get one:
 ${prettyLink(link)}
 
 CONTYNT
 San Francisco${unsubLink ? `\n\nStop these emails: ${unsubLink}` : ""}`;
   const html = emailShell({
-    preheader: "Features are first come. The creators who check most are the ones filming.",
+    preheader: "Pick somewhere near you, make a Reel, and get paid for the afternoon.",
     footerNote: unsubLink
       ? `You are receiving this because you signed up for Contynt. <a href="${esc(unsubLink)}" style="color:#8a8a8a;text-decoration:underline;">Unsubscribe</a>.`
       : "You are receiving this because you signed up for Contynt.",
     body:
-`      <p style="margin:0 0 16px 0;font-size:21px;line-height:1.35;font-weight:700;color:#0a0a0a;">Go claim something</p>
+`      <p style="margin:0 0 16px 0;font-size:21px;line-height:1.35;font-weight:700;color:#0a0a0a;">Grab one while they last</p>
       <p style="margin:0 0 14px 0;">Hi ${esc(first)},</p>
-      <p style="margin:0 0 14px 0;">Pick a spot near you, film a Reel, get paid. That is the whole job.</p>
-      <p style="margin:0 0 14px 0;">Features are <strong>first come</strong>. Good ones go fast.</p>
-      <p style="margin:0;">Your earnings and cash out are in there too.</p>
-${emailButton(link, "Go claim a feature")}`,
+      <p style="margin:0 0 14px 0;">Pick somewhere near you, make a Reel, and get paid for the afternoon.</p>
+      <p style="margin:0 0 14px 0;">Features are <strong>first come</strong>, and the good ones never stay open for long.</p>
+      <p style="margin:0;">Plus whatever you have already earned is in there waiting for you.</p>
+${emailButton(link, "See what is open")}`,
   });
-  return { text, html, subject: "Pick a spot. Film it. Get paid." };
+  return { text, html, subject: "Something near you needs a Reel" };
 }
 
 function renderSelectedEmail(row: any, feature: any, link: string, hoursToAccept: number) {
