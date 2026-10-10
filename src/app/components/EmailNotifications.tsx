@@ -88,9 +88,16 @@ export function EmailNotifications({
 }) {
   const [segment, setSegment] = useState<SegmentKey>("confirmed");
   const [message, setMessage] = useState<string>("drop");
+  // null means "whoever the segment says". A Set means the list has been
+  // edited by hand and is now the answer, so picking a segment again is how
+  // you get back to following it.
+  const [picked, setPicked] = useState<Set<string> | null>(null);
+  const [search, setSearch] = useState("");
   const [history, setHistory] = useState<{ type: string; at: string; handle: string; reminder: boolean }[] | null>(null);
 
   const msg = MESSAGES.find(m => m.key === message)!;
+
+  const chooseSegment = (k: SegmentKey) => { setSegment(k); setPicked(null); };
 
   const inSegment = useMemo(() => creators.filter(c => {
     switch (segment) {
@@ -102,9 +109,30 @@ export function EmailNotifications({
     }
   }), [creators, segment, activeHandles]);
 
-  const reachable = inSegment.filter(c => !blockedReason(c, msg.kind));
-  const blocked = inSegment.filter(c => blockedReason(c, msg.kind));
+  // The segment proposes; the checkboxes dispose. Everything downstream reads
+  // `chosen`, so the counts, the sentence and the send are the same list the
+  // ticks show -- there is no second notion of "who this is going to".
+  const chosen = picked
+    ? inSegment.filter(c => picked.has(c.id))
+    : inSegment;
+  const reachable = chosen.filter(c => !blockedReason(c, msg.kind));
+  const blocked = chosen.filter(c => blockedReason(c, msg.kind));
   const ids = reachable.map(c => c.id);
+
+  const isTicked = (id: string) => picked ? picked.has(id) : true;
+  const toggle = (id: string) => setPicked(prev => {
+    const base = prev ?? new Set(inSegment.map(c => c.id));
+    const next = new Set(base);
+    next.has(id) ? next.delete(id) : next.add(id);
+    return next;
+  });
+  const onlyThis = (id: string) => setPicked(new Set([id]));
+
+  const shown = inSegment.filter(c => {
+    const q = search.trim().toLowerCase();
+    if (!q) return true;
+    return c.handle.toLowerCase().includes(q) || (c.email || "").toLowerCase().includes(q);
+  });
 
   const countFor = (k: SegmentKey) => creators.filter(c => {
     switch (k) {
@@ -172,7 +200,7 @@ export function EmailNotifications({
           <p className="text-[10px] font-semibold uppercase tracking-widest text-neutral-500">Who it goes to</p>
           <div className="space-y-1.5">
             {SEGMENTS.map(s => (
-              <button key={s.key} onClick={() => setSegment(s.key)}
+              <button key={s.key} onClick={() => chooseSegment(s.key)}
                 className={`w-full text-left px-3 py-2 rounded-xl border transition-all ${
                   segment === s.key
                     ? "bg-blue-500/15 border-blue-500/40"
@@ -211,13 +239,74 @@ export function EmailNotifications({
         </div>
       </div>
 
+      {/* ── Exactly who, by name ──
+             A segment is a good starting point and a bad final answer: sending
+             the approval email usually means sending it to one person you have
+             just approved, not to everyone who happens to be unconfirmed. So
+             the segment fills this list and the list is editable, and what is
+             ticked here is what sends. */}
+      <div className="bg-white/5 border border-white/10 rounded-2xl p-4 space-y-3">
+        <div className="flex flex-wrap items-center gap-2">
+          <p className="text-[10px] font-semibold uppercase tracking-widest text-neutral-500 flex-1">
+            Recipients
+          </p>
+          {picked && (
+            <button onClick={() => setPicked(null)}
+              className="text-[11px] text-blue-300 hover:text-blue-200 transition-colors">
+              Reset to {SEGMENTS.find(s => s.key === segment)!.name}
+            </button>
+          )}
+          <button onClick={() => setPicked(new Set())}
+            className="text-[11px] text-neutral-400 hover:text-neutral-200 transition-colors">
+            Clear
+          </button>
+        </div>
+
+        <input value={search} onChange={e => setSearch(e.target.value)}
+          placeholder="Find a creator by handle or email…"
+          className="w-full px-3 py-2 text-xs bg-neutral-900 border border-white/15 rounded-lg text-white placeholder:text-neutral-600 focus:outline-none focus:border-white/30" />
+
+        {shown.length === 0 ? (
+          <p className="text-xs text-neutral-600">
+            {search ? "Nobody in this segment matches that." : "This segment is empty."}
+          </p>
+        ) : (
+          <div className="max-h-64 overflow-y-auto flex flex-col divide-y divide-white/5">
+            {shown.map(c => {
+              const why = blockedReason(c, msg.kind);
+              return (
+                <label key={c.id}
+                  className="flex items-center gap-3 py-1.5 cursor-pointer group">
+                  <input type="checkbox" checked={isTicked(c.id)} onChange={() => toggle(c.id)}
+                    aria-label={`Send to ${c.handle}`} className="shrink-0" />
+                  <span className={`text-xs flex-1 min-w-0 truncate ${why ? "text-neutral-500" : "text-neutral-200"}`}>
+                    @{c.handle.replace(/^@+/, "")}
+                  </span>
+                  {why
+                    ? <span className="text-[10px] px-1.5 py-0.5 rounded bg-yellow-500/10 text-yellow-300/90 border border-yellow-500/25 shrink-0">{why}</span>
+                    : <span className="text-[11px] text-neutral-600 shrink-0 truncate max-w-[14rem] hidden sm:inline">{c.email}</span>}
+                  {/* The one-click version of the common case: this person and
+                      nobody else. */}
+                  <button type="button" onClick={e => { e.preventDefault(); onlyThis(c.id); }}
+                    className="text-[10px] text-neutral-600 group-hover:text-blue-300 transition-colors shrink-0">
+                    only
+                  </button>
+                </label>
+              );
+            })}
+          </div>
+        )}
+      </div>
+
       {/* ── The sentence the two choices make, then the actions ── */}
       <div className="bg-white/5 border border-white/10 rounded-2xl p-4 space-y-3">
         <p className="text-sm text-neutral-300">
           <span className="font-semibold text-white">{reachable.length}</span> of{" "}
-          <span className="text-neutral-400">{inSegment.length}</span> in{" "}
-          <span className="text-blue-200">{SEGMENTS.find(s => s.key === segment)!.name}</span> will receive{" "}
-          <span className="text-purple-200">{msg.name}</span>.
+          <span className="text-neutral-400">{chosen.length}</span>{" "}
+          {picked
+            ? <span className="text-blue-200">hand-picked</span>
+            : <>in <span className="text-blue-200">{SEGMENTS.find(s => s.key === segment)!.name}</span></>}
+          {" "}will receive <span className="text-purple-200">{msg.name}</span>.
         </p>
 
         {/* The gap between the two numbers is the part that surprises people, so
