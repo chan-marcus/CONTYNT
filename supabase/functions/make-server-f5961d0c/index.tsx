@@ -3040,6 +3040,46 @@ ${emailButton(link, "Open your portal")}`,
   return { text, html, subject: `The filming window is now ${CLAIM_DAYS} days` };
 }
 
+// A nudge to open the portal, sendable any time.
+//
+// Distinct from the feature drop, which announces a specific release and says
+// how many. This one carries no count, so it does not go stale and does not
+// need there to be news -- its job is the seventeen creators who signed up,
+// confirmed, and then never requested anything.
+//
+// The pull is the actual mechanic rather than enthusiasm about it: features go
+// to whoever asks first, so checking often is most of what separates a creator
+// who films from one who does not. That is true, and it is the reason to open
+// the thing.
+function renderPortalNudgeEmail(row: any, link: string, unsubLink?: string) {
+  const first = greetingFor(row);
+  const text =
+`Hi ${first},
+
+Features go to whoever asks first, so checking often is most of the job.
+
+Your earnings, a cash out button and your ambassador link are in there too.
+
+Worth a look today:
+${prettyLink(link)}
+
+CONTYNT
+San Francisco${unsubLink ? `\n\nStop these emails: ${unsubLink}` : ""}`;
+  const html = emailShell({
+    preheader: "Features go to whoever asks first. Your earnings are in there too.",
+    footerNote: unsubLink
+      ? `You are receiving this because you signed up for Contynt. <a href="${esc(unsubLink)}" style="color:#8a8a8a;text-decoration:underline;">Unsubscribe</a>.`
+      : "You are receiving this because you signed up for Contynt.",
+    body:
+`      <p style="margin:0 0 16px 0;font-size:21px;line-height:1.35;font-weight:700;color:#0a0a0a;">Your portal, in a minute</p>
+      <p style="margin:0 0 14px 0;">Hi ${esc(first)},</p>
+      <p style="margin:0 0 14px 0;">Features go to whoever asks first, so checking often is most of the job.</p>
+      <p style="margin:0;">Your earnings, a cash out button and your ambassador link are in there too.</p>
+${emailButton(link, "Open your portal")}`,
+  });
+  return { text, html, subject: "Features go to whoever asks first" };
+}
+
 function renderSelectedEmail(row: any, feature: any, link: string, hoursToAccept: number) {
   const first = greetingFor(row);
   const where = [feature?.business_name, cityLabel(feature?.city)].filter(Boolean).join(", ");
@@ -3416,6 +3456,11 @@ async function sendFeatureDropBatch(opts: { creatorIds?: string[]; dryRun?: bool
 // the log already answers "has this person had it" durably, in one read for
 // the whole batch.
 const SUBMIT_WINDOW_EVENT = "submit_window_notice_sent";
+// Declared up here beside its sibling rather than next to the batch that
+// writes it: BROADCAST_EVENTS below names both, and a const read before its
+// declaration is a ReferenceError at module load, which takes down every
+// route in the function rather than just this one.
+const PORTAL_NUDGE_EVENT = "portal_nudge_sent";
 
 async function sendSubmitWindowBatch(opts: { creatorIds?: string[]; dryRun?: boolean; limit?: number }) {
   const supabase = db();
@@ -3592,7 +3637,7 @@ app.post("/make-server-f5961d0c/admin/feature-drop/send", async (c) => {
 // Only the broadcast kinds. Login codes and selection notices are transactional
 // and fire on their own; listing them here would bury the handful of sends an
 // admin actually chose to make under hundreds they did not.
-const BROADCAST_EVENTS = ["verify_email_sent", "feature_drop_sent", SUBMIT_WINDOW_EVENT];
+const BROADCAST_EVENTS = ["verify_email_sent", "feature_drop_sent", SUBMIT_WINDOW_EVENT, PORTAL_NUDGE_EVENT];
 
 app.get("/make-server-f5961d0c/admin/email/history", async (c) => {
   try {
@@ -3667,6 +3712,108 @@ app.get("/make-server-f5961d0c/admin/stripe/webhook-status", async (c) => {
       problem,
     });
   } catch (e: any) { return c.json({ error: "Failed to read webhook status", details: e.message }, 500); }
+});
+
+// The portal nudge, on the broadcast stream with the drop's guards.
+//
+// Idempotency differs from the window notice on purpose. That one is a one-off
+// announcement and must never reach the same creator twice, so it skips anyone
+// who has ever had it. This is a recurring nudge -- re-engagement is the whole
+// point -- so it is a cooldown instead: the same creator can have it again,
+// just not twice in a day to a slipped double click.
+async function sendPortalNudgeBatch(opts: { creatorIds?: string[]; dryRun?: boolean; limit?: number }) {
+  const supabase = db();
+  let q = supabase.from("creator_signups_f5961d0c").select("*");
+  if (opts.creatorIds?.length) q = q.in("id", opts.creatorIds);
+  const { data: rows, error } = await q;
+  if (error) throw error;
+
+  // One read for the batch, and only the recent ones matter, so the window is
+  // in the query rather than filtered afterwards.
+  const since = new Date(Date.now() - SEND_COOLDOWN_HOURS * 3600e3).toISOString();
+  const { data: recent } = await supabase.from("creator_events_f5961d0c")
+    .select("creator_id").eq("type", PORTAL_NUDGE_EVENT).gte("occurred_at", since);
+  const sentRecently = new Set((recent ?? []).map((e: any) => String(e.creator_id)));
+
+  const results: any[] = [];
+  for (const r of (rows ?? []).slice(0, opts.limit ?? 500)) {
+    const email = (r.email || "").trim();
+    if (!email) { results.push({ id: r.id, skipped: "no email" }); continue; }
+    if (r.email_bounced_at || r.email_complained_at) { results.push({ id: r.id, email, skipped: "suppressed" }); continue; }
+    if (r.notify_email === false) { results.push({ id: r.id, email, skipped: "email notifications off" }); continue; }
+    if (sentRecently.has(String(r.id))) { results.push({ id: r.id, email, skipped: "sent within 24h" }); continue; }
+
+    const portalToken = await ensureCreatorPortalToken(r);
+    const link = `${SITE_ORIGIN}/app?creator=${encodeURIComponent(portalToken)}`;
+    const unsubLink = await unsubLinkFor(r.id);
+    const rendered = renderPortalNudgeEmail(r, link, unsubLink);
+
+    if (opts.dryRun) {
+      results.push({ id: r.id, email, link, subject: rendered.subject, dryRun: true });
+      continue;
+    }
+    try {
+      const sent = await postmarkSend({
+        to: email, ...rendered, stream: POSTMARK_STREAM,
+        headers: {
+          "List-Unsubscribe": `<${unsubLink}>`,
+          "List-Unsubscribe-Post": "List-Unsubscribe=One-Click",
+        },
+      });
+      if (!sent.ok) { results.push({ id: r.id, email, error: sent.error }); continue; }
+      await logCreatorEvent(r.id, PORTAL_NUDGE_EVENT, { messageId: sent.payload?.MessageID ?? null });
+      results.push({ id: r.id, email, sent: true, messageId: sent.payload?.MessageID ?? null });
+    } catch (e: any) {
+      results.push({ id: r.id, email, error: e?.message ?? String(e) });
+    }
+  }
+
+  const sentCount = results.filter(r => r.sent).length;
+  return {
+    dryRun: !!opts.dryRun,
+    problem: !opts.dryRun && sentCount === 0
+      ? (!POSTMARK_SERVER_TOKEN
+          ? "POSTMARK_SERVER_TOKEN is not set on the server, so nothing can be sent."
+          : rows?.length ? "Every selected creator was skipped." : "No creators were selected.")
+      : null,
+    considered: rows?.length ?? 0,
+    sent: sentCount,
+    skipped: results.filter(r => r.skipped).length,
+    failed: results.filter(r => r.error).length,
+    results,
+  };
+}
+
+app.post("/make-server-f5961d0c/admin/portal-nudge/test", async (c) => {
+  try {
+    const body = await c.req.json().catch(() => ({}));
+    const to = String(body.to ?? "").trim().toLowerCase();
+    if (!to || !to.includes("@")) return c.json({ error: "Enter an address to send the test to." }, 400);
+    if (!POSTMARK_SERVER_TOKEN) return c.json({ error: "POSTMARK_SERVER_TOKEN is not set, so nothing can be sent." }, 400);
+    const exampleUnsub = `${VERIFY_ORIGIN}/portal/unsubscribe?c=example&s=example`;
+    const rendered = renderPortalNudgeEmail(await testRecipientRow(to), `${SITE_ORIGIN}/app`, exampleUnsub);
+    const sent = await postmarkSend({
+      to, ...rendered, stream: POSTMARK_STREAM,
+      headers: {
+        "List-Unsubscribe": `<${exampleUnsub}>`,
+        "List-Unsubscribe-Post": "List-Unsubscribe=One-Click",
+      },
+    });
+    if (!sent.ok) return c.json({ error: sent.error || "Postmark rejected the message." }, 502);
+    return c.json({ success: true, to, subject: rendered.subject });
+  } catch (e: any) { return c.json({ error: "Test send failed", details: e.message }, 500); }
+});
+
+app.post("/make-server-f5961d0c/admin/portal-nudge/send", async (c) => {
+  try {
+    const body = await c.req.json().catch(() => ({}));
+    const out = await sendPortalNudgeBatch({
+      creatorIds: Array.isArray(body.creatorIds) ? body.creatorIds : undefined,
+      dryRun: !!body.dryRun,
+      limit: Number(body.limit) || undefined,
+    });
+    return c.json({ success: true, ...out });
+  } catch (e: any) { return c.json({ error: "Send failed", details: e.message }, 500); }
 });
 
 // ─── Email health ─────────────────────────────────────────────────────────────

@@ -1276,6 +1276,48 @@ export function Analytics({ adminToken }: { adminToken?: string } = {}) {
     finally { setSendBusy(false); }
   }, [loadReadiness]);
 
+  // Same shape as the window notice. The only difference is the skip reason it
+  // reports back, which the batch supplies.
+  const sendPortalNudge = useCallback(async (creatorIds: string[], dryRun: boolean) => {
+    setSendBusy(true);
+    try {
+      const res = await apiFetch("/admin/portal-nudge/send", {
+        method: "POST", body: JSON.stringify({ creatorIds, dryRun }),
+      });
+      const d = await res.json().catch(() => null);
+      if (!res.ok || !d?.success) { setSendResult(d?.error || "Send failed."); return; }
+      const results: any[] = d.results || [];
+      const tally = (key: string) => {
+        const counts = new Map<string, number>();
+        for (const r of results) if (r[key]) counts.set(r[key], (counts.get(r[key]) ?? 0) + 1);
+        return [...counts.entries()].map(([reason, n]) => `${n} ${reason}`);
+      };
+      const why = [...tally("skipped"), ...tally("error")];
+      const detail = why.length ? ` — ${why.join(", ")}` : "";
+      setSendResult(dryRun
+        ? `Dry run: ${results.filter(r => r.dryRun).length} would get the portal nudge${detail}.`
+        : d.problem
+          ? `Nothing sent. ${d.problem}${detail}`
+          : `Portal nudge sent to ${d.sent}${detail}.`);
+      if (!dryRun) await loadReadiness();
+    } catch { setSendResult("Could not reach the server."); }
+    finally { setSendBusy(false); }
+  }, [loadReadiness]);
+
+  const testPortalNudge = useCallback(async (to: string) => {
+    setSendBusy(true);
+    try {
+      const res = await apiFetch("/admin/portal-nudge/test", {
+        method: "POST", body: JSON.stringify({ to }),
+      });
+      const d = await res.json().catch(() => null);
+      setSendResult(!res.ok || !d?.success
+        ? (d?.error || "Test send failed.")
+        : `Test nudge sent to ${d.to}. Subject: "${d.subject}"`);
+    } catch { setSendResult("Could not reach the server."); }
+    finally { setSendBusy(false); }
+  }, []);
+
   const testSubmitWindowNotice = useCallback(async (to: string) => {
     setSendBusy(true);
     try {
@@ -2269,6 +2311,8 @@ export function Analytics({ adminToken }: { adminToken?: string } = {}) {
                   onTestDrop={testFeatureDrop}
                   onSendWindow={sendSubmitWindowNotice}
                   onTestWindow={testSubmitWindowNotice}
+                  onSendPortal={sendPortalNudge}
+                  onTestPortal={testPortalNudge}
                   loadHistory={loadEmailHistory} />
               </>
             : <p className="text-neutral-400 text-sm">Loading creators…</p>

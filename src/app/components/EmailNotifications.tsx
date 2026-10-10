@@ -38,6 +38,12 @@ export const MESSAGES: EmailMessage[] = [
     kind: "broadcast",
   },
   {
+    key: "portal",
+    name: "Open your portal",
+    what: "A nudge with no news in it: features go to whoever asks first, and your earnings are in there. Sendable any time, once a day at most.",
+    kind: "broadcast",
+  },
+  {
     key: "window",
     name: "Longer submit window",
     what: "One-off: the window to film and submit a Reel is longer now. Skips anyone who has already had it.",
@@ -72,7 +78,8 @@ function blockedReason(c: ReadinessCreator, kind: EmailMessage["kind"]): string 
 
 export function EmailNotifications({
   creators, activeHandles, health, busy, result,
-  onSendVerification, onSendDrop, onTestDrop, onSendWindow, onTestWindow, loadHistory,
+  onSendVerification, onSendDrop, onTestDrop, onSendWindow, onTestWindow,
+  onSendPortal, onTestPortal, loadHistory,
 }: {
   creators: ReadinessCreator[];
   activeHandles: Set<string>;
@@ -84,6 +91,8 @@ export function EmailNotifications({
   onTestDrop: (to: string, featureCount: number) => void;
   onSendWindow: (ids: string[], dryRun: boolean) => void;
   onTestWindow: (to: string) => void;
+  onSendPortal: (ids: string[], dryRun: boolean) => void;
+  onTestPortal: (to: string) => void;
   loadHistory: () => Promise<{ type: string; at: string; handle: string; reminder: boolean }[] | null>;
 }) {
   const [segment, setSegment] = useState<SegmentKey>("confirmed");
@@ -168,6 +177,11 @@ export function EmailNotifications({
       onSendDrop(ids, dryRun, n);
       return;
     }
+    if (msg.key === "portal") {
+      if (!dryRun && !window.confirm(`Nudge ${ids.length} creator${ids.length === 1 ? "" : "s"} to open their portal?\n\nAnyone sent this in the last 24 hours is skipped.`)) return;
+      onSendPortal(ids, dryRun);
+      return;
+    }
     if (!dryRun && !window.confirm(`Email ${ids.length} creator${ids.length === 1 ? "" : "s"} about the longer submit window?\n\nAnyone who has already had it is skipped.`)) return;
     onSendWindow(ids, dryRun);
   };
@@ -177,6 +191,7 @@ export function EmailNotifications({
     if (to === null || !to.trim()) return;
     if (msg.key === "drop") { const n = askFeatureCount(); if (n !== null) onTestDrop(to.trim(), n); return; }
     if (msg.key === "window") { onTestWindow(to.trim()); return; }
+    if (msg.key === "portal") { onTestPortal(to.trim()); return; }
     window.alert("The approval email has no test send. Preview it against one creator instead.");
   };
 
