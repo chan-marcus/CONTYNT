@@ -3054,46 +3054,48 @@ ${emailButton(link, "Open your portal")}`,
 function renderPortalNudgeEmail(row: any, link: string, unsubLink?: string) {
   const first = greetingFor(row);
   // The one email here allowed to sell, and the only one with no news in it,
-  // so tone is all it has. Energy from short sentences and concrete verbs
-  // rather than exclamation marks, capitals or emoji, which are what a filter
-  // counts and what put us in a spam folder once already.
+  // so tone is all it has. Energy comes from imperatives, immediacy and a
+  // concrete payoff rather than exclamation marks, capitals or emoji, which
+  // are what a filter counts and what put us in a spam folder once already.
   //
   // Deliberately never calls this work. "That is the whole job" was accurate
   // and made a paid afternoon at a cafe sound like a shift. A creator is being
   // offered an outing they would half enjoy anyway, with money at the end of
   // it, and the copy should sound like the thing being offered.
   //
-  // Every line is still true: features are first come, the money is really
-  // sitting there, and nothing here promises free food, which no Feature
-  // actually guarantees.
+  // Nothing here overpromises either. It does not say cash today or imply
+  // money changes hands at the venue -- payment runs through the portal after
+  // approval -- and it does not promise free food, which no Feature
+  // guarantees. "Whoever looks first" is just what first come means, so the
+  // urgency is real rather than manufactured.
   const text =
 `Hi ${first},
 
-Pick somewhere near you, make a Reel, and get paid for the afternoon.
+Open the map, pick somewhere you want to go, and get paid to film it.
 
-Features are first come, and the good ones never stay open for long.
+Features are first come, and the best ones go to whoever looks first.
 
-Plus whatever you have already earned is in there waiting for you.
+Anything you have already earned is sitting in your portal right now.
 
-Go get one:
+Open the map:
 ${prettyLink(link)}
 
 CONTYNT
 San Francisco${unsubLink ? `\n\nStop these emails: ${unsubLink}` : ""}`;
   const html = emailShell({
-    preheader: "Pick somewhere near you, make a Reel, and get paid for the afternoon.",
+    preheader: "Open the map, pick somewhere you want to go, and get paid to film it.",
     footerNote: unsubLink
       ? `You are receiving this because you signed up for Contynt. <a href="${esc(unsubLink)}" style="color:#8a8a8a;text-decoration:underline;">Unsubscribe</a>.`
       : "You are receiving this because you signed up for Contynt.",
     body:
-`      <p style="margin:0 0 16px 0;font-size:21px;line-height:1.35;font-weight:700;color:#0a0a0a;">Grab one while they last</p>
+`      <p style="margin:0 0 16px 0;font-size:21px;line-height:1.35;font-weight:700;color:#0a0a0a;">Go cash in an afternoon</p>
       <p style="margin:0 0 14px 0;">Hi ${esc(first)},</p>
-      <p style="margin:0 0 14px 0;">Pick somewhere near you, make a Reel, and get paid for the afternoon.</p>
-      <p style="margin:0 0 14px 0;">Features are <strong>first come</strong>, and the good ones never stay open for long.</p>
-      <p style="margin:0;">Plus whatever you have already earned is in there waiting for you.</p>
-${emailButton(link, "See what is open")}`,
+      <p style="margin:0 0 14px 0;">Open the map, pick somewhere you want to go, and get paid to film it.</p>
+      <p style="margin:0 0 14px 0;">Features are <strong>first come</strong>, and the best ones go to whoever looks first.</p>
+      <p style="margin:0;">Anything you have already earned is sitting in your portal right now.</p>
+${emailButton(link, "Open the map")}`,
   });
-  return { text, html, subject: "Something near you needs a Reel" };
+  return { text, html, subject: "Something near you is open right now" };
 }
 
 function renderSelectedEmail(row: any, feature: any, link: string, hoursToAccept: number) {
